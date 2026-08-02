@@ -243,14 +243,29 @@ export default function SettingsScreen() {
         </div>
       </Section>
 
-      <Section title="Assistant">
+      <Section title="AI & privacy">
         <div className="flex flex-col gap-3">
+          <p className={cx(type_.sub, tone.textMuted)}>
+            Every AI feature below is off by default. Nothing leaves this device to an AI
+            endpoint unless you turn it on here.
+          </p>
+          <Toggle
+            label="Auto-transcribe & caption"
+            checked={appSettings.enrichmentEnabled}
+            onChange={(v) => void updateSettings({ ...appSettings, enrichmentEnabled: v })}
+          />
+          <p className={cx(type_.sub, tone.textMuted)}>
+            When on, captured audio is sent to transcribe.elimelt.com for a text transcript, and
+            captured photos are sent to llm.elimelt.com for a caption. Turning this off never
+            deletes transcripts or captions you already have — it only stops new ones from being
+            generated.
+          </p>
           <Toggle
             label="Enable AI assistant"
             checked={appSettings.assistantEnabled}
             onChange={(v) => void updateSettings({ ...appSettings, assistantEnabled: v })}
           />
-          {appSettings.assistantEnabled && (
+          {appSettings.assistantEnabled ? (
             <>
               <FieldRow label="Model">
                 <span className={cx(type_.sub, tone.textMuted)}>
@@ -262,6 +277,11 @@ export default function SettingsScreen() {
                 read-only tools. Nothing is stored server-side.
               </p>
             </>
+          ) : (
+            <p className={cx(type_.sub, tone.textMuted)}>
+              When on, chat messages you send are sent to llm.elimelt.com. No request leaves the
+              device until you send a message.
+            </p>
           )}
         </div>
       </Section>
