@@ -38,6 +38,20 @@ npm run preview            # serve the production build locally
 - A PR must be green (tests, lint, build) and self-contained: code, tests,
   and the doc updates required by the policy below land in the same PR.
 
+### Git workflow notes
+
+- **Worktrees are in use.** `main` and other branches may be checked out in
+  sibling worktrees (`git worktree list`), so they can't be checked out here.
+  To work on another branch without touching the user's working tree, use a
+  throwaway worktree under `.worktrees/` (gitignored), e.g.
+  `git worktree add --detach .worktrees/<name> origin/main`, and
+  `git worktree remove` it when done.
+- **PRs are squash-merged.** After a merge, the branch's commits are not
+  ancestors of `main`, so `git branch -d` refuses with "not fully merged".
+  Verify the merge (`gh pr list --state merged --head <branch>`) before using
+  `git branch -D`. Prune periodically: `git fetch --prune`, then delete local
+  branches marked `[gone]` in `git branch -vv`.
+
 ### Before any commit
 
 - Run `npm test` and `npm run lint` (and `npm run build` for type-checking
