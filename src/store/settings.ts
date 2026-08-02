@@ -1,5 +1,5 @@
 /**
- * Settings as an event-sourced system stream (SPEC §3.6). Every settings
+ * Settings as an event-sourced system stream (SPEC §3.7). Every settings
  * change is one `capture` event in the `settings` stream (never amend/revoke)
  * carrying a single text/application-json attachment whose blob is a
  * versioned `capture.settings.v1` payload: `{ op: 'set' | 'unset', key,
@@ -165,7 +165,7 @@ export function foldSettingsPayloads(
 }
 
 /**
- * Pure diff primitive shared by saves and the v6 migration: payloads for the
+ * Pure diff primitive shared by saves and the v9 migration: payloads for the
  * entries whose value differs from the current effective value, skipping
  * local-only keys.
  */

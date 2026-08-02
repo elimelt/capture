@@ -1,12 +1,12 @@
 /**
- * v6 migration: legacy flat settings (meta `settings:app` /
+ * v9 migration: legacy flat settings (meta `settings:app` /
  * `settings:stream:<id>`) become seed events in the `settings` system stream
- * (SPEC §3.6), hand-constructed inside the upgrade transaction the way the
+ * (SPEC §3.7), hand-constructed inside the upgrade transaction the way the
  * v2/v3/v5 migrations write rows directly — append() can't run here.
  *
  * Guarded by *state*, not by `oldVersion`: parallel workstreams claim their
  * own IndexedDB version numbers and can land in any order, so a device may
- * already sit above 6 (with someone else's migration applied) before this
+ * already sit at a higher version (with someone else's migration applied) before this
  * code ships. A meta marker records that this migration ran; db.ts calls it
  * on every upgrade and it no-ops once applied — idempotent by construction.
  *

@@ -77,13 +77,13 @@ async function rerunMigration(): Promise<void> {
 const LEGACY_APP = { locationEnabled: false, assistantEnabled: false, assistantModel: 'gemma3:27b' }
 const LEGACY_TIMELOG = { maxClipSec: 60, keepAudioLocally: false }
 
-describe('migrateSettingsV1 (db v6)', () => {
+describe('migrateSettingsV1 (db v9)', () => {
   it('seeds events only for keys differing from defaults', async () => {
     await createLegacyV5Db({
       'settings:app': LEGACY_APP,
       'settings:stream:timelog': LEGACY_TIMELOG,
     })
-    await getDb() // v5 → v6 upgrade runs the migration
+    await getDb() // v5 → v9 upgrade runs the migration
 
     const payloads = await migratedPayloads()
     // assistantEnabled and maxClipSec match defaults — no events for them.
@@ -151,10 +151,10 @@ describe('migrateSettingsV1 (db v6)', () => {
   })
 
   it('runs off the state guard, not the version number: applies on a later upgrade if skipped', async () => {
-    // A device that reached v6+ via a parallel branch's migration (which knew
+    // A device that reached a later version via a parallel branch's migration (which knew
     // nothing of settings): legacy keys present, marker absent. The next
     // version bump must still apply this migration even though oldVersion is
-    // already past 6 — modelled here by invoking the state-guarded call the
+    // already past this one — modelled here by invoking the state-guarded call the
     // way db.ts does on every upgrade.
     await createLegacyV5Db({ 'settings:app': LEGACY_APP })
     const db = await getDb()

@@ -155,7 +155,11 @@ screen. The stream list is `allSyncStreams()` (`src/streams/registry.ts`):
 `SYSTEM_STREAMS` (`'settings'`, `'assistant-chats'`) first, then every
 `BUILTIN_STREAMS` id. System streams are append-only event logs with no capture
 UI, no skill, and no `StreamDefinition` — they exist so app-level state syncs
-through the same engine (their event conventions land separately). This is an
+through the same engine. `settings` is live: settings are event-sourced on it
+(SPEC §3.7, `docs/modules/store.md`), so a save queues ordinary sync rows that
+this loop pushes and a pull can change `getSettings()` output (which is why
+`drainSync` re-runs `loadSettings()` after a cycle). `assistant-chats`' event
+conventions land separately. This is an
 intentional behavior change from the single-stream era: "Sync now" covers
 everything, which is required for system streams (never `currentStreamId`) and a
 strict improvement for any future second capture stream.
