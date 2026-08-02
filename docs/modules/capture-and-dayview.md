@@ -83,7 +83,7 @@ type="file" accept="image/*" capture="environment">`, either an `EmptyState` or
 **Purpose:** The capture control — a pure presentational component driven by a
 `Recorder` (from `useRecorder`).
 
-**Export:** `RecordPanel({ recorder, maxClipSec, contextLabel?, onTap, onDiscard,
+**Export:** `RecordPanel({ recorder, maxClipSec, onTap, onDiscard,
 onCamera, onText }: RecordPanelProps)`.
 
 **Behavior by recorder state:**
@@ -96,7 +96,8 @@ onCamera, onText }: RecordPanelProps)`.
   an "Ns left" countdown once `maxClipSec - elapsedSec <= 10`, and Discard / Done
   buttons (`onDiscard` / `onTap`).
 - idle: the large mic button (`onTap`) flanked by camera and pencil `SatelliteButton`s
-  (`onCamera` / `onText`), with "Tap to record" and the optional `contextLabel` below.
+  (`onCamera` / `onText`). No visible labels — all three capture buttons are icon-only
+  for visual consistency (aria-labels for accessibility).
 
 Private helpers: `SatelliteButton`, `CameraIcon`, `PencilIcon`, `MicIcon`, `clock()`.
 

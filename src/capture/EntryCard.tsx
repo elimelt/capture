@@ -186,10 +186,10 @@ export function EntryCard({
       ) : (
         <div className="mt-2 flex items-center gap-1">
           <Button variant="ghost" size="sm" onClick={() => setNoteOpen(true)}>
-            + note
+            <PlusIcon /> note
           </Button>
           <Button variant="ghost" size="sm" onClick={() => photoInputRef.current?.click()}>
-            + photo
+            <PlusIcon /> photo
           </Button>
           {rec.state === 'error' ? (
             <Button variant="ghost" size="sm" onClick={rec.resetError}>
@@ -197,14 +197,14 @@ export function EntryCard({
             </Button>
           ) : (
             <Button variant="ghost" size="sm" onClick={() => void handleAudioTap()}>
-              + audio
+              <PlusIcon /> audio
             </Button>
           )}
           <Button variant="ghost" size="sm" onClick={() => setLocationOpen(true)}>
-            {entry.location ? '· location' : '+ location'}
+            {entry.location ? <PinIcon /> : <PlusIcon />} location
           </Button>
           <Button variant="dangerGhost" size="sm" onClick={onDelete} className="ml-auto">
-            Delete
+            <TrashIcon /> Delete
           </Button>
         </div>
       )}
@@ -241,5 +241,38 @@ export function EntryCard({
         </Suspense>
       )}
     </Card>
+  )
+}
+
+/** Small plus icon for action buttons. */
+function PlusIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+      <path d="M7 2v10M2 7h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+/** Small pin/dot icon for existing location. */
+function PinIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+      <circle cx="7" cy="7" r="2.5" fill="currentColor" />
+    </svg>
+  )
+}
+
+/** Small trash icon for delete. */
+function TrashIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+      <path
+        d="M3 4h8M5.5 4V3a1 1 0 0 1 1-1h1a1 1 0 0 1 1 1v1M4.5 4v7a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1V4"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
   )
 }

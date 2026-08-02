@@ -1,3 +1,4 @@
+import type React from 'react'
 import { useEffect, useState } from 'react'
 import type { Attachment } from '../contract/types'
 import { getBlob } from '../store/events'
@@ -86,6 +87,38 @@ export function AttachmentBody({ attachments, onEditText, onRemoveAttachment }: 
   )
 }
 
+/**
+ * Renders inline math ($...$) as styled text. A minimal no-dependency
+ * approach per design-nit: "render $P(k)$ as *P(k)*".
+ */
+function renderWithMath(text: string): React.ReactNode[] {
+  const parts: React.ReactNode[] = []
+  let last = 0
+  // Simple inline math: $content$ where content has no $ or newlines.
+  // Avoids lookbehind for broader browser support.
+  const mathRegex = /\$([^$\n]+)\$/g
+  let match: RegExpExecArray | null
+  while ((match = mathRegex.exec(text)) !== null) {
+    // Skip $$ (display math delimiter — leave as-is)
+    if (match.index > 0 && text[match.index - 1] === '$') continue
+    if (match.index + match[0].length < text.length && text[match.index + match[0].length] === '$')
+      continue
+    if (match.index > last) {
+      parts.push(text.slice(last, match.index))
+    }
+    parts.push(
+      <em key={match.index} className="font-serif not-italic">
+        {match[1]}
+      </em>,
+    )
+    last = match.index + match[0].length
+  }
+  if (last < text.length) {
+    parts.push(text.slice(last))
+  }
+  return parts.length > 0 ? parts : [text]
+}
+
 function NoteText({
   attachment,
   primary = false,
@@ -120,7 +153,7 @@ function NoteText({
           primary ? tone.textPrimary : tone.textSecondary,
         )}
       >
-        {text}
+        {renderWithMath(text)}
       </span>
     </button>
   )
