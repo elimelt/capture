@@ -113,7 +113,7 @@ export function AttachmentTimeline({
 
   if (rows.length === 0) return null
   return (
-    <div className={cx('mt-2 flex flex-col gap-2 border-l pl-2.5 sm:pl-3', tone.border)}>
+    <div className="mt-2 flex flex-col gap-2">
       {rows}
       {edit && (
         <TextSheet

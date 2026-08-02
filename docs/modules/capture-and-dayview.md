@@ -841,7 +841,9 @@ attachments by their originating event timestamp (`Entry.attachmentLoggedAt`, wi
 the entry timestamp as a fallback), shows that timestamp on each row, and pairs
 audio waveforms with their transcripts and photos with their captions. Notes and
 orphaned descriptions remain standalone rows. Each media row keeps its existing
-playback, caption editing, photo viewer, and removal behavior.
+playback, caption editing, photo viewer, and removal behavior. The sub-timeline
+uses spacing and timestamps only; it does not add a second vertical rail inside
+the entry.
 
 ### src/capture/AttachmentBody.tsx
 
