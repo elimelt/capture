@@ -16,4 +16,7 @@ The renderer reads only the entry's text blobs from IndexedDB through an injecte
 the Clipboard API with an off-screen textarea fallback for older Safari/PWA
 contexts. Entry cards expose `Copy entry`; the Day screen exposes `Copy day` and
 passes the same representation through to each entry. Nothing is sent over the
-network.
+network. After each Drive sync, `src/drive/context.ts` writes the same full
+folded timelog to the stable app-owned file `timebox/context.md`. That file is
+a mutable projection for external readers, not part of the append-only event
+log.

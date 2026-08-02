@@ -42,6 +42,7 @@ import { getStoredToken } from '../drive/token'
 import { drainStream } from '../drive/queue'
 import { pullStream } from '../drive/pull'
 import { runSyncCycle, type SyncResult } from '../drive/syncCycle'
+import { syncContextFile } from '../drive/context'
 import { allSyncStreams } from '../streams/registry'
 import { reduceSyncProgress, type SyncProgress, type SyncProgressEvent } from './syncProgress'
 
@@ -363,7 +364,7 @@ export const useAppStore = create<AppState>()((set, get) => {
           // orchestration living in drive/syncCycle.ts (issue #63) — this
           // action now only supplies the token + the effectful deps and
           // mirrors the result into store state.
-          const { result, reconnect, quotaExceeded } = await runSyncCycle(token, allSyncStreams(), {
+          const { result: cycleResult, reconnect, quotaExceeded } = await runSyncCycle(token, allSyncStreams(), {
             pull: pullStream,
             drain: drainStream,
             setLastSyncAt,
@@ -375,13 +376,24 @@ export const useAppStore = create<AppState>()((set, get) => {
           // true left over from an earlier full-Drive cycle once space frees
           // up and "Sync now" runs clean again.
           set({ driveQuotaExceeded: quotaExceeded })
-          if (result.outcome === 'error' && result.error) {
-            set({ lastError: `Sync failed: ${result.error}` })
+          if (cycleResult.outcome === 'error' && cycleResult.error) {
+            set({ lastError: `Sync failed: ${cycleResult.error}` })
           }
           // Re-read local state; pulled system-stream events can change
           // settings, so the in-memory settings cache reloads too.
           await get().refresh()
           await get().loadSettings()
+          let result = cycleResult
+          try {
+            // The context export is a Drive projection of the folded timelog.
+            // Rebuild it after pull-then-push has refreshed local state so
+            // Codex always reads the same replica the app just synced.
+            if (!reconnect && !quotaExceeded) await syncContextFile(token)
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err)
+            result = { ...result, outcome: 'error', error: `Context export failed: ${message}` }
+            set({ lastError: `Context export failed: ${message}` })
+          }
           await persistSyncResult(result)
           return result
         } catch (err) {

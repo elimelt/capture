@@ -19,6 +19,7 @@ export type TagKind =
   | 'stream'
   | 'log'
   | 'results'
+  | 'context'
   | 'config'
   | 'checkpoint'
   | 'partition'

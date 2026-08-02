@@ -120,6 +120,7 @@ export interface FakeDrive {
     (t: string, name: string, parentId: string, appProperties?: Record<string, string>) => Promise<string>
   >
   uploadFile: Mock<(t: string, a: FakeUploadArgs) => Promise<string>>
+  updateFileContent: Mock<(t: string, id: string, mimeType: string, body: Blob | string) => Promise<void>>
   generateIds: Mock<(t: string, count: number) => Promise<string[]>>
   listChildren: Mock<
     (t: string, parentId: string) => Promise<{ id: string; name: string; mimeType: string }[]>
@@ -254,6 +255,11 @@ export function fakeDrive(): FakeDrive {
       uploadOrder.push(a.name)
       return id
     }),
+    updateFileContent: vi.fn(async (_t: string, id: string, _mimeType: string, body: Blob | string) => {
+      const node = byId(id)
+      if (!node) throwHttp(404, 'not found')
+      node!.content = body
+    }),
     generateIds: vi.fn(async (_t: string, count: number) =>
       Array.from({ length: count }, () => `gen-${idGen++}`),
     ),
@@ -336,6 +342,7 @@ export async function driveClientMock(): Promise<Record<string, unknown>> {
     findFile: forward((...a: [string, never]) => current().findFile(...a)),
     createFolder: forward((...a: [string, string, string]) => current().createFolder(...a)),
     uploadFile: forward((...a: [string, never]) => current().uploadFile(...a)),
+    updateFileContent: forward((...a: [string, string, string, Blob | string]) => current().updateFileContent(...a)),
     generateIds: forward((...a: [string, number]) => current().generateIds(...a)),
     listChildren: forward((...a: [string, string]) => current().listChildren(...a)),
     readFileText: forward((...a: [string, string]) => current().readFileText(...a)),

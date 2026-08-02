@@ -207,7 +207,10 @@ Key exports:
 
 Idempotent creation of the Drive tree: `timebox/` root, the `streams.json` registry,
 and per stream a folder containing `config.json` + `checkpoint.json` stubs, `log/`, and
-`results/`. Stub contents come from `src/contract/files` serializers.
+`results/`. Stub contents come from `src/contract/files` serializers. The
+app-owned `timebox/context.md` projection is maintained separately by
+`src/drive/context.ts` after each completed sync cycle; unlike the log it is
+mutable and exists for external readers such as scheduled Codex tasks.
 
 Key exports:
 
