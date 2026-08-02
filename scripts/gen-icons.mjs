@@ -1,5 +1,6 @@
-// Generates placeholder PWA icons (solid slate square with a lighter "t" glyph
-// block) as PNGs, no dependencies. Run: node scripts/gen-icons.mjs
+// Generates the PWA icons (solid slate square with a lighter database-cylinder
+// glyph) as PNGs, no dependencies. Keep in sync with public/icons/icon.svg.
+// Run: node scripts/gen-icons.mjs
 import { deflateSync } from 'node:zlib'
 import { mkdirSync, writeFileSync } from 'node:fs'
 
@@ -50,18 +51,34 @@ function png(size, pixelFn) {
   ])
 }
 
-// Background #0f172a (slate-900), glyph #38bdf8 (sky-400): a simple "t" shape.
+// Background #0f172a (slate-900), glyph #38bdf8 (sky-400): a database cylinder
+// (top ellipse + body split into three bands by curved separators). Geometry
+// mirrors public/icons/icon.svg on the same 16-unit grid.
 const BG = [15, 23, 42]
 const FG = [56, 189, 248]
 
 function makeIcon(size) {
   const u = size / 16
-  return png(size, (x, y) => {
-    // horizontal bar of the t
-    if (y >= 4 * u && y < 6.5 * u && x >= 4 * u && x < 12 * u) return FG
-    // vertical stem
-    if (x >= 6.75 * u && x < 9.25 * u && y >= 4 * u && y < 13 * u) return FG
-    return BG
+  const cx = 8 // cylinder centre x
+  const rx = 3.7 // cylinder half-width
+  const ry = 1.2 // ellipse half-height (perspective squash)
+  const topY = 4.7 // centre of the top ellipse
+  const botY = 11.3 // centre of the bottom ellipse
+  const seps = [6.8, 9.05] // band separator baselines
+  const gap = 0.55 // separator thickness
+  return png(size, (px, py) => {
+    const x = (px + 0.5) / u
+    const y = (py + 0.5) / u
+    const dx = (x - cx) / rx
+    if (Math.abs(dx) > 1) return BG
+    // Vertical distance from a band baseline to the ellipse arc at this x.
+    const edge = ry * Math.sqrt(1 - dx * dx)
+    // Silhouette: upper half of the top ellipse, straight sides, lower half
+    // of the bottom ellipse.
+    if (y < topY - edge || y > botY + edge) return BG
+    // Carve the curved separators between bands.
+    for (const s of seps) if (y > s + edge && y < s + edge + gap) return BG
+    return FG
   })
 }
 
