@@ -115,8 +115,16 @@ deleted-with-Undo, discarded).
 - **Automatic place naming (§3.4):** after every successful capture,
   `maybePromptPlace(event)` checks `needsPlacePrompt(location, locationEnabled)` (from
   `geo.ts`) — a location captured at a coordinate matching no saved place (no
-  `placeLabel`) opens `NamePlaceSheet`. Saving calls `addPlace` (with a best-effort
-  `reverseGeocode` "near …" address) and retro-labels the just-captured entry via
+  `placeLabel`) opens `NamePlaceSheet`. Since a capture-time snapshot never carries
+  `address` (geocoding is lazy), `maybePromptPlace` also kicks off
+  `reverseGeocode(location.lat, location.lng)` in the background and feeds the result
+  into `pendingPlaceAddress` state as it resolves, so the sheet's "near …" hint can
+  actually appear (#59 — it used to read a field that was always empty at this point in
+  the flow, so it was dead code). A `pendingPlaceEntryIdRef` guards against a slow
+  lookup painting a stale address onto a newer prompt if the user dismisses one and
+  triggers another before it resolves. Saving calls `addPlace` (reusing
+  `pendingPlaceAddress` before falling back to a fresh `reverseGeocode`, which is cached
+  either way) and retro-labels the just-captured entry via
   `amend({ targets: [entryId], patch: { location } })`; skipping just closes the sheet —
   the entry is already saved.
 
@@ -939,8 +947,13 @@ where `onSave: (location: GeoLocation) => void` and `onClear: () => void`.
   default; tap the map (`ClickToPlace` via `useMapEvents`) or drag the pin to set
   `pos`. The pin is a vector `L.divIcon` (clay dot) to avoid Leaflet's default marker
   PNGs, which break under bundlers without extra asset config.
-- "Use current location" calls `snapshotLocation(places, locationEnabled)` with a
-  "Locating…" busy state; a failed/disabled snapshot leaves `pos` unchanged.
+- "Use current location" calls `locateCurrent(places)` (`geo.ts`) with a "Locating…"
+  busy state. Unlike the passive capture-time path, this **always** asks the browser
+  for a location regardless of the Settings `locationEnabled` toggle — an explicit tap
+  is deliberate intent, not ambient stamping (#59) — and on failure sets a small danger
+  caption (`tone.danger`) distinguishing "Geolocation is not available on this device."
+  (`reason: 'unsupported'`) from "Could not get your location." (`reason: 'failed'`,
+  covering denial/timeout/error) instead of silently leaving `pos` unchanged.
 - **Save** re-runs `matchPlace(places, lat, lng)` and awaits
   `reverseGeocode(lat, lng)` (from `src/places`), then emits `{ lat, lng, accuracyM:
   initial?.accuracyM ?? 0, placeLabel?, address? }` — i.e. a manually placed pin has
@@ -1005,6 +1018,13 @@ mount this only while it's true; there is no compact/preview mode anymore.
 - Full-screen dialog (zoom 16, interactive) with a header (`locationName` label + a
   "Done" button calling `onClose`) and a `Popup` label on the marker, plus, when
   `placeLabel` is set, a spruce accuracy `Circle` of radius `max(accuracyM, 40)` meters.
+
+**`src/capture/mapAttribution.test.ts` (#56):** a source-text guard (raw-text scan via
+`import.meta.glob(?raw)`, the `layering.test.ts` technique — there is no jsdom/
+testing-library in this repo) asserting no `MapContainer` in `src/capture/` disables
+`attributionControl` and every `<TileLayer>` carries an `attribution` prop, so OSM's
+tile-usage attribution requirement can't silently regress across `MiniMap.tsx` and
+`LocationSheet.tsx`.
 
 ### src/capture/LifecycleBadge.tsx
 
@@ -1137,28 +1157,45 @@ create the immediate-hide effect.
 throws.
 
 **Exports:** `snapshotLocation(places: Place[], locationEnabled: boolean):
-Promise<GeoLocation | undefined>`; `DEFAULT_PLACE_RADIUS_M` (50); `needsPlacePrompt(
-location: GeoLocation | undefined, locationEnabled: boolean): boolean` — true when a
-captured coordinate matched no saved place and should trigger `NamePlaceSheet`.
-(String-backed radius drafts are validated by the numeric-draft helpers in
-`src/ui/numberDraft.ts`.)
+Promise<GeoLocation | undefined>`; `locateCurrent(places: Place[]):
+Promise<LocateResult>` where `LocateResult = { ok: true; location: GeoLocation } | {
+ok: false; reason: 'unsupported' | 'failed' }`; `DEFAULT_PLACE_RADIUS_M` (50);
+`needsPlacePrompt(location: GeoLocation | undefined, locationEnabled: boolean):
+boolean` — true when a captured coordinate matched no saved place and should trigger
+`NamePlaceSheet`. (String-backed radius drafts are validated by the numeric-draft
+helpers in `src/ui/numberDraft.ts`.)
 
-**Behavior:** resolves `undefined` immediately when location is disabled in settings or
-`navigator.geolocation` is missing. Otherwise wraps
-`geolocation.getCurrentPosition` with `{ timeout: 8000, maximumAge: 60_000,
-enableHighAccuracy: false }`; on success returns `{ lat, lng, accuracyM:
+**Behavior:** both `snapshotLocation` and `locateCurrent` share a `getCurrentLocation`
+helper that wraps `geolocation.getCurrentPosition` with `{ timeout: 8000, maximumAge:
+60_000, enableHighAccuracy: false }`; on success it returns `{ lat, lng, accuracyM:
 Math.round(accuracy) }` plus `placeLabel` when `matchPlace(places, lat, lng)` (from
-`src/places/match`) finds a saved place containing the point. Errors — both the error
-callback and synchronous throws — resolve `undefined`; the promise never rejects, so
-callers can `await` it unconditionally.
+`src/places/match`) finds a saved place containing the point, and resolves `undefined`
+on any failure (error callback, synchronous throw, or no `navigator.geolocation`) — the
+promise never rejects.
+
+- `snapshotLocation(places, locationEnabled)` — the **passive capture-time** path
+  (§7): resolves `undefined` immediately, without touching geolocation at all, when
+  `locationEnabled` is off. Silent by design — capture stamps a coordinate on every
+  entry without asking, so a denial or timeout should just mean no location, not an
+  error surfaced mid-recording.
+- `locateCurrent(places)` — the **explicit-request** path (#59): no `locationEnabled`
+  parameter at all — an explicit "use current location" tap always asks the browser,
+  since the toggle governs ambient stamping, not a deliberate gesture (the browser's
+  own permission prompt still gates the actual read either way, so this isn't a
+  privacy regression). Distinguishes `reason: 'unsupported'` (no geolocation API) from
+  `reason: 'failed'` (everything else) so the caller (`LocationSheet`) can show
+  different, specific feedback instead of a silent no-op.
 
 ### src/capture/geo.test.ts
 
 Vitest unit tests for `snapshotLocation`: verifies it resolves `undefined` without
 touching geolocation when disabled, when `navigator.geolocation` is absent, on
 geolocation errors, and on synchronous throws; and that successes round `accuracyM` and
-include `placeLabel` only when the coordinate falls inside a saved place's radius. Also
-covers `needsPlacePrompt` (prompts only for enabled, unlabelled locations).
+include `placeLabel` only when the coordinate falls inside a saved place's radius. For
+`locateCurrent`: it calls geolocation even when disabled (no toggle to check), and
+returns `{ ok: false, reason: 'unsupported' }` vs `{ ok: false, reason: 'failed' }` for
+a missing API vs an error/throw. Also covers `needsPlacePrompt` (prompts only for
+enabled, unlabelled locations).
 
 ### src/dayview/DayScreen.tsx
 

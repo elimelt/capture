@@ -43,6 +43,13 @@ export default function CaptureScreen() {
   const [textOpen, setTextOpen] = useState(false)
   const [toast, setToast] = useState<ToastState | null>(null)
   const [pendingPlace, setPendingPlace] = useState<PendingPlace | null>(null)
+  // Best-effort "near …" hint for the naming sheet (#59): capture-time
+  // snapshots never carry `address` (geocoding happens lazily), so this is
+  // populated asynchronously after the prompt opens. Guarded by
+  // `pendingPlaceEntryIdRef` so a slow lookup can't paint a stale address
+  // onto a newer prompt if the user dismisses one and triggers another first.
+  const [pendingPlaceAddress, setPendingPlaceAddress] = useState<string | undefined>(undefined)
+  const pendingPlaceEntryIdRef = useRef<string | null>(null)
   // Gesture accelerator's drag-to-satellite outcome (#77): which just-committed
   // entry, if any, is waiting for its photo/note add-on. View-local only —
   // resolved into an `amend` on save, never its own event.
@@ -68,6 +75,11 @@ export default function CaptureScreen() {
     const { location } = event
     if (location && needsPlacePrompt(location, appSettings.locationEnabled)) {
       setPendingPlace({ entryId: event.id, location })
+      setPendingPlaceAddress(undefined)
+      pendingPlaceEntryIdRef.current = event.id
+      void reverseGeocode(location.lat, location.lng).then((address) => {
+        if (pendingPlaceEntryIdRef.current === event.id) setPendingPlaceAddress(address)
+      })
     }
   }
 
@@ -76,8 +88,11 @@ export default function CaptureScreen() {
     if (!pending) return
     const { entryId, location } = pending
     setPendingPlace(null)
-    // Best-effort "near …"; never blocks. Reuse any address already on the loc.
-    const address = location.address ?? (await reverseGeocode(location.lat, location.lng))
+    // Best-effort "near …"; never blocks. Reuse whatever's already resolved
+    // (the loc's own address, or the sheet's in-flight/resolved hint) before
+    // falling back to a fresh lookup — reverseGeocode is cached either way.
+    const address =
+      location.address ?? pendingPlaceAddress ?? (await reverseGeocode(location.lat, location.lng))
     await addPlace({
       id: crypto.randomUUID(),
       name,
@@ -338,7 +353,7 @@ export default function CaptureScreen() {
 
       {pendingPlace && (
         <NamePlaceSheet
-          address={pendingPlace.location.address}
+          address={pendingPlace.location.address ?? pendingPlaceAddress}
           onSave={(name, radiusM) => void saveNamedPlace(name, radiusM)}
           onClose={() => setPendingPlace(null)}
         />
