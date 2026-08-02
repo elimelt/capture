@@ -1163,10 +1163,12 @@ separable by construction.
   days of folded entries — transcript/note text, place labels and media counts,
   never raw audio or photos.
 - The assistant reads the log through tools and, only when the user explicitly
-  asks, can create a note entry or update an existing entry's note text/time.
-  Writes go through the store's normal capture/amend actions, appending
-  ordinary events to the append-only log (never mutating it) that sync through
-  the usual manual queue; it can never revoke entries, change settings, or
+  asks, can create a note entry, update an existing entry's note text/time, or
+  delete an entry. Writes go through the store's normal capture/amend/revoke
+  actions, appending ordinary events to the append-only log (never mutating
+  it) that sync through the usual manual queue; a delete is a soft-delete
+  revoke tombstone, never a real erasure (the entry's history stays in the
+  log and, once synced, in Drive). The assistant can never change settings or
   trigger sync. Nothing is stored server-side.
 
 **Conversations are a stream.** Chat history is event-sourced in the

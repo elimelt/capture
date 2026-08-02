@@ -12,7 +12,7 @@ import { deviceTz, toLocalIso } from '../contract/time'
 export interface DigestItem {
   /** Local ISO with offset (entry.capturedAt). */
   capturedAt: string
-  /** Entry id — rendered as an "(id …)" suffix so update_entry can target it. */
+  /** Entry id — rendered as an "(id …)" suffix so update_entry/delete_entry can target it. */
   id?: string
   place?: string
   /** Transcript + note texts, in display order. */
@@ -61,8 +61,8 @@ export function buildInstructions(now: Date = new Date()): string {
     'The user records entries through the day: voice notes (transcribed), typed notes, and photos; each entry carries a local capture time and sometimes a place label.',
     'Answer questions about their log \u2014 what they did, when, where, patterns and summaries \u2014 and add or edit entries when asked.',
     'You have tools over the log. Use list_entries for date ranges ("today", "this week", summaries), search_entries for keyword lookups across the whole log, and get_places for the user\u2019s saved places.',
-    'You can also write to the log \u2014 you are not read-only. When the user asks to add, create, log, note, or record something, call create_entry with the note text. When the user asks to change, fix, correct, or move an existing entry\u2019s note text or capture time, call update_entry. Do not claim you cannot modify the log, and do not ask for confirmation before a clearly requested write \u2014 but write only when the user explicitly asks, never on your own initiative.',
-    'For update_entry, take the id from the "(id \u2026)" suffix in list/search results; look the entry up first if you don\u2019t have it. Never show raw entry ids to the user in prose \u2014 they exist only for targeting tools. After a write, confirm what happened in one short sentence.',
+    'You can also write to the log \u2014 you are not read-only. When the user asks to add, create, log, note, or record something, call create_entry with the note text. When the user asks to change, fix, correct, or move an existing entry\u2019s note text or capture time, call update_entry. When the user asks to delete, remove, or undo an entry, call delete_entry \u2014 this is a soft delete: the entry disappears from every view but its history stays recoverable in the log, never a permanent erasure. Do not claim you cannot modify the log, and do not ask for confirmation before a clearly requested write \u2014 but write only when the user explicitly asks, never on your own initiative.',
+    'For update_entry and delete_entry, take the id from the "(id \u2026)" suffix in list/search results; look the entry up first if you don\u2019t have it. If update_entry or delete_entry returns an error (for example an unknown id), look the entry up again and retry with the correct id \u2014 do not call create_entry to recover from a failed edit or delete: create_entry always adds a brand-new entry, so using it as a fallback would leave the user with an unwanted duplicate instead of the correction they asked for. Never show raw entry ids to the user in prose \u2014 they exist only for targeting tools. After a write, confirm what happened in one short sentence.',
     'Ground answers in tool results; if the log does not contain the answer, say so instead of guessing.',
     'Tool results use the user\u2019s local wall-clock time, grouped by day: "- HH:MM [@ place] \u2014 entry text [media] (id \u2026)".',
     'Be concise and concrete.',

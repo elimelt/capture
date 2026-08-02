@@ -64,7 +64,7 @@ describe('formatDigest', () => {
     expect(formatDigest(items)).toContain('- 10:00 — (empty entry)')
   })
 
-  it('renders the entry id as a trailing suffix so update_entry can target it', () => {
+  it('renders the entry id as a trailing suffix so update_entry/delete_entry can target it', () => {
     const items: DigestItem[] = [
       {
         capturedAt: '2026-08-02T10:00:00-04:00',
@@ -87,6 +87,7 @@ describe('buildInstructions', () => {
     expect(prompt).toContain('get_places')
     expect(prompt).toContain('create_entry')
     expect(prompt).toContain('update_entry')
+    expect(prompt).toContain('delete_entry')
     // Writes are opt-in per user turn, never assistant-initiated.
     expect(prompt).toContain('only when the user explicitly asks')
     // Ids are tool plumbing, not conversation content.
@@ -104,7 +105,24 @@ describe('buildInstructions', () => {
     expect(prompt).toContain('add, create, log, note, or record')
     expect(prompt).toContain('call create_entry')
     expect(prompt).toContain('call update_entry')
+    expect(prompt).toContain('call delete_entry')
     expect(prompt).toContain('Do not claim you cannot modify the log')
+  })
+
+  it('tells the model delete is soft (recoverable), and forbids create_entry as a failed-edit/delete fallback', () => {
+    // Regression: a product report described update_entry as "duplicating
+    // entries". The write path itself does not duplicate (see
+    // tools.realstore.test.ts — an amend never becomes a second entry
+    // through the real store/fold), but the prompt gave the model no
+    // guidance against recovering from a failed update_entry/delete_entry
+    // call (e.g. a mistargeted id) by calling create_entry instead — which
+    // *would* look like "the edit duplicated the entry" to the user. The
+    // prompt must rule that out explicitly.
+    const prompt = buildInstructions(NOW)
+    expect(prompt).toContain('soft delete')
+    expect(prompt).toContain('recoverable in the log')
+    expect(prompt).toContain('do not call create_entry to recover from a failed edit or delete')
+    expect(prompt).toContain('create_entry always adds a brand-new entry')
   })
 
   it('truncates the time to the hour so the prompt is prefix-cache-stable', () => {

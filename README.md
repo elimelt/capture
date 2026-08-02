@@ -36,8 +36,9 @@ no-ops when offline or disabled).
 - Place matching and cached Nominatim reverse geocoding; offline-capable maps
   via runtime-cached OSM tiles
 - Opt-in, lazy-loaded chat assistant: a client-side agent loop over the local
-  log — read tools plus narrow create/update entry tools that append ordinary
-  events through the store's write path; nothing stored server-side
+  log — read tools plus narrow create/update/delete entry tools that append
+  ordinary events (delete is a soft-delete revoke) through the store's write
+  path; nothing stored server-side
 - Installable PWA with auto-updating service worker and precached app shell
 
 ## Tech stack

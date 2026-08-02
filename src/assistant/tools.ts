@@ -1,13 +1,14 @@
 /**
- * Tools the agent calls over the local log: three reads plus two narrow
- * writes (create_entry / update_entry). Data access is injected —
- * createAssistantTools takes getters and an EntryWriter — so ChatScreen wires
- * the zustand store while tests inject fixtures; only text-blob reads
- * (getBlob) touch IndexedDB. Writes go through the injected store actions
- * (the single write path), so they append ordinary capture/amend events —
- * the log stays append-only and the normal sync queue picks them up. Tools
- * return terse plain text: digests for reads, "Created/Updated entry <id>."
- * or an "(error: …)" line for writes.
+ * Tools the agent calls over the local log: three reads plus three narrow
+ * writes (create_entry / update_entry / delete_entry). Data access is
+ * injected — createAssistantTools takes getters and an EntryWriter — so
+ * ChatScreen wires the zustand store while tests inject fixtures; only
+ * text-blob reads (getBlob) touch IndexedDB. Writes go through the injected
+ * store actions (the single write path), so they append ordinary
+ * capture/amend/revoke events — the log stays append-only (delete is a
+ * revoke tombstone, never a real erasure) and the normal sync queue picks
+ * them up. Tools return terse plain text: digests for reads,
+ * "Created/Updated/Deleted entry <id>…" or an "(error: …)" line for writes.
  */
 import { jsonSchema, tool } from 'ai'
 import { localDateOf, toLocalIso, zonedIso } from '../contract/time'
@@ -22,8 +23,10 @@ export const SEARCH_ENTRIES_MAX = 50
 
 /**
  * The only writes the assistant can perform. ChatScreen injects the store's
- * capture/amend actions (the single write path); nothing else — revoke,
- * settings, sync, wipe — is reachable from a tool call.
+ * capture/amend/revoke actions (the single write path); nothing else —
+ * settings, sync, wipe — is reachable from a tool call. `revoke` is the
+ * append-only soft-delete tombstone (SPEC §3.3, §11) — it never erases
+ * anything from the log.
  */
 export interface EntryWriter {
   capture: (input: { capturedAt: string; attachments: NewAttachment[] }) => Promise<CaptureEvent>
@@ -32,6 +35,7 @@ export interface EntryWriter {
     patch?: AmendPatch
     attachments?: NewAttachment[]
   }) => Promise<void>
+  revoke: (targets: string[]) => Promise<void>
 }
 
 /** 24-hour wall-clock time, "HH:MM". */
@@ -63,6 +67,23 @@ export async function toDigestItem(entry: Entry): Promise<DigestItem> {
     audioCount: entry.attachments.filter((a) => a.kind === 'audio').length,
     photoCount: entry.attachments.filter((a) => a.kind === 'photo').length,
   }
+}
+
+/**
+ * One-line content summary of an entry for delete confirmations — so the
+ * model can tell the user *what* was removed without re-querying. No id
+ * suffix here (ids exist only for tool targeting, per the system prompt).
+ */
+async function summarizeForDeletion(entry: Entry): Promise<string> {
+  const item = await toDigestItem(entry)
+  const media: string[] = []
+  if (item.audioCount > 0) media.push(`${item.audioCount} audio`)
+  if (item.photoCount > 0) media.push(`${item.photoCount} photo${item.photoCount > 1 ? 's' : ''}`)
+  const body = [item.texts.join(' | ') || undefined, media.length > 0 ? `[${media.join(', ')}]` : undefined]
+    .filter(Boolean)
+    .join(' ')
+  const place = item.place ? ` @ ${item.place}` : ''
+  return `${item.capturedAt.slice(0, 10)} ${item.capturedAt.slice(11, 16)}${place} — ${body || '(empty entry)'}`
 }
 
 /** Sorted by capture time so formatDigest's day grouping stays coherent. */
@@ -251,6 +272,34 @@ export function createAssistantTools(
             return `Updated entry ${id}.`
           } catch (err) {
             return errorText('could not update entry', err)
+          }
+        }),
+    }),
+
+    delete_entry: tool({
+      description:
+        'Delete an existing log entry by id — the "(id …)" suffix in list/search results. Call this when the user asks to delete, remove, or undo an entry. This is a soft delete: the entry disappears from every view but its history stays recoverable in the log — it is not permanently erased.',
+      inputSchema: jsonSchema<{ id: string }>({
+        type: 'object',
+        properties: { id: { type: 'string', description: 'Id of the entry to delete.' } },
+        required: ['id'],
+        additionalProperties: false,
+      }),
+      execute: ({ id }) =>
+        enqueueWrite(async () => {
+          // Same id-resolution scheme as update_entry, inside the write
+          // chain so it reflects every prior write in this step.
+          const entry = getEntries().find((e) => e.id === id)
+          if (!entry) return `(error: no entry with id "${id}")`
+          if (entry.revoked) return `(error: entry "${id}" is already deleted)`
+          // Read the content before revoking so the confirmation can tell
+          // the model — and, through it, the user — what was removed.
+          const summary = await summarizeForDeletion(entry)
+          try {
+            await writer.revoke([id])
+            return `Deleted entry ${id}: ${summary}`
+          } catch (err) {
+            return errorText('could not delete entry', err)
           }
         }),
     }),

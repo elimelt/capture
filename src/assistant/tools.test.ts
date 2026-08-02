@@ -71,6 +71,7 @@ function recordedWriter() {
     patch?: AmendPatch
     attachments?: NewAttachment[]
   }> = []
+  const revokes: string[][] = []
   const writer: EntryWriter = {
     capture: async (input) => {
       captures.push(input)
@@ -89,8 +90,11 @@ function recordedWriter() {
     amend: async (input) => {
       amends.push(input)
     },
+    revoke: async (targets) => {
+      revokes.push(targets)
+    },
   }
-  return { writer, captures, amends }
+  return { writer, captures, amends, revokes }
 }
 
 function makeTools(entries: Entry[], places: Place[] = [], writer = recordedWriter().writer) {
@@ -346,6 +350,7 @@ describe('update_entry', () => {
     let n = 0
     const writer: EntryWriter = {
       capture: () => Promise.reject(new Error('unused')),
+      revoke: () => Promise.reject(new Error('unused')),
       amend: async ({ targets, patch, attachments }) => {
         // Genuinely asynchronous, like the real IndexedDB transaction — a
         // synchronous mock would let an unserialized second call read the
@@ -449,5 +454,67 @@ describe('update_entry', () => {
     const tools = makeTools([target], [], w.writer)
     const result = (await tools.update_entry.execute({ id: target.id, text: 'x' }, OPTS)) as string
     expect(result).toBe('(error: could not update entry: idb closed)')
+  })
+})
+
+describe('delete_entry', () => {
+  it('revokes the entry in one call and confirms what was deleted', async () => {
+    await putBlob('note.txt', 'walked the dog')
+    const target = textEntry('2026-08-02T07:45:00-04:00', 'note.txt', {
+      location: { lat: 40.7, lng: -74, accuracyM: 10, placeLabel: 'Home' },
+    })
+    const w = recordedWriter()
+    const tools = makeTools([target], [], w.writer)
+    const result = (await tools.delete_entry.execute({ id: target.id }, OPTS)) as string
+    expect(w.revokes).toEqual([[target.id]])
+    expect(w.amends).toHaveLength(0)
+    expect(w.captures).toHaveLength(0)
+    // The result names the entry's content so the model can tell the user
+    // what was removed without showing a raw id in prose.
+    expect(result).toBe(`Deleted entry ${target.id}: 2026-08-02 07:45 @ Home — walked the dog`)
+  })
+
+  it('rejects an unknown id without revoking anything', async () => {
+    const w = recordedWriter()
+    const tools = makeTools([entry('2026-08-02T10:00:00-04:00')], [], w.writer)
+    const result = (await tools.delete_entry.execute({ id: 'nope' }, OPTS)) as string
+    expect(result).toBe('(error: no entry with id "nope")')
+    expect(w.revokes).toHaveLength(0)
+  })
+
+  it('rejects a double-delete (already-revoked entry) without revoking again', async () => {
+    const target = entry('2026-08-02T10:00:00-04:00', { revoked: true })
+    const w = recordedWriter()
+    const tools = makeTools([target], [], w.writer)
+    const result = (await tools.delete_entry.execute({ id: target.id }, OPTS)) as string
+    expect(result).toBe(`(error: entry "${target.id}" is already deleted)`)
+    expect(w.revokes).toHaveLength(0)
+  })
+
+  it('reports a failed write as terse error text instead of throwing', async () => {
+    const target = entry('2026-08-02T10:00:00-04:00')
+    const w = recordedWriter()
+    w.writer.revoke = async () => {
+      throw new Error('idb closed')
+    }
+    const tools = makeTools([target], [], w.writer)
+    const result = (await tools.delete_entry.execute({ id: target.id }, OPTS)) as string
+    expect(result).toBe('(error: could not delete entry: idb closed)')
+  })
+
+  it('serializes with a concurrent update_entry on the same id (write chain order)', async () => {
+    // The AI SDK runs one step's tool calls concurrently; a delete racing an
+    // update on the same entry must still resolve deterministically through
+    // the shared enqueueWrite chain rather than interleaving reads/writes.
+    const target = entry('2026-08-02T07:45:00-04:00')
+    const w = recordedWriter()
+    const tools = makeTools([target], [], w.writer)
+    const results = await Promise.all([
+      tools.update_entry.execute({ id: target.id, text: 'edit' }, OPTS),
+      tools.delete_entry.execute({ id: target.id }, OPTS),
+    ])
+    expect(results).toEqual([`Updated entry ${target.id}.`, `Deleted entry ${target.id}: 2026-08-02 07:45 — (empty entry)`])
+    expect(w.amends).toHaveLength(1)
+    expect(w.revokes).toEqual([[target.id]])
   })
 })
