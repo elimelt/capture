@@ -101,7 +101,7 @@ export default function SettingsScreen() {
       <ScreenHeader title="Settings" />
 
       <Section title="Google">
-        <p className={cx(type_.sub, tone.textMuted)}>Drive sync coming in M2.</p>
+        <GoogleSection />
       </Section>
 
       <Section title="Capture">
@@ -254,6 +254,52 @@ export default function SettingsScreen() {
           </p>
         )}
       </Section>
+    </div>
+  )
+}
+
+/** Drive connect/disconnect + manual sync (SPEC §4.3, §8.2). */
+const CONNECTION_LABEL: Record<string, string> = {
+  connected: 'Connected',
+  expired: 'Session expired — reconnect to resume syncing',
+  disconnected: 'Not connected',
+}
+
+function GoogleSection() {
+  const connection = useAppStore((s) => s.driveConnection)
+  const syncing = useAppStore((s) => s.syncing)
+  const connectDrive = useAppStore((s) => s.connectDrive)
+  const disconnectDrive = useAppStore((s) => s.disconnectDrive)
+  const drainSync = useAppStore((s) => s.drainSync)
+  const refreshConnection = useAppStore((s) => s.refreshConnection)
+
+  useEffect(() => {
+    void refreshConnection()
+  }, [refreshConnection])
+
+  const connected = connection === 'connected'
+  return (
+    <div className="flex flex-col gap-3">
+      <p className={cx(type_.sub, tone.textMuted)}>
+        {CONNECTION_LABEL[connection]}
+        {connected && <span className={cx('ml-1', tone.textFaint)}>· Drive file access</span>}
+      </p>
+      <div className="flex gap-2">
+        {connected ? (
+          <>
+            <Button variant="secondary" block disabled={syncing} onClick={() => void drainSync()}>
+              {syncing ? 'Syncing…' : 'Sync now'}
+            </Button>
+            <Button variant="dangerGhost" block onClick={() => void disconnectDrive()}>
+              Disconnect
+            </Button>
+          </>
+        ) : (
+          <Button variant="primary" block disabled={syncing} onClick={() => void connectDrive()}>
+            {connection === 'expired' ? 'Reconnect Google' : 'Connect Google'}
+          </Button>
+        )}
+      </div>
     </div>
   )
 }

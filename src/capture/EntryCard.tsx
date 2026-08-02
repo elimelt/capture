@@ -1,8 +1,10 @@
 import { useRef, useState } from 'react'
 import type { Entry } from '../contract/types'
+import type { SyncStatus } from '../store/db'
 import { Button, Card, IconButton, cx, motion, tone, type_ } from '../ui'
 import { TextSheet } from './TextSheet'
 import { AttachmentBody } from './AttachmentBody'
+import { SyncBadge } from './SyncBadge'
 import { useAudioPlayback } from './useAudioPlayback'
 import { useRecorder, type RecordingResult } from './useRecorder'
 
@@ -19,6 +21,8 @@ function toTimeValue(iso: string): string {
 interface EntryCardProps {
   entry: Entry
   maxClipSec: number
+  /** Drive upload status for this entry's seq (SPEC §8.4); absent = not queued. */
+  syncStatus?: SyncStatus
   onDelete: () => void
   /** New time-of-day "HH:mm" on the entry's own date (B8). */
   onSetTime: (time: string) => void
@@ -32,6 +36,7 @@ interface EntryCardProps {
 export function EntryCard({
   entry,
   maxClipSec,
+  syncStatus,
   onDelete,
   onSetTime,
   onAddNote,
@@ -96,6 +101,9 @@ export function EntryCard({
                 {entry.location.placeLabel}
               </span>
             )}
+            <span className={cx('shrink-0', audio?.durationSec === undefined && 'ml-auto')}>
+              <SyncBadge status={syncStatus} />
+            </span>
             {audio?.durationSec !== undefined && (
               <span className={cx('ml-auto shrink-0 tabular-nums', type_.caption, tone.textFaint)}>
                 {audio.durationSec}s
