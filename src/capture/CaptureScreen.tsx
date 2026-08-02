@@ -2,16 +2,21 @@
 import { useEffect, useRef, useState } from 'react'
 import type { GeoLocation } from '../contract/types'
 import { localDateOf, toLocalIso } from '../contract/time'
+import { reverseGeocode } from '../places/geocode'
 import { useAppStore } from '../store/appStore'
 import { EmptyState, ScreenHeader, Toast, cx, motion } from '../ui'
 import { useRecorder, type RecordingResult } from './useRecorder'
-import { snapshotLocation } from './geo'
+import { needsPlacePrompt, snapshotLocation } from './geo'
 import { usePendingDelete } from './usePendingDelete'
 import { EntryList } from './EntryList'
 import { RecordPanel } from './RecordPanel'
 import { TextSheet } from './TextSheet'
+import { NamePlaceSheet } from './NamePlaceSheet'
 
 type ToastState = { kind: 'captured'; entryId: string } | { kind: 'discarded' }
+
+/** A just-captured entry at a location the user has never named. */
+type PendingPlace = { entryId: string; location: GeoLocation }
 
 export default function CaptureScreen() {
   const entries = useAppStore((s) => s.entries)
@@ -19,6 +24,8 @@ export default function CaptureScreen() {
   const appSettings = useAppStore((s) => s.appSettings)
   const streamSettings = useAppStore((s) => s.streamSettings)
   const capture = useAppStore((s) => s.capture)
+  const amend = useAppStore((s) => s.amend)
+  const addPlace = useAppStore((s) => s.addPlace)
   const revoke = useAppStore((s) => s.revoke)
 
   const recorder = useRecorder()
@@ -26,6 +33,7 @@ export default function CaptureScreen() {
   const [textOpen, setTextOpen] = useState(false)
   const [toast, setToast] = useState<ToastState | null>(null)
   const [here, setHere] = useState<GeoLocation | null>(null)
+  const [pendingPlace, setPendingPlace] = useState<PendingPlace | null>(null)
   const photoInputRef = useRef<HTMLInputElement>(null)
   const tapStartRef = useRef<Date>(new Date())
   const locationRef = useRef<Promise<GeoLocation | undefined>>(Promise.resolve(undefined))
@@ -59,6 +67,38 @@ export default function CaptureScreen() {
     toastTimerRef.current = setTimeout(() => setToast(null), 5000)
   }
 
+  // Places are automatic: if we captured a coordinate the user has never named
+  // (no matching place → no placeLabel), offer to name it. Dismissable — the
+  // entry is already saved, this only enriches it and future captures (§3.4).
+  function maybePromptPlace(event: { id: string; location?: GeoLocation }) {
+    const { location } = event
+    if (location && needsPlacePrompt(location, appSettings.locationEnabled)) {
+      setPendingPlace({ entryId: event.id, location })
+    }
+  }
+
+  async function saveNamedPlace(name: string, radiusM: number) {
+    const pending = pendingPlace
+    if (!pending) return
+    const { entryId, location } = pending
+    setPendingPlace(null)
+    // Best-effort "near …"; never blocks. Reuse any address already on the loc.
+    const address = location.address ?? (await reverseGeocode(location.lat, location.lng))
+    await addPlace({
+      id: crypto.randomUUID(),
+      name,
+      lat: location.lat,
+      lng: location.lng,
+      radiusM,
+      ...(address ? { address } : {}),
+    })
+    // Retro-label the just-captured entry so it reads "Home" immediately.
+    await amend({
+      targets: [entryId],
+      patch: { location: { ...location, placeLabel: name, ...(address ? { address } : {}) } },
+    })
+  }
+
   const commitRef = useRef<(result: RecordingResult) => Promise<void>>(async () => {})
   commitRef.current = async (result: RecordingResult) => {
     const location = await locationRef.current
@@ -75,6 +115,7 @@ export default function CaptureScreen() {
       ],
     })
     showToast({ kind: 'captured', entryId: event.id })
+    maybePromptPlace(event)
   }
 
   // A6: iOS suspends backgrounded PWAs aggressively — commit the in-flight
@@ -123,6 +164,7 @@ export default function CaptureScreen() {
       ],
     })
     showToast({ kind: 'captured', entryId: event.id })
+    maybePromptPlace(event)
   }
 
   async function submitPhoto(file: File) {
@@ -133,6 +175,7 @@ export default function CaptureScreen() {
       attachments: [{ kind: 'photo', blob: file, mimeType: file.type || 'image/jpeg' }],
     })
     showToast({ kind: 'captured', entryId: event.id })
+    maybePromptPlace(event)
   }
 
   async function undoCapture(entryId: string) {
@@ -220,6 +263,14 @@ export default function CaptureScreen() {
           cta="Log entry"
           onSave={(text) => void submitText(text)}
           onClose={() => setTextOpen(false)}
+        />
+      )}
+
+      {pendingPlace && (
+        <NamePlaceSheet
+          address={pendingPlace.location.address}
+          onSave={(name, radiusM) => void saveNamedPlace(name, radiusM)}
+          onClose={() => setPendingPlace(null)}
         />
       )}
 

@@ -3,6 +3,25 @@ import type { GeoLocation } from '../contract/types'
 import { matchPlace } from '../places/match'
 import type { Place } from '../store/places'
 
+/** Default detection radius for a user-named place (metres). */
+export const DEFAULT_PLACE_RADIUS_M = 50
+
+/** Coerce a string-backed radius field to metres: default when empty/invalid, floor 10. */
+export function coerceRadiusM(input: string): number {
+  return Math.max(10, Math.round(Number(input) || DEFAULT_PLACE_RADIUS_M))
+}
+
+/**
+ * True when a just-captured location should prompt "name this place" (§3.4):
+ * a coordinate was captured but matched no existing place (no placeLabel).
+ */
+export function needsPlacePrompt(
+  location: GeoLocation | undefined,
+  locationEnabled: boolean,
+): boolean {
+  return locationEnabled && !!location && !location.placeLabel
+}
+
 export function snapshotLocation(
   places: Place[],
   locationEnabled: boolean,

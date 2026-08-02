@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Place } from '../store/places'
-import { snapshotLocation } from './geo'
+import { DEFAULT_PLACE_RADIUS_M, coerceRadiusM, needsPlacePrompt, snapshotLocation } from './geo'
 
 const home: Place = { id: 'p1', name: 'Home', lat: 40.7, lng: -74, radiusM: 100 }
 
@@ -68,5 +68,40 @@ describe('snapshotLocation', () => {
       },
     })
     expect(await snapshotLocation([home], true)).toBeUndefined()
+  })
+})
+
+describe('coerceRadiusM', () => {
+  it('parses a plain number and rounds decimals', () => {
+    expect(coerceRadiusM('75')).toBe(75)
+    expect(coerceRadiusM('49.6')).toBe(50)
+  })
+
+  it('falls back to the default when empty, zero, or not a number', () => {
+    expect(coerceRadiusM('')).toBe(DEFAULT_PLACE_RADIUS_M)
+    expect(coerceRadiusM('0')).toBe(DEFAULT_PLACE_RADIUS_M)
+    expect(coerceRadiusM('abc')).toBe(DEFAULT_PLACE_RADIUS_M)
+  })
+
+  it('clamps to the 10 m floor', () => {
+    expect(coerceRadiusM('3')).toBe(10)
+    expect(coerceRadiusM('-20')).toBe(10)
+  })
+})
+
+describe('needsPlacePrompt', () => {
+  const at = { lat: 40.7, lng: -74, accuracyM: 12 }
+
+  it('prompts for an unlabelled location when location is enabled', () => {
+    expect(needsPlacePrompt(at, true)).toBe(true)
+  })
+
+  it('never prompts when location is disabled or absent', () => {
+    expect(needsPlacePrompt(at, false)).toBe(false)
+    expect(needsPlacePrompt(undefined, true)).toBe(false)
+  })
+
+  it('never prompts when the location already matched a place', () => {
+    expect(needsPlacePrompt({ ...at, placeLabel: 'Home' }, true)).toBe(false)
   })
 })

@@ -1,6 +1,7 @@
 /** Screen 3 — Settings (SPEC §4.3, M1 subset). */
 import { useEffect, useState } from 'react'
 import { modelLabel } from '../assistant/config'
+import { DEFAULT_PLACE_RADIUS_M, coerceRadiusM } from '../capture/geo'
 import type { SyncResult } from '../store/appStore'
 import { getValidAccessToken } from '../drive/token'
 import { CalendarError, listCalendars } from '../gcal/client'
@@ -35,7 +36,9 @@ export default function SettingsScreen() {
 
   const [pendingPlace, setPendingPlace] = useState<{ lat: number; lng: number } | null>(null)
   const [placeName, setPlaceName] = useState('')
-  const [placeRadius, setPlaceRadius] = useState(150)
+  // String-backed so the field can be momentarily empty while editing without
+  // snapping back to a default; coerced to a number only on save.
+  const [placeRadius, setPlaceRadius] = useState(String(DEFAULT_PLACE_RADIUS_M))
   const [locating, setLocating] = useState(false)
   const [locateError, setLocateError] = useState<string | null>(null)
   const [usage, setUsage] = useState<string | null>(null)
@@ -62,7 +65,7 @@ export default function SettingsScreen() {
         setLocating(false)
         setPendingPlace({ lat: pos.coords.latitude, lng: pos.coords.longitude })
         setPlaceName('')
-        setPlaceRadius(150)
+        setPlaceRadius(String(DEFAULT_PLACE_RADIUS_M))
       },
       () => {
         setLocating(false)
@@ -74,6 +77,7 @@ export default function SettingsScreen() {
 
   async function savePendingPlace() {
     if (!pendingPlace || !placeName.trim()) return
+    const radiusM = coerceRadiusM(placeRadius)
     // Best-effort reverse geocode for a "near …" label; never blocks the save.
     const address = await reverseGeocode(pendingPlace.lat, pendingPlace.lng)
     await addPlace({
@@ -81,7 +85,7 @@ export default function SettingsScreen() {
       name: placeName.trim(),
       lat: pendingPlace.lat,
       lng: pendingPlace.lng,
-      radiusM: placeRadius,
+      radiusM,
       ...(address ? { address } : {}),
     })
     setPendingPlace(null)
@@ -193,8 +197,9 @@ export default function SettingsScreen() {
                   <TextInput
                     type="number"
                     min={10}
+                    inputMode="numeric"
                     value={placeRadius}
-                    onChange={(e) => setPlaceRadius(Number(e.target.value) || 150)}
+                    onChange={(e) => setPlaceRadius(e.target.value)}
                     className="w-24 text-right"
                   />
                 </FieldRow>

@@ -70,6 +70,13 @@ type="file" accept="image/*" capture="environment">`, either an `EmptyState` or
 - **Install nudge (C14):** before the first-ever entry, non-standalone visitors see an
   "Add to Home Screen" hint in the empty state (checks `display-mode: standalone` media
   query and iOS `navigator.standalone`).
+- **Automatic place naming (§3.4):** after every successful capture,
+  `maybePromptPlace(event)` checks `needsPlacePrompt(location, locationEnabled)` (from
+  `geo.ts`) — a location captured at a coordinate matching no saved place (no
+  `placeLabel`) opens `NamePlaceSheet`. Saving calls `addPlace` (with a best-effort
+  `reverseGeocode` "near …" address) and retro-labels the just-captured entry via
+  `amend({ targets: [entryId], patch: { location } })`; skipping just closes the sheet —
+  the entry is already saved.
 
 ### src/capture/RecordPanel.tsx
 
@@ -204,6 +211,21 @@ TextSheetProps)`.
 is disabled while the trimmed text is empty and, on tap, calls `onSave(trimmed)` then
 `onClose()`. Cancel just closes. Built on the shared `Sheet` from `src/ui`.
 
+### src/capture/NamePlaceSheet.tsx
+
+**Purpose:** Prompt shown after capturing at a location the user has never named (§3.4).
+Naming it saves a Place (future captures auto-label) and retro-labels the just-captured
+entry; skipping is always fine — capture never dead-ends.
+
+**Export:** `NamePlaceSheet({ address?, onSave, onClose }: NamePlaceSheetProps)` where
+`onSave: (name: string, radiusM: number) => void`.
+
+**Behavior:** shows an optional "near …" hint under the title, an auto-focused name
+field, and a string-backed radius field (so it can be momentarily empty while editing);
+the radius is coerced only on save via `coerceRadiusM` from `geo.ts` (default
+`DEFAULT_PLACE_RADIUS_M` = 50 m, floor 10 m). "Save place" is disabled until the trimmed
+name is non-empty; both buttons close the sheet.
+
 ### src/capture/LocationSheet.tsx
 
 **Purpose:** Location editor sheet — treats location as an input like note/photo/audio.
@@ -334,8 +356,12 @@ create the immediate-hide effect.
 **Purpose:** Location snapshot at capture time (SPEC §7): concurrent, best-effort, never
 throws.
 
-**Export:** `snapshotLocation(places: Place[], locationEnabled: boolean):
-Promise<GeoLocation | undefined>`.
+**Exports:** `snapshotLocation(places: Place[], locationEnabled: boolean):
+Promise<GeoLocation | undefined>`; `DEFAULT_PLACE_RADIUS_M` (50); `coerceRadiusM(input:
+string): number` — string-backed radius field to metres (default when empty/invalid,
+floor 10, rounded); `needsPlacePrompt(location: GeoLocation | undefined,
+locationEnabled: boolean): boolean` — true when a captured coordinate matched no saved
+place and should trigger `NamePlaceSheet`.
 
 **Behavior:** resolves `undefined` immediately when location is disabled in settings or
 `navigator.geolocation` is missing. Otherwise wraps
@@ -351,7 +377,9 @@ callers can `await` it unconditionally.
 Vitest unit tests for `snapshotLocation`: verifies it resolves `undefined` without
 touching geolocation when disabled, when `navigator.geolocation` is absent, on
 geolocation errors, and on synchronous throws; and that successes round `accuracyM` and
-include `placeLabel` only when the coordinate falls inside a saved place's radius.
+include `placeLabel` only when the coordinate falls inside a saved place's radius. Also
+covers `coerceRadiusM` (parsing, defaulting, 10 m floor) and `needsPlacePrompt`
+(prompts only for enabled, unlabelled locations).
 
 ### src/dayview/DayScreen.tsx
 
