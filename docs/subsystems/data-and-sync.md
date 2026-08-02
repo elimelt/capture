@@ -105,10 +105,12 @@ Stage by stage:
    `'record-pending'` when there are no attachments).
 3. **Sync cycle.** `drainSync` runs only from the manual "Sync now" button in
    Settings — sync is user-initiated, so Drive is contacted only on an explicit
-   ask. With a valid token it runs one **pull-then-push** cycle: first
-   `pullStream(token, stream)` (`src/drive/pull.ts`, §3) imports remote events, then
-   `drainStream(token, stream)` (`src/drive/queue.ts`) processes pending rows **in
-   seq order** so the Drive log commits monotonically.
+   ask. With a valid token it loops over **every registered stream**
+   (`allSyncStreams()` — see §2a) and runs one **pull-then-push** cycle per
+   stream: first `pullStream(token, stream)` (`src/drive/pull.ts`, §3) imports
+   remote events, then `drainStream(token, stream)` (`src/drive/queue.ts`)
+   processes pending rows **in seq order** so the Drive log commits
+   monotonically.
 4. **Drive tree + commit.** On first use (or a cache miss) the drainer runs
    `ensureTree` (`bootstrap.ts`): `timebox/` root, `streams.json`, and per stream a
    folder with `config.json`/`checkpoint.json` stubs, `log/`, and `results/` —
@@ -123,6 +125,48 @@ Stage by stage:
 
 After a successful upload, local audio blobs are pruned unless the stream's
 `keepAudioLocally` setting says otherwise.
+
+## 2a. Multi-stream sync: capture streams + system streams
+
+`drainSync` syncs **every registered stream on every cycle**, not just the one on
+screen. The stream list is `allSyncStreams()` (`src/streams/registry.ts`):
+`SYSTEM_STREAMS` (`'settings'`, `'assistant-chats'`) first, then every
+`BUILTIN_STREAMS` id. System streams are append-only event logs with no capture
+UI, no skill, and no `StreamDefinition` — they exist so app-level state syncs
+through the same engine (their event conventions land separately). This is an
+intentional behavior change from the single-stream era: "Sync now" covers
+everything, which is required for system streams (never `currentStreamId`) and a
+strict improvement for any future second capture stream.
+
+The loop is pure orchestration in `appStore.drainSync` — every engine primitive
+it calls (`pullStream`, `drainStream`, and inside them `ensureTree`, the
+per-stream changes cursor, id allocation) was already stream-parameterized, so
+nothing in `src/drive/` changed. Rules:
+
+- **Per stream: pull, then push**, exactly as before; each stream gets a
+  `StreamSyncResult { stream, outcome, uploaded, pulled, error? }` in the
+  returned `SyncResult.perStream`, and the aggregate `SyncResult` is the
+  worst-of outcome with summed counts.
+- **Failure isolation.** A `'reconnect'` (401/403) on any stream aborts the rest
+  of the cycle immediately — the token is dead for every stream — and the
+  skipped streams are marked `'reconnect'` in `perStream`. A `'retry-later'` or
+  `'error'` on one stream does **not** block the others: each stream's Drive
+  folders, row backoff state, and `drive:changes:<stream>` cursor are
+  independent.
+- **Per-stream `lastSyncAt`.** Each stream's stamp is written only when *that
+  stream's* pull+push completed cleanly (`idle`/`drained`), regardless of what
+  happened to other streams in the same cycle.
+- **Idle streams are cheap.** A stream with zero pending rows costs no
+  upload-side Drive calls at all (`drainStream` returns before touching the
+  tree), and its pull is the usual one `changes.list` request — so registering
+  the empty system streams adds almost nothing to a cycle (regression-guarded in
+  `src/drive/queue.test.ts`).
+
+For the Settings status line, `refresh()` also computes an aggregate
+`globalSyncSummary`: pending/error counts summed over all streams' sync rows,
+plus `lastSyncAt` = the **oldest** per-stream stamp — the conservative
+"everything is synced as of" figure — or `null` while any stream has never
+completed a clean cycle.
 
 ## 3. Pull path: Drive → IndexedDB (bidirectional sync)
 
@@ -164,13 +208,14 @@ local log: `listEntries(stream)` = `fold(listEvents(stream))`, cached in the app
 store as `entries: Entry[]` alongside `syncStatuses` (per-event-id upload state for
 the status badges) and `lastSyncAt` (persisted per stream in the `meta` store via
 `getLastSyncAt`/`setLastSyncAt`, stamped only after a clean pull+push cycle). Every
-write action ends in `refresh()`, which recomputes all three — the store never
-mutates cached entries in place. Settings renders a local-only rollup of these:
-`summarizeSyncStatuses` (`src/store/events.ts`) counts pending/errored sync rows
-and surfaces the latest error message, and the status line shows "Out of sync"
-whenever anything is pending or errored or no clean cycle has ever completed, plus
-"Last synced …" / "Never synced" — visibility in place of automatic background
-sync. Skills perform the mirror-image read on the Drive side: list `log/`
+write action ends in `refresh()`, which recomputes all of them — the store never
+mutates cached entries in place. Settings renders a local-only rollup across every
+registered stream: `refresh()` also computes `globalSyncSummary`
+(`summarizeSyncStatuses` over all streams' sync rows + the oldest per-stream
+`lastSyncAt`, §2a), and the status line shows "Out of sync" whenever anything is
+pending or errored on any stream or any stream has never completed a clean cycle,
+plus "Last synced …" / "Never synced" — visibility in place of automatic
+background sync. Skills perform the mirror-image read on the Drive side: list `log/`
 partitions past their checkpoint, parse records, and run the same fold.
 
 ## 5. Auth lifecycle and failure model
@@ -206,12 +251,15 @@ consumes:
 
 Backoff is exponential per row: `min(30s × 4^(attempts−1), 1h)` — 30s, 2m, 8m, …
 capped at an hour; rows whose `nextRetryAt` is in the future are skipped, and auth
-errors bypass backoff entirely. `drainSync` merges the pull and push outcomes
-worst-of (`idle < drained < retry-later < reconnect < error`), and a pull
-`'reconnect'` skips the push (the token is dead either way). A fully clean cycle
-(`idle`/`drained`) stamps `lastSyncAt`; reconnect/retry-later/error outcomes leave
-it untouched. Offline is not a special case: capture works fully offline, and the
-cycle simply runs on the next manual "Sync now" that finds a valid token.
+errors bypass backoff entirely. `drainSync` merges each stream's pull and push
+outcomes worst-of (`idle < drained < retry-later < reconnect < error`), then the
+per-stream outcomes worst-of into the aggregate; a `'reconnect'` anywhere skips
+that stream's push and aborts the remaining streams (the token is dead either
+way), while retry-later/error stay stream-local (§2a). A stream's fully clean
+cycle (`idle`/`drained`) stamps *its* `lastSyncAt`; reconnect/retry-later/error
+outcomes leave it untouched. Offline is not a special case: capture works fully
+offline, and the cycle simply runs on the next manual "Sync now" that finds a
+valid token.
 
 ## 6. Idempotency and crash safety
 
@@ -283,9 +331,10 @@ Within this subsystem the dependency direction is strictly one-way:
   external skills and stays domain-free (no timelog fields in the event schema).
 - `streams/` imports only `contract` types; adding a stream is a registry entry,
   not an engine change.
-- `store/` imports `contract` (fold, filenames, serial types) and `drive`
-  (auth/token/queue for the appStore wiring); it stores assistant chats as opaque
-  `unknown[]` precisely to avoid importing `assistant/`.
+- `store/` imports `contract` (fold, filenames, serial types), `drive`
+  (auth/token/queue for the appStore wiring), and `streams`
+  (`allSyncStreams()` for the multi-stream sync loop); it stores assistant chats
+  as opaque `unknown[]` precisely to avoid importing `assistant/`.
 - `drive/` imports `contract` (file serializers, filenames) and `store` (event
   repo — including `importEvents` for pulls — and meta store); its only inbound
   consumers are `store/appStore.ts` and `App.tsx` (the reconnect pill).

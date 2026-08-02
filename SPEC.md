@@ -145,6 +145,16 @@ add more. The storage schema, Drive layout, upload queue, and capture component 
 nonetheless keyed by `stream.id` from day one, so a second stream is configuration plus
 a skill prompt — not a migration.
 
+**Capture streams vs system streams.** The streams above are *capture* streams: the
+user logs into them through the capture UI, and a skill interprets them. The app also
+owns **system streams** — append-only event logs with no capture UI, no skill, and no
+`Stream` definition, used to sync app-level state through the exact same log + Drive
+engine (`settings` and `assistant-chats` are registered; their event conventions ship
+separately). System streams reuse the generic event envelope (§3.3), folder layout
+(§5.1), and upload/pull engines (§8.4/§8.5) unchanged; they are never the on-screen
+capture stream, so every sync cycle covers **all registered streams** (system +
+capture), not just the current one.
+
 | Generic (stream-agnostic) | Domain-specific (per stream) |
 |---|---|
 | Event envelope + attachments (§3.3) | Interpretation (the skill prompt, §6) |
@@ -696,8 +706,12 @@ user's assistant, authorized separately by the user in that product.
 ### 8.4 Upload engine (stream-agnostic)
 
 1. Event saved → IndexedDB (blobs + event record, keyed by stream) → status `queued`.
-2. Queue drains: on manual "Sync now" only. Sequential uploads into the event's
-   stream/date partition, following the atomic append protocol
+2. Queue drains: on manual "Sync now" only, which runs one pull-then-push cycle for
+   **every registered stream** (system streams first, then capture streams — §3.1);
+   this is intentional: system streams are never the on-screen stream, and it is a
+   strict improvement for any future second capture stream. A stream with nothing
+   queued costs no upload-side Drive calls at all. Per stream: sequential uploads
+   into the event's stream/date partition, following the atomic append protocol
    (§5.2): attachments first (resumable upload for anything > 5 MB — rare for audio;
    possible for photos), the event record `.json` last — the record is the commit.
 3. Uploads are idempotent by **pre-generated file id**: ids are minted client-side
@@ -714,8 +728,9 @@ user's assistant, authorized separately by the user in that product.
 ### 8.5 Pull engine (Drive → local; bidirectional sync)
 
 The local IndexedDB is a **replica** of the Drive log, not the source of truth. Every
-sync cycle runs **pull, then push** (same trigger as §8.4 — manual "Sync now"), so a
-second device — or a reinstalled/wiped one — converges on the full log:
+sync cycle runs **pull, then push, per registered stream** (same trigger as §8.4 —
+manual "Sync now"; same stream loop, so system streams converge too), so a second
+device — or a reinstalled/wiped one — converges on the full log:
 
 1. **Discover by filename, triggered by the Changes API.** One `changes.list`
    request from a per-stream cursor persisted in local meta says which partitions
@@ -742,6 +757,13 @@ second device — or a reinstalled/wiped one — converges on the full log:
    order (§3.3), with no coordination and no conflict state. Re-pulling is idempotent.
 5. Failures classify exactly as §8.4: 401/403 → reconnect pill; 429/5xx → retry later;
    a partial pull keeps everything already imported.
+6. **Per-stream failure isolation.** A 401/403 on any stream aborts the remainder of
+   the cycle (the token is dead for every stream); a retry-later or error on one
+   stream never blocks the others — each stream's Drive folders, backoff state, and
+   changes cursor are independent. `lastSyncAt` is stamped per stream, only when
+   that stream's own pull+push completed cleanly; Settings shows the aggregate
+   (pending/errors summed across streams, "last synced" = the **oldest** per-stream
+   stamp, "never synced" while any stream lacks one).
 
 ---
 
