@@ -38,19 +38,21 @@ remove the splash, or the UI stays hidden behind it. `init()` sets `ready` in a
 
 Four screens, one route table in `App.tsx`, one fixed bottom tab bar:
 
-| Route | Screen | Notes |
-| --- | --- | --- |
-| `/` | Capture (`src/capture/CaptureScreen`) | Screen 1; voice-first capture + today's entries |
-| `/day`, `/day/:date` | Day view (`src/dayview/DayScreen`) | Screen 2; merged per-day timeline of entries + calendar pseudo-entries, prev/next-day nav via the route param |
-| `/chat` | Chat (`src/assistant/ChatScreen`) | Opt-in; `lazy()`-loaded; guarded — redirects to `/` unless `assistantEnabled` |
-| `/settings` | Settings (`src/settings/SettingsScreen`) | Screen 3; Google (Drive + target-calendar picker), capture, location/places, assistant, notifications, data |
+| Route | Screen | Tab label | Notes |
+| --- | --- | --- | --- |
+| `/` | Capture (`src/capture/CaptureScreen`) | Capture | Screen 1; voice-first capture + today's entries |
+| `/day`, `/day/:date` | Day view (`src/dayview/DayScreen`) | Today | Screen 2; merged per-day timeline of entries + calendar pseudo-entries, prev/next-day nav via the route param |
+| `/chat` | Chat (`src/assistant/ChatScreen`) | Recall | Opt-in; `lazy()`-loaded; guarded — redirects to `/` unless `assistantEnabled` |
+| `/settings` | Settings (`src/settings/SettingsScreen`) | Settings | Screen 3; Google (Drive + target-calendar picker), capture, location/places, assistant, notifications, data |
 
-Unknown paths redirect to `/`. The Chat tab is filtered out of the tab bar unless the
-assistant is enabled, and its chunk (AI SDK + markdown) is never downloaded by users
-who never enable it. Navigation is flat — tabs only, no nested routers or stacks;
-"drill-down" interactions (text entry, location editing, chat history) are modal
-bottom sheets, not routes. Deployment supports deep links by copying `index.html` to
-`404.html` on GitHub Pages.
+Tab labels (issue #84: "Day" → "Today", "Chat" → "Recall") are cosmetic only — routes,
+component/file names, and the SW chunk-name coupling below are all label-independent
+and frozen; see `src/navTabs.ts`. Unknown paths redirect to `/`. The Recall tab is
+filtered out of the tab bar unless the assistant is enabled, and its chunk (AI SDK +
+markdown) is never downloaded by users who never enable it. Navigation is flat — tabs
+only, no nested routers or stacks; "drill-down" interactions (text entry, location
+editing, chat history) are modal bottom sheets, not routes. Deployment supports deep
+links by copying `index.html` to `404.html` on GitHub Pages.
 
 Beyond routing, `App.tsx` owns the app-level lifecycle: on `visibilitychange`
 (visible) it only calls `refresh()` — re-reading local state so the entry list and

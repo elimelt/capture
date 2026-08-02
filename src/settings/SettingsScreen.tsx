@@ -256,8 +256,8 @@ export default function SettingsScreen() {
                 </span>
               </FieldRow>
               <p className={cx(type_.sub, tone.textMuted)}>
-                Chat runs against llm.elimelt.com and reads your log on demand through read-only
-                tools. Nothing is stored server-side.
+                Recall runs against llm.elimelt.com and reads your log on demand through
+                read-only tools. Nothing is stored server-side.
               </p>
             </>
           )}

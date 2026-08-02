@@ -975,9 +975,11 @@ separable by construction.
 
 ### 10.1 In-app AI assistant (fully opt-in)
 
-- Off by default (`AppSettings.assistantEnabled`). The Chat tab and route only
-  exist once enabled, the chat bundle is lazy-loaded, and no request leaves the
-  device until the user sends a message.
+- Off by default (`AppSettings.assistantEnabled`). The "Recall" tab (`/chat`
+  route; the route path and component/chunk names are unchanged by the tab's
+  label — see `src/navTabs.ts`) only exists once enabled, the chat bundle is
+  lazy-loaded, and no request leaves the device until the user sends a
+  message.
 - Endpoint: `https://llm.elimelt.com/v1` — OpenAI-compatible, CORS-gated to the
   app origin, no API key. Model is user-selectable from a curated list
   (`AppSettings.assistantModel`, default `gpt-oss:20b`).
