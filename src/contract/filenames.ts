@@ -35,6 +35,7 @@ const EXT_BY_MIME: Record<string, string> = {
   'image/jpeg': 'jpg',
   'image/png': 'png',
   'image/heic': 'heic',
+  'application/json': 'json',
 }
 
 const SUFFIX_BY_KIND: Record<AttachmentKind, string> = {

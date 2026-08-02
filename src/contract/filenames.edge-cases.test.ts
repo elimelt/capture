@@ -67,6 +67,10 @@ describe('idOfRecordName parsing', () => {
     expect(idOfRecordName('000001_2026-08-02T09-00-00-0400_abc123.m4a')).toBeNull()
     expect(idOfRecordName('000001_2026-08-02T09-00-00-0400_abc123_note.txt')).toBeNull()
     expect(idOfRecordName('000001_2026-08-02T09-00-00-0400_abc123_photo.jpg')).toBeNull()
+    // JSON text attachments (system-stream payloads) end in .json like event
+    // records do; the _note suffix must keep them out of pull discovery.
+    expect(idOfRecordName('000001_2026-08-02T09-00-00-0400_abc123_note.json')).toBeNull()
+    expect(idOfRecordName('000001_2026-08-02T09-00-00-0400_abc123_note2.json')).toBeNull()
   })
 
   it('returns null for foreign files', () => {
@@ -122,6 +126,18 @@ describe('attachmentFileName', () => {
     expect(attachmentFileName(base, 'photo', 'image/jpeg')).toBe('000001_x_aaaaaa_photo.jpg')
     expect(attachmentFileName(base, 'photo', 'image/png')).toBe('000001_x_aaaaaa_photo.png')
     expect(attachmentFileName(base, 'photo', 'image/heic')).toBe('000001_x_aaaaaa_photo.heic')
+    expect(attachmentFileName(base, 'text', 'application/json')).toBe('000001_x_aaaaaa_note.json')
+  })
+
+  it('round-trips application/json text attachments (system-stream payloads)', () => {
+    // JSON payload attachments (settings / assistant-chat events) must not
+    // fall back to .bin: the Drive tree stays legible as .json.
+    const name = attachmentFileName('000007_x_bbbbbb', 'text', 'application/json')
+    expect(name.endsWith('.json')).toBe(true)
+    expect(name).toBe('000007_x_bbbbbb_note.json')
+    expect(attachmentFileName('base', 'text', 'application/json; charset=utf-8')).toBe(
+      'base_note.json',
+    )
   })
 
   it('uses .bin for unknown mime types', () => {

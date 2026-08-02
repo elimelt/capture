@@ -27,7 +27,10 @@ events, never as mutation of earlier files.
 Defines **streams** (SPEC §3.1): named capture profiles that parameterize the rest of
 the app (storage, upload queue, capture UI). v1 hardcodes a single built-in stream,
 `timelog` (audio-first, 60-second max clip). Adding a stream is intended to be a
-registry entry plus a skill prompt — no engine changes.
+registry entry plus a skill prompt — no engine changes. The registry also names the
+**system streams** (`settings`, `assistant-chats`) — event logs with no capture UI
+and no `StreamDefinition` — and exposes `allSyncStreams()`, the full stream list one
+sync cycle covers.
 
 ---
 
@@ -139,7 +142,10 @@ Key exports:
   `index > 0` (0-based index 1 renders as `2`, e.g. `_photo2`), and an extension
   mapped from the mime type (`audio/mp4`→`m4a`, `audio/webm`→`webm`,
   `audio/mpeg`→`mp3`, `text/plain`→`txt`, `image/jpeg`→`jpg`, `image/png`→`png`,
-  `image/heic`→`heic`; unknown → `bin`). Mime parameters after `;` are ignored.
+  `image/heic`→`heic`, `application/json`→`json` — for system-stream JSON payload
+  attachments, which stay legible in Drive and, thanks to the `_note` suffix, never
+  collide with event-record names; unknown → `bin`). Mime parameters after `;` are
+  ignored.
 - `partitionOf(e: Pick<LogEvent, 'loggedAt'>): string` — the date partition folder:
   local date of `loggedAt`.
 - `seqOfFilename(name: string): number` — parses the leading seq via
@@ -259,7 +265,9 @@ while rejecting attachments and foreign files.
 Additional edge case coverage: filename sort order invariant under randomized input,
 large seq numbers (7+ digits), parsing robustness for foreign files and folders,
 timestamp sanitization for all timezone formats including Z suffix, and exhaustive
-attachment extension mapping.
+attachment extension mapping — including the `application/json` → `.json` mapping
+and the guard that `_note.json` attachment names never parse as event records via
+`idOfRecordName`.
 
 ### src/contract/files.test.ts
 
@@ -322,8 +330,19 @@ Key exports:
 - `TIMELOG_STREAM: StreamDefinition` — `id: 'timelog'`, `displayName: 'Timelog'`,
   `primaryAttachmentKind: 'audio'`, `maxClipSec: 60`.
 - `BUILTIN_STREAMS: StreamDefinition[]` — currently `[TIMELOG_STREAM]`.
+- `SYSTEM_STREAMS: readonly string[]` — `['settings', 'assistant-chats']`: stream
+  ids the sync engine drains/pulls that are never the active capture stream and
+  deliberately have no `StreamDefinition` (no capture UI, no
+  `primaryAttachmentKind`, no skill). Their event-sourcing conventions live in
+  app-level modules; the registry only lists the ids so the sync loop covers them,
+  keeping this file a pure generic-layer data file (it imports nothing from
+  `settings/` or `assistant/` — the layering test enforces this).
+- `allSyncStreams(): string[]` — every stream one sync cycle covers:
+  `SYSTEM_STREAMS` first, then the `BUILTIN_STREAMS` ids. Consumed by
+  `src/store/appStore.ts#drainSync` (SPEC §8.4/§8.5).
 - `getStream(id: string): StreamDefinition` — looks up in `BUILTIN_STREAMS`;
-  **throws** `Error('Unknown stream: <id>')` for unknown ids (no undefined return).
+  **throws** `Error('Unknown stream: <id>')` for unknown ids (no undefined
+  return) — including system-stream ids, which are not capture streams.
 
 Relations: imports `AttachmentKind` from `src/contract/types`. Downstream systems
 (storage, queue, capture UI) key off `StreamDefinition.id`; adding a stream here is
@@ -332,7 +351,9 @@ meant to require no engine changes.
 ### src/streams/registry.test.ts
 
 Verifies `getStream` returns the timelog definition by id and throws for unknown
-ids, and that `BUILTIN_STREAMS` contains the timelog stream.
+ids (system-stream ids included), that `BUILTIN_STREAMS` contains the timelog
+stream, and that `allSyncStreams()` covers every system + builtin stream in a
+stable, duplicate-free order (system streams first).
 
 ---
 

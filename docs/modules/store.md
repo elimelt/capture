@@ -25,12 +25,15 @@ and `set()`s the new snapshot → components re-render. The store never mutates 
 entries in place; the entry list is always recomputed by folding the local log
 (`fold` from `src/contract`). Sync is manual-only and driven by the same store: appends
 enqueue a `sync` row, and `drainSync` — whose sole caller is the "Sync now" button in
-Settings — runs one pull-then-push cycle: `src/drive/pull` imports remote events first,
-then `src/drive/queue` drains pending rows.
+Settings — runs one pull-then-push cycle **per registered stream**
+(`allSyncStreams()` from `src/streams/registry`, covering system streams like
+`settings`/`assistant-chats` as well as capture streams): `src/drive/pull` imports
+remote events first, then `src/drive/queue` drains pending rows.
 
 Per SPEC §10's layering rule, `store/` is stream-agnostic: it imports only from
-`src/contract` and `src/drive`, never from `gcal/`, `dayview/`, or `assistant/`
-(assistant chat messages are stored opaquely as `unknown[]` for this reason).
+`src/contract`, `src/streams`, and `src/drive`, never from `gcal/`, `dayview/`, or
+`assistant/` (assistant chat messages are stored opaquely as `unknown[]` for this
+reason).
 
 ## File-by-file
 
@@ -222,22 +225,36 @@ and the store refresh that reveals the persisted attachment).
 
 The single Zustand store (`useAppStore = create<AppState>()(...)`) the UI reads. State:
 `ready` (boot splash gate), `currentStreamId` (initial `'timelog'`), `entries: Entry[]`,
-`syncStatuses: Map<string, SyncStatusRow>` (keyed by event id), `lastSyncAt: string |
-null` (when the last full pull+push cycle completed cleanly; null = never synced),
-`places: Place[]`, `appSettings`, `streamSettings`, `lastError: string | null` (toast
-channel), `driveConnection: DriveConnection` (`src/drive/token`; drives the reconnect
-pill, SPEC §8.2), `syncing` (sync cycle in flight), and the storage-space snapshot —
-`localSpace: LocalSpaceEstimate | null` (null = unsupported or not yet loaded) and
-`appSpace: AppSpace | null` (both from `space.ts`, set by `refreshSpace`).
+`syncStatuses: Map<string, SyncStatusRow>` (keyed by event id; current stream only),
+`lastSyncAt: string | null` (when the current stream's last clean pull+push cycle
+completed; null = never synced), `globalSyncSummary: GlobalSyncSummary` (aggregate
+across all registered streams — see below), `places: Place[]`, `appSettings`,
+`streamSettings`, `lastError: string | null` (toast channel), `driveConnection:
+DriveConnection` (`src/drive/token`; drives the reconnect pill, SPEC §8.2), `syncing`
+(sync cycle in flight), and the storage-space snapshot — `localSpace:
+LocalSpaceEstimate | null` (null = unsupported or not yet loaded) and `appSpace:
+AppSpace | null` (both from `space.ts`, set by `refreshSpace`).
 
-Also exports `interface SyncResult { outcome: DrainOutcome; uploaded; pulled: number;
-error? }` — the combined result of one pull-then-push cycle, consumed by the Settings
-"Sync now" label.
+Also exports:
+
+- `interface StreamSyncResult { stream; outcome: DrainOutcome; uploaded; pulled:
+  number; error? }` — one stream's slice of a sync cycle.
+- `interface SyncResult { outcome: DrainOutcome; uploaded; pulled: number; error?;
+  perStream: StreamSyncResult[] }` — the aggregate result of one cycle over every
+  registered stream (worst-of outcome, summed counts), consumed by the Settings
+  "Sync now" label.
+- `interface GlobalSyncSummary { pending; errors: number; lastError?; lastSyncAt:
+  string | null }` — pending/error counts summed over **all** registered streams'
+  sync rows plus the **oldest** per-stream `lastSyncAt` (the conservative
+  "everything synced as of" moment; `null` while any stream has never completed a
+  clean cycle). Computed by a private `summarizeGlobalSync()` inside `refresh()`;
+  rendered by Settings' `SyncStatusLine`.
 
 Actions:
 
-- Loaders — `refresh(streamId?)` (re-lists entries, sync statuses, and `lastSyncAt`,
-  also switches `currentStreamId` when given), `loadPlaces()`, `loadSettings()`,
+- Loaders — `refresh(streamId?)` (re-lists entries, sync statuses, and `lastSyncAt`
+  for the current stream, recomputes the cross-stream `globalSyncSummary`, and
+  switches `currentStreamId` when given), `loadPlaces()`, `loadSettings()`,
   `refreshConnection()`, `refreshSpace()` (re-measures `localSpace` + `appSpace`;
   local-only, called by the Settings Data section on entry and by `wipe`), and
   `init()` which runs the first four in parallel — a local-only
@@ -249,18 +266,24 @@ Actions:
   "Sync now".
 - Drive — `connectDrive()` (user gesture → `connect()` from `src/drive/auth` →
   refresh connection; does **not** sync), `disconnectDrive()` (revokes the stored
-  token), and `drainSync(): Promise<SyncResult>` — one full sync cycle (SPEC
-  §8.4/§8.5), manual-only: the sole caller is the "Sync now" button in Settings.
-  No-op (`'retry-later'`) if already `syncing`; without a valid token it only
-  refreshes connection state (so the reconnect pill can appear) and returns
-  `'reconnect'`; with one it runs **pull then push** — `pullStream(token,
-  currentStreamId)` from `src/drive/pull` first (so local appends land after
-  everything other devices committed; a pull `'reconnect'` flips the pill and skips
-  the push), then `drainStream(token, currentStreamId)` from `src/drive/queue`.
-  The two outcomes merge worst-of (`idle < drained < retry-later < reconnect <
-  error`), `'error'` sets `lastError`, a clean cycle (`idle`/`drained`) persists
-  `lastSyncAt` via `setLastSyncAt`, and entries are refreshed and `syncing`
-  cleared in a `finally`.
+  token), and `drainSync(): Promise<SyncResult>` — one full sync cycle over
+  **every registered stream** (SPEC §8.4/§8.5), manual-only: the sole caller is
+  the "Sync now" button in Settings. No-op (`'retry-later'`) if already `syncing`;
+  without a valid token it only refreshes connection state (so the reconnect pill
+  can appear) and returns `'reconnect'`; with one it loops over
+  `allSyncStreams()` and, per stream, runs **pull then push** —
+  `pullStream(token, stream)` from `src/drive/pull` first (so local appends land
+  after everything other devices committed), then `drainStream(token, stream)`
+  from `src/drive/queue`. Failure isolation: any `'reconnect'` flips the pill and
+  aborts the remaining streams (marked `'reconnect'` in `perStream` — the token
+  is dead for all of them), while `'retry-later'`/`'error'` on one stream never
+  blocks the rest. Each stream's outcomes merge worst-of (`idle < drained <
+  retry-later < reconnect < error`) and the per-stream outcomes merge worst-of
+  into the aggregate; an aggregate `'error'` sets `lastError`; a stream's own
+  clean cycle (`idle`/`drained`) persists *its* `lastSyncAt` via
+  `setLastSyncAt(stream, …)`. Afterwards state is refreshed (`refresh()` +
+  `loadSettings()`, since pulled system-stream events can change settings) and
+  `syncing` is cleared in a `finally`.
 - Places/settings/data — `addPlace`, `removePlace`, `updateSettings`,
   `updateStreamSettings`, `wipe()` (`wipeAll()` then reload, including
   `refreshSpace()` so the Settings storage line never shows the pre-wipe number),
@@ -291,11 +314,16 @@ after `wipeAll`).
 ### src/store/appStore.drive.test.ts
 
 Mocks `src/drive/{auth,queue,pull,token}` to test only the store's Drive wiring:
-`drainSync`'s no-token, pull-then-push success (combined `SyncResult`),
-pull-reconnect (pill flipped, push skipped), pull-error-despite-push-success,
-reconnect, error, and retry-later branches, `lastSyncAt` stamping per outcome
-(stamped after a clean cycle; not on error or reconnect), plus the connect
-(no post-connect sync) and disconnect flows.
+`drainSync`'s no-token and re-entrant branches, the multi-stream loop (every
+registered stream pulled-then-pushed in registry order, counts summed, per-stream
+results reported), failure isolation (a pull or drain `'reconnect'` aborts the
+remaining streams — their mocks are never invoked — and marks them `'reconnect'`;
+`'retry-later'`/`'error'` on one stream never short-circuits the rest),
+worst-of aggregation, per-stream `lastSyncAt` stamping (only streams whose own
+cycle was clean; idle streams stamped too; nothing stamped on an initial
+reconnect), the `globalSyncSummary` rollup (summed pending/errors, oldest
+`lastSyncAt`, `null` while any stream never synced), plus the connect (no
+post-connect sync) and disconnect flows.
 
 ### src/store/events.test.ts
 
@@ -353,11 +381,14 @@ per-stream independence of stream settings.
 - **Upload order matters.** `listPendingSync` returns rows sorted by seq; the drive
   drainer must keep that order so the Drive log commits monotonically, and the
   `phase` field mirrors the attachments-first/record-last commit protocol (SPEC §5.2).
-- **Pull before push.** `drainSync` always runs `pullStream` before `drainStream`;
-  pulled events arrive `uploaded`/`done` so the drainer never re-pushes them.
+- **Pull before push, per stream.** `drainSync` loops over `allSyncStreams()` and
+  always runs `pullStream` before `drainStream` for each; pulled events arrive
+  `uploaded`/`done` so the drainer never re-pushes them. A `'reconnect'` anywhere
+  aborts the remaining streams; `'retry-later'`/`'error'` stays stream-local.
 - **Sync is manual-only.** `drainSync`'s sole caller is the "Sync now" button in
-  Settings — no foreground/online/capture triggers — and `lastSyncAt` is stamped only
-  when a full pull+push cycle completes cleanly (`idle`/`drained`).
+  Settings — no foreground/online/capture triggers — and each stream's `lastSyncAt`
+  is stamped only when that stream's own pull+push cycle completes cleanly
+  (`idle`/`drained`).
 - **Blobs are keyed by contract filename**, computed at append time — the same name is
   used locally and in Drive, which is what makes re-uploads idempotent.
 - **`db.ts` caches the connection**; tests (and anything deleting the database) must

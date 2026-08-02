@@ -9,6 +9,7 @@ import {
   getSyncStatuses,
   listEntries,
   setLastSyncAt,
+  summarizeSyncStatuses,
   wipeAll,
   type NewAttachment,
 } from './events'
@@ -34,13 +35,59 @@ import { connect, disconnect } from '../drive/auth'
 import { getStoredToken } from '../drive/token'
 import { drainStream, type DrainOutcome } from '../drive/queue'
 import { pullStream } from '../drive/pull'
+import { allSyncStreams } from '../streams/registry'
 
-/** Combined result of one sync cycle: pull (Drive → local) then push. */
+/** One stream's slice of a sync cycle: its pull (Drive → local) then push. */
+export interface StreamSyncResult {
+  stream: string
+  outcome: DrainOutcome
+  uploaded: number
+  pulled: number
+  error?: string
+}
+
+/**
+ * Combined result of one sync cycle across every registered stream
+ * (`allSyncStreams()`): worst-of outcome, summed counts, per-stream detail.
+ */
 export interface SyncResult {
   outcome: DrainOutcome
   uploaded: number
   pulled: number
   error?: string
+  perStream: StreamSyncResult[]
+}
+
+/**
+ * Aggregate local sync state across every registered stream, for the Settings
+ * status line: pending/error counts summed over all streams' sync rows, and
+ * the *oldest* per-stream lastSyncAt — the conservative "everything is synced
+ * as of" moment. Null when any stream has never completed a clean cycle.
+ */
+export interface GlobalSyncSummary {
+  pending: number
+  errors: number
+  lastError?: string
+  lastSyncAt: string | null
+}
+
+/** Pending/error rollup + oldest lastSyncAt over all registered streams. */
+async function summarizeGlobalSync(): Promise<GlobalSyncSummary> {
+  const perStream = await Promise.all(
+    allSyncStreams().map(async (stream) => {
+      const [statuses, lastSyncAt] = await Promise.all([
+        getSyncStatuses(stream),
+        getLastSyncAt(stream),
+      ])
+      return { statuses, lastSyncAt }
+    }),
+  )
+  const rows = perStream.flatMap((s) => [...s.statuses.values()])
+  const stamps = perStream.map((s) => s.lastSyncAt)
+  const lastSyncAt = stamps.every((at): at is string => at !== undefined)
+    ? stamps.reduce((oldest, at) => (at < oldest ? at : oldest))
+    : null
+  return { ...summarizeSyncStatuses(rows), lastSyncAt }
 }
 
 /** Worst-of ordering so one cycle reports its most actionable outcome. */
@@ -58,8 +105,10 @@ interface AppState {
   currentStreamId: string
   entries: Entry[]
   syncStatuses: Map<string, SyncStatusRow>
-  /** When the last full pull+push cycle completed cleanly; null = never synced. */
+  /** When the current stream's last clean pull+push cycle completed; null = never. */
   lastSyncAt: string | null
+  /** Aggregate pending/errors/lastSyncAt across all registered streams (Settings). */
+  globalSyncSummary: GlobalSyncSummary
   places: Place[]
   appSettings: AppSettings
   streamSettings: StreamSettings
@@ -87,13 +136,19 @@ interface AppState {
   connectDrive: () => Promise<void>
   disconnectDrive: () => Promise<void>
   /**
-   * One full sync cycle if a valid token exists: pull the remote log first
-   * (so pushes append after everything other devices committed), then drain
-   * the upload queue. Sync is manual-only: the sole caller is the "Sync now"
-   * button in Settings, so Drive is contacted only on an explicit user ask.
-   * Returns the combined outcome so "Sync now" can report it; a
-   * missing/expired token yields 'reconnect' and a re-entrant call yields
-   * 'retry-later'. A clean cycle persists lastSyncAt.
+   * One full sync cycle over *every* registered stream (`allSyncStreams()`)
+   * if a valid token exists — capture streams and system streams alike, since
+   * system streams are never the on-screen stream. Per stream: pull the
+   * remote log first (so pushes append after everything other devices
+   * committed), then drain the upload queue. Failure isolation: a
+   * 'reconnect' on any stream aborts the rest of the cycle (the token is
+   * dead for every stream; the skipped streams are marked 'reconnect' in
+   * `perStream`), while 'retry-later'/'error' on one stream never blocks the
+   * others. Sync is manual-only: the sole caller is the "Sync now" button in
+   * Settings, so Drive is contacted only on an explicit user ask. Returns
+   * the worst-of aggregate outcome with summed counts and per-stream detail;
+   * a missing/expired token yields 'reconnect' and a re-entrant call yields
+   * 'retry-later'. Each stream's clean cycle persists its own lastSyncAt.
    */
   drainSync: () => Promise<SyncResult>
 
@@ -142,17 +197,25 @@ export const useAppStore = create<AppState>()((set, get) => {
     driveConnection: 'disconnected',
     syncing: false,
     lastSyncAt: null,
+    globalSyncSummary: { pending: 0, errors: 0, lastSyncAt: null },
     localSpace: null,
     appSpace: null,
 
     refresh: async (streamId) => {
       const stream = streamId ?? get().currentStreamId
-      const [entries, syncStatuses, lastSyncAt] = await Promise.all([
+      const [entries, syncStatuses, lastSyncAt, globalSyncSummary] = await Promise.all([
         listEntries(stream),
         getSyncStatuses(stream),
         getLastSyncAt(stream),
+        summarizeGlobalSync(),
       ])
-      set({ currentStreamId: stream, entries, syncStatuses, lastSyncAt: lastSyncAt ?? null })
+      set({
+        currentStreamId: stream,
+        entries,
+        syncStatuses,
+        lastSyncAt: lastSyncAt ?? null,
+        globalSyncSummary,
+      })
     },
 
     loadPlaces: async () => {
@@ -206,41 +269,72 @@ export const useAppStore = create<AppState>()((set, get) => {
     }),
 
     drainSync: async () => {
-      if (get().syncing) return { outcome: 'retry-later', uploaded: 0, pulled: 0 }
+      if (get().syncing) return { outcome: 'retry-later', uploaded: 0, pulled: 0, perStream: [] }
       const token = await getValidAccessToken()
       if (!token) {
         // No usable token: reflect expiry so the reconnect pill can appear.
         await get().refreshConnection()
-        return { outcome: 'reconnect', uploaded: 0, pulled: 0 }
+        return { outcome: 'reconnect', uploaded: 0, pulled: 0, perStream: [] }
       }
       set({ syncing: true })
       try {
-        // Pull before push: local appends then land after everything the
-        // remote log already has, and a restored device rehydrates first.
-        const pull = await pullStream(token, get().currentStreamId)
-        if (pull.outcome === 'reconnect') {
-          set({ driveConnection: 'expired' })
-          await get().refresh()
-          return { outcome: 'reconnect', uploaded: 0, pulled: pull.pulled }
-        }
-        const push = await drainStream(token, get().currentStreamId)
-        if (push.outcome === 'reconnect') set({ driveConnection: 'expired' })
+        const perStream: StreamSyncResult[] = []
+        let aborted = false
+        for (const stream of allSyncStreams()) {
+          if (aborted) {
+            // The token is dead for every stream — don't burn more calls;
+            // mark the skipped streams so the UI can show they got no chance.
+            perStream.push({ stream, outcome: 'reconnect', uploaded: 0, pulled: 0 })
+            continue
+          }
+          // Pull before push: local appends then land after everything the
+          // remote log already has, and a restored device rehydrates first.
+          const pull = await pullStream(token, stream)
+          if (pull.outcome === 'reconnect') {
+            perStream.push({ stream, outcome: 'reconnect', uploaded: 0, pulled: pull.pulled })
+            aborted = true
+            continue
+          }
+          const push = await drainStream(token, stream)
+          if (push.outcome === 'reconnect') aborted = true
 
-        const pullOutcome: DrainOutcome = pull.outcome === 'pulled' ? 'drained' : pull.outcome
-        const outcome =
-          OUTCOME_RANK[pullOutcome] > OUTCOME_RANK[push.outcome] ? pullOutcome : push.outcome
-        const error = push.error ?? pull.error
-        if (outcome === 'error' && error) set({ lastError: `Sync failed: ${error}` })
-        // A fully clean cycle (no reconnect/retry/error) marks the log synced.
-        if (outcome === 'idle' || outcome === 'drained') {
-          await setLastSyncAt(get().currentStreamId, toLocalIso(new Date()))
+          const pullOutcome: DrainOutcome = pull.outcome === 'pulled' ? 'drained' : pull.outcome
+          const outcome =
+            OUTCOME_RANK[pullOutcome] > OUTCOME_RANK[push.outcome] ? pullOutcome : push.outcome
+          const error = push.error ?? pull.error
+          // This stream's clean cycle (no reconnect/retry/error) marks *its*
+          // log synced; a failure elsewhere in the loop never blocks it.
+          if (outcome === 'idle' || outcome === 'drained') {
+            await setLastSyncAt(stream, toLocalIso(new Date()))
+          }
+          perStream.push({
+            stream,
+            outcome,
+            uploaded: push.uploaded,
+            pulled: pull.pulled,
+            ...(error ? { error } : {}),
+          })
         }
+        if (aborted) set({ driveConnection: 'expired' })
+
+        // Aggregate: worst-of outcome, summed counts, first stream error.
+        const outcome = perStream.reduce<DrainOutcome>(
+          (worst, r) => (OUTCOME_RANK[r.outcome] > OUTCOME_RANK[worst] ? r.outcome : worst),
+          'idle',
+        )
+        const uploaded = perStream.reduce((n, r) => n + r.uploaded, 0)
+        const pulled = perStream.reduce((n, r) => n + r.pulled, 0)
+        const error = perStream.find((r) => r.error !== undefined)?.error
+        if (outcome === 'error' && error) set({ lastError: `Sync failed: ${error}` })
+        // Re-read local state; pulled system-stream events can change
+        // settings, so the in-memory settings cache reloads too.
         await get().refresh()
-        return { outcome, uploaded: push.uploaded, pulled: pull.pulled, ...(error ? { error } : {}) }
+        await get().loadSettings()
+        return { outcome, uploaded, pulled, ...(error ? { error } : {}), perStream }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
         set({ lastError: `Sync failed: ${message}` })
-        return { outcome: 'error', uploaded: 0, pulled: 0, error: message }
+        return { outcome: 'error', uploaded: 0, pulled: 0, error: message, perStream: [] }
       } finally {
         set({ syncing: false })
       }
