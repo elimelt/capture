@@ -29,9 +29,10 @@ no-ops when offline or disabled).
 - Read-only Google Calendar overlay on the Day view: pick a target calendar in
   Settings and see its events alongside your entries, deep-linking into Google
   Calendar (`calendar.readonly` scope; the app never writes calendar events)
-- Post-capture enrichment: Whisper transcription of audio, vision-LLM
-  captioning of photos — appended as ordinary `amend` events, never
-  overwriting user edits
+- Post-capture enrichment (opt-in, off by default): Whisper transcription of
+  audio, vision-LLM captioning of photos — appended as ordinary `amend`
+  events, never overwriting user edits; turning it on backfills anything
+  captured while it was off
 - Place matching and cached Nominatim reverse geocoding; offline-capable maps
   via runtime-cached OSM tiles
 - Opt-in, lazy-loaded chat assistant: a client-side agent loop over the local

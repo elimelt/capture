@@ -1185,6 +1185,27 @@ Legacy locally-stored conversations are migrated into the stream once, by an
 idempotent IndexedDB upgrade migration guarded by applied-state (not version
 number); the legacy store is retained as a rollback artifact.
 
+### 10.2 Automatic media enrichment (opt-in)
+
+Owner policy (issue #89): **every AI/LLM feature is off by default and opt-in** — this
+applies to §10.1 above and to the background transcription/captioning pipelines
+(`src/transcribe`, `src/vision`) alike, not just the chat assistant.
+
+- Off by default (`AppSettings.enrichmentEnabled`). Captured audio is not sent to
+  `transcribe.elimelt.com` and captured photos are not sent to `llm.elimelt.com` until
+  the user turns this on in Settings.
+- Gated at two independent points (defense in depth): the `src/App.tsx` drain effect
+  only fires while the setting is on, and each runner (`transcribe/runner.ts`,
+  `vision/runner.ts`) independently re-checks the setting and no-ops before any network
+  call — so a future call site that forgets the check still can't leak audio or photos.
+- Turning the setting **off** never deletes transcripts or captions already generated:
+  they are ordinary `amend` attachments in the append-only log (§3.3), never mutated or
+  removed by a settings change.
+- Turning the setting **on** backfills the backlog on the very next drain with no
+  special-casing: planning (`pendingTranscriptions`/`pendingCaptions`) already scans the
+  full event history for attachments that have never been transcribed/captioned,
+  regardless of how long enrichment was off.
+
 ---
 
 ## 11. Failure Modes & Edge Cases

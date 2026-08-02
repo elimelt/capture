@@ -256,9 +256,12 @@ payload (`{ op: 'set' | 'unset', key, value? }`). Effective state is a per-key
 total order as the entry fold), so settings converge across devices with no extra
 tiebreak logic. The stream only ever uses `capture` events (never amend/revoke).
 
-- `interface AppSettings { locationEnabled: boolean; assistantEnabled: boolean; assistantModel: string }`
-  — assistant is opt-in and off by default (SPEC §10.1); defaults
-  `APP_SETTINGS_DEFAULTS = { locationEnabled: true, assistantEnabled: false, assistantModel: 'gpt-oss:20b' }`.
+- `interface AppSettings { locationEnabled: boolean; enrichmentEnabled: boolean; assistantEnabled: boolean; assistantModel: string }`
+  — every AI/LLM feature is opt-in and off by default (owner policy, issue #89):
+  `enrichmentEnabled` gates automatic transcription/captioning
+  (`src/transcribe/runner.ts`, `src/vision/runner.ts`), `assistantEnabled` gates
+  the chat assistant (SPEC §10.1). Defaults
+  `APP_SETTINGS_DEFAULTS = { locationEnabled: true, enrichmentEnabled: false, assistantEnabled: false, assistantModel: 'gpt-oss:20b' }`.
 - `interface StreamSettings { maxClipSec: number; keepAudioLocally: boolean }` —
   defaults `STREAM_SETTINGS_DEFAULTS = { maxClipSec: 60, keepAudioLocally: true }`.
 - `getSettings()` / `saveSettings(next)` / `getStreamSettings(stream)` /
