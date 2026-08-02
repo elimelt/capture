@@ -219,6 +219,9 @@ interface Attachment {
   // audio: Blob + mimeType (audio/mp4 on iOS) + durationSec
   // text:  string (typed or pasted note)
   // photo: Blob + mimeType (image/jpeg|png|heic->jpeg)
+  derivedFrom?: string;        // sibling attachment this was machine-derived
+                               // from (e.g. a transcript's source audio);
+                               // absent = user-created content
 }
 ```
 

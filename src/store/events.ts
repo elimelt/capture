@@ -26,6 +26,8 @@ export interface NewAttachment {
   blob: Blob
   mimeType: string
   durationSec?: number
+  /** Sibling attachment file this was machine-derived from (contract/types). */
+  derivedFrom?: string
 }
 
 interface AppendArgs {
@@ -62,6 +64,7 @@ async function append({ stream, build, attachments = [] }: AppendArgs): Promise<
       file: attachmentFileName(baseName, a.kind, a.mimeType, index),
       mimeType: a.mimeType,
       ...(a.durationSec !== undefined ? { durationSec: a.durationSec } : {}),
+      ...(a.derivedFrom !== undefined ? { derivedFrom: a.derivedFrom } : {}),
     }
   })
   if (event.type === 'capture') event.attachments = attachmentMeta

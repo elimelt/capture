@@ -4,6 +4,7 @@ import CaptureScreen from './capture/CaptureScreen'
 import DayScreen from './dayview/DayScreen'
 import SettingsScreen from './settings/SettingsScreen'
 import { useAppStore } from './store/appStore'
+import { drainTranscriptions } from './transcribe/runner'
 import { Toast, cx, tone, type_ } from './ui'
 
 const TABS = [
@@ -15,6 +16,7 @@ const TABS = [
 export default function App() {
   const init = useAppStore((s) => s.init)
   const refresh = useAppStore((s) => s.refresh)
+  const entries = useAppStore((s) => s.entries)
   const lastError = useAppStore((s) => s.lastError)
   const clearError = useAppStore((s) => s.clearError)
 
@@ -28,6 +30,15 @@ export default function App() {
     document.addEventListener('visibilitychange', onVisible)
     return () => document.removeEventListener('visibilitychange', onVisible)
   }, [init, refresh])
+
+  // Background transcription: whenever entries change (capture, foreground
+  // refresh), transcribe any audio still missing a transcript. Appending the
+  // amend refreshes entries, which re-runs this and finds nothing pending.
+  useEffect(() => {
+    void drainTranscriptions(entries).then((appended) => {
+      if (appended > 0) void refresh()
+    })
+  }, [entries, refresh])
 
   useEffect(() => {
     if (!lastError) return

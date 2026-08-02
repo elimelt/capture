@@ -18,6 +18,7 @@ function orderedLocation(l: GeoLocation): Json {
 function orderedAttachment(a: Attachment): Json {
   const out: Json = { kind: a.kind, file: a.file, mimeType: a.mimeType }
   if (a.durationSec !== undefined) out.durationSec = a.durationSec
+  if (a.derivedFrom !== undefined) out.derivedFrom = a.derivedFrom
   return out
 }
 

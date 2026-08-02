@@ -6,15 +6,21 @@ import { cx, tone, type_ } from '../ui'
 /**
  * Renders an entry's non-audio content (B7): note text inline, photos as
  * thumbnails that expand to a full-screen viewer. Without this the log is
- * write-only — you can't see what you saved.
+ * write-only — you can't see what you saved. Machine transcripts
+ * (derivedFrom set) are the spoken content of the entry, so they render
+ * first and as primary text; user notes stay secondary.
  */
 export function AttachmentBody({ attachments }: { attachments: Attachment[] }) {
-  const notes = attachments.filter((a) => a.kind === 'text')
+  const transcripts = attachments.filter((a) => a.kind === 'text' && a.derivedFrom !== undefined)
+  const notes = attachments.filter((a) => a.kind === 'text' && a.derivedFrom === undefined)
   const photos = attachments.filter((a) => a.kind === 'photo')
-  if (notes.length === 0 && photos.length === 0) return null
+  if (transcripts.length === 0 && notes.length === 0 && photos.length === 0) return null
 
   return (
     <div className="mt-2 flex flex-col gap-2">
+      {transcripts.map((a) => (
+        <NoteText key={a.file} file={a.file} primary />
+      ))}
       {notes.map((a) => (
         <NoteText key={a.file} file={a.file} />
       ))}
@@ -29,7 +35,7 @@ export function AttachmentBody({ attachments }: { attachments: Attachment[] }) {
   )
 }
 
-function NoteText({ file }: { file: string }) {
+function NoteText({ file, primary = false }: { file: string; primary?: boolean }) {
   const [text, setText] = useState<string | null>(null)
   useEffect(() => {
     let stale = false
@@ -42,7 +48,13 @@ function NoteText({ file }: { file: string }) {
   }, [file])
   if (text === null) return null
   return (
-    <p className={cx('whitespace-pre-wrap break-words', type_.body, tone.textSecondary)}>
+    <p
+      className={cx(
+        'whitespace-pre-wrap break-words',
+        type_.body,
+        primary ? tone.textPrimary : tone.textSecondary,
+      )}
+    >
       {text}
     </p>
   )

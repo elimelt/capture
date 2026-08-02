@@ -20,6 +20,11 @@ export interface Attachment {
   file: string
   mimeType: string
   durationSec?: number
+  /**
+   * Filename of the sibling attachment this one was machine-derived from
+   * (e.g. a transcript's source audio). Absent = user-created content.
+   */
+  derivedFrom?: string
 }
 
 interface EventBase {

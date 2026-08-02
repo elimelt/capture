@@ -38,6 +38,26 @@ const AMEND: AmendEvent = {
   patch: { capturedAt: '2026-08-02T08:40:00-04:00' },
 }
 
+/** Machine-derived transcript attached to a prior capture's audio. */
+const TRANSCRIPT_AMEND: AmendEvent = {
+  schema: EVENT_SCHEMA,
+  type: 'amend',
+  id: 'j1k2l3',
+  seq: 44,
+  stream: STREAM,
+  loggedAt: '2026-08-02T09:08:00-04:00',
+  deviceTz: TZ,
+  targets: ['a1b2c3'],
+  attachments: [
+    {
+      kind: 'text',
+      file: '000044_2026-08-02T09-08-00-0400_j1k2l3_note.txt',
+      mimeType: 'text/plain',
+      derivedFrom: '000041_2026-08-02T09-04-11-0400_a1b2c3.m4a',
+    },
+  ],
+}
+
 const REVOKE: RevokeEvent = {
   schema: EVENT_SCHEMA,
   type: 'revoke',
@@ -97,6 +117,30 @@ describe('serializeEvent golden files (SPEC §5.2)', () => {
 `)
   })
 
+  it('serializes a transcript amend byte-for-byte (derivedFrom last)', () => {
+    expect(serializeEvent(TRANSCRIPT_AMEND)).toBe(`{
+  "schema": "capture.event.v1",
+  "type": "amend",
+  "id": "j1k2l3",
+  "seq": 44,
+  "stream": "timelog",
+  "loggedAt": "2026-08-02T09:08:00-04:00",
+  "deviceTz": "America/New_York",
+  "targets": [
+    "a1b2c3"
+  ],
+  "attachments": [
+    {
+      "kind": "text",
+      "file": "000044_2026-08-02T09-08-00-0400_j1k2l3_note.txt",
+      "mimeType": "text/plain",
+      "derivedFrom": "000041_2026-08-02T09-04-11-0400_a1b2c3.m4a"
+    }
+  ]
+}
+`)
+  })
+
   it('serializes a revoke event byte-for-byte', () => {
     expect(serializeEvent(REVOKE)).toBe(`{
   "schema": "capture.event.v1",
@@ -118,6 +162,7 @@ describe('parseEvent round-trips', () => {
   it('round-trips each event type', () => {
     expect(parseEvent(serializeEvent(CAPTURE))).toEqual(CAPTURE)
     expect(parseEvent(serializeEvent(AMEND))).toEqual(AMEND)
+    expect(parseEvent(serializeEvent(TRANSCRIPT_AMEND))).toEqual(TRANSCRIPT_AMEND)
     expect(parseEvent(serializeEvent(REVOKE))).toEqual(REVOKE)
   })
 
