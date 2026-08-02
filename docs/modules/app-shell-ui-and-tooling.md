@@ -21,7 +21,7 @@ This document covers the application shell (`src/App.tsx`, `src/main.tsx`, `src/
 - **Vite** (`vite.config.ts`): React plugin, Tailwind v4 plugin, and `vite-plugin-pwa` with an auto-updating Workbox service worker. The lazy assistant chunk is excluded from precache and runtime-cached instead; Google Fonts, OSM map tiles, and Nominatim geocoding responses are runtime-cached for offline use and to minimise third-party traffic. The same file carries the Vitest config (node environment; live-API integration tests opt-in via `VITEST_INTEGRATION`).
 - **TypeScript**: a solution-style root `tsconfig.json` referencing `tsconfig.app.json` (browser code in `src/`, `vite/client` types only — no node types) and `tsconfig.node.json` (`vite.config.ts`, node types).
 - **npm scripts** (`package.json`): `dev`, `build` (`tsc -b && vite build`), `lint` (oxlint), `preview`, `test` (`vitest run`), `test:integration`, `test:watch`.
-- **Icons**: `scripts/gen-icons.mjs` generates placeholder PNG icons from scratch with zero dependencies.
+- **Icons**: `scripts/gen-icons.mjs` generates the PNG icons from scratch with zero dependencies; `public/icons/icon.svg` is the hand-written SVG favicon with the same database glyph.
 - **Deploy**: `.github/workflows/deploy.yml` tests, builds, and publishes `dist/` to GitHub Pages on pushes to `main`, copying `index.html` to `404.html` as the SPA fallback.
 
 ## File-by-file
@@ -178,7 +178,7 @@ Node project covering only `vite.config.ts`: ES2023, `module: nodenext`, `types:
 
 ### scripts/gen-icons.mjs
 
-Dependency-free generator for placeholder PWA icons (`node scripts/gen-icons.mjs`). Hand-assembles PNGs — CRC32 table, chunk framing, truecolor IHDR, `zlib.deflateSync` IDAT — and draws a slate square with a sky-blue "t" glyph (horizontal bar + stem on a 16-unit grid). Writes `public/icons/icon-192.png` and `icon-512.png`, the files referenced by `index.html` and the PWA manifest in `vite.config.ts`.
+Dependency-free generator for the PWA icons (`node scripts/gen-icons.mjs`). Hand-assembles PNGs — CRC32 table, chunk framing, truecolor IHDR, `zlib.deflateSync` IDAT — and draws a slate square with a sky-blue database-cylinder glyph (top ellipse + three body bands on a 16-unit grid, mirroring `public/icons/icon.svg`, the SVG favicon). Writes `public/icons/icon-192.png` and `icon-512.png`, the files referenced by `index.html` (which prefers the SVG favicon, PNG as fallback and apple-touch-icon) and the PWA manifest in `vite.config.ts`.
 
 ### .github/workflows/ci.yml
 
