@@ -1,9 +1,13 @@
 /**
  * Pull engine (SPEC §8.5): the read half of bidirectional sync. Discovers
- * event records the local replica lacks (by id — filenames carry seq_ts_id,
- * so discovery needs no file reads), downloads each missing record plus every
- * referenced attachment blob (eager: full offline availability), and imports
- * them atomically.
+ * event carriers — per-event records and batched log segments (§5.7) — the
+ * local replica lacks (by id: record names carry seq_ts_id and segment
+ * names carry range_ts_firstId, so discovery needs no file reads), downloads
+ * each missing carrier plus every referenced attachment blob (eager: full
+ * offline availability), and imports them atomically. A segment imports as
+ * a unit — all lines or none, deduped by event id against events already
+ * held (§5.8) — and one malformed line fails the whole partition's import
+ * rather than half-importing silently.
  *
  * Discovery runs off the Drive Changes API: one `changes.list` from a
  * persisted per-stream cursor (changes.ts) tells us which partitions gained
@@ -29,12 +33,14 @@
  * - Re-pulling is idempotent: known ids are skipped, blob writes overwrite
  *   with identical bytes.
  * - Foreign files in the tree (user drops, other tools) are ignored: only
- *   names matching the record pattern inside a YYYY-MM-DD partition under
- *   this stream's log/ ever get read. Removed/trashed changes are ignored
- *   outright — the log is append-only, so deletions never un-import.
+ *   names matching the record or segment pattern inside a YYYY-MM-DD
+ *   partition under this stream's log/ ever get read. Removed/trashed
+ *   changes are ignored outright — the log is append-only, so deletions
+ *   never un-import.
  */
 import { parseEvent } from '../contract/serialize'
-import { idOfRecordName } from '../contract/filenames'
+import { parseSegment } from '../contract/segments'
+import { idOfRecordName, parseSegmentName } from '../contract/filenames'
 import type { Attachment, LogEvent } from '../contract/types'
 import { getBlob, importEvents, listEvents } from '../store/events'
 import {
@@ -77,6 +83,17 @@ function attachmentsOf(event: LogEvent): Attachment[] {
   if (event.type === 'capture') return event.attachments
   if (event.type === 'amend') return event.attachments ?? []
   return []
+}
+
+/**
+ * The discovery id a log filename carries (SPEC §5.8): a record's event id,
+ * or a segment's first-member id — which stands in for every member, since
+ * segments commit and import as a unit, so holding the first event locally
+ * implies holding them all. Null for anything else (attachment, foreign
+ * file, folder).
+ */
+function discoveryIdOf(name: string): string | null {
+  return idOfRecordName(name) ?? parseSegmentName(name)?.firstId ?? null
 }
 
 /**
@@ -163,13 +180,14 @@ async function pullEverything(
 }
 
 /**
- * Which of this stream's partitions gained records we lack, per the changes
- * feed. Only a record-named file whose id isn't local marks its parent
- * partition dirty — so our own pushes (ids already local), attachments
- * (records commit last), foreign files, and removed/trashed entries all
- * produce zero follow-up requests. A record in a partition we haven't cached
- * yet costs one files.get to confirm its parent really is a YYYY-MM-DD
- * folder under this stream's log/ (and warms the cache for the push path).
+ * Which of this stream's partitions gained event carriers we lack, per the
+ * changes feed. Only a record- or segment-named file whose discovery id
+ * isn't local marks its parent partition dirty — so our own pushes (ids
+ * already local), attachments (the carrier commits last), foreign files,
+ * and removed/trashed entries all produce zero follow-up requests. A
+ * carrier in a partition we haven't cached yet costs one files.get to
+ * confirm its parent really is a YYYY-MM-DD folder under this stream's
+ * log/ (and warms the cache for the push path).
  */
 async function dirtyPartitions(
   token: string,
@@ -201,7 +219,7 @@ async function dirtyPartitions(
       continue
     }
 
-    const id = idOfRecordName(file.name)
+    const id = discoveryIdOf(file.name)
     if (id === null || known.has(id)) continue
     // Phase-1 tags identify the stream for free when present; files from
     // older app versions carry none and fall through to parent resolution.
@@ -245,9 +263,12 @@ async function resolvePartition(
 }
 
 /**
- * List one partition and import every record the local replica lacks, plus
- * each referenced attachment blob not already local. Events + blobs commit
- * in one transaction. Returns how many events were imported.
+ * List one partition and import every event the local replica lacks — from
+ * per-event records and from batched segments (§5.7), deduped by event id —
+ * plus each referenced attachment blob not already local. Events + blobs
+ * commit in one transaction; a malformed record or segment line throws
+ * before anything from this partition is imported. Returns how many events
+ * were imported.
  */
 async function importPartition(
   token: string,
@@ -266,24 +287,29 @@ async function importPartition(
   const children = await listChildren(token, partition.id)
   const byName = new Map(children.map((c) => [c.name, c]))
   const missing = children.filter((c) => {
-    const id = idOfRecordName(c.name)
+    const id = discoveryIdOf(c.name)
     return id !== null && !known.has(id)
   })
   if (missing.length === 0) return 0
 
   const events: LogEvent[] = []
   const blobs = new Map<string, Blob>()
-  for (const record of missing) {
-    const event = parseEvent(await readFileText(token, record.id))
-    if (event.stream !== stream) continue
-    for (const att of attachmentsOf(event)) {
-      const child = byName.get(att.file)
-      // Missing on Drive (pruned or push race) or already local: skip.
-      if (!child || (await getBlob(att.file))) continue
-      blobs.set(att.file, await readFileBlob(token, child.id))
+  for (const carrier of missing) {
+    const text = await readFileText(token, carrier.id)
+    const parsed = parseSegmentName(carrier.name) ? parseSegment(text) : [parseEvent(text)]
+    for (const event of parsed) {
+      // Dedupe by id: a segment may overlap events already imported from
+      // another carrier (§5.8); records claiming another stream are skipped.
+      if (event.stream !== stream || known.has(event.id)) continue
+      for (const att of attachmentsOf(event)) {
+        const child = byName.get(att.file)
+        // Missing on Drive (pruned or push race) or already local: skip.
+        if (!child || (await getBlob(att.file))) continue
+        blobs.set(att.file, await readFileBlob(token, child.id))
+      }
+      events.push(event)
+      known.add(event.id)
     }
-    events.push(event)
-    known.add(event.id)
   }
 
   await importEvents(stream, events, blobs)

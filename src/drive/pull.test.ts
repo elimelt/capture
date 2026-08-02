@@ -3,7 +3,13 @@ import { IDBFactory } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DriveError, FOLDER_MIME } from './client'
 import { serializeEvent } from '../contract/serialize'
-import { eventRecordName, attachmentFileName, eventBaseName } from '../contract/filenames'
+import { serializeSegment } from '../contract/segments'
+import {
+  eventRecordName,
+  attachmentFileName,
+  eventBaseName,
+  segmentFileName,
+} from '../contract/filenames'
 import type { CaptureEvent } from '../contract/types'
 import { EVENT_SCHEMA } from '../contract/types'
 
@@ -450,6 +456,144 @@ describe('pullStream', () => {
     drive.fail(null)
     const res = await pullStream('tok', 'timelog')
     expect(res).toEqual({ outcome: 'pulled', pulled: 1 })
+  })
+
+  it('imports a multi-event segment as a unit (SPEC §5.7)', async () => {
+    const a = remoteCapture(1, 'aaaaaa')
+    const b = remoteCapture(2, 'bbbbbb', true)
+    const file = b.attachments[0].file
+    const { partition } = seedRemote([], { [file]: 'audio-bytes' })
+    drive.add(segmentFileName([a, b]), partition, 'application/x-ndjson', serializeSegment([a, b]))
+
+    const { pullStream } = await import('./pull')
+    const res = await pullStream('tok', 'timelog')
+    expect(res).toEqual({ outcome: 'pulled', pulled: 2 })
+
+    const { listEvents, getSyncStatuses, getBlob } = await import('../store/events')
+    expect(await listEvents('timelog')).toEqual([a, b])
+    // Members' attachments were eagerly fetched by their own names.
+    expect(await (await getBlob(file))!.text()).toBe('audio-bytes')
+    // Pulled events are never re-pushed.
+    for (const id of ['aaaaaa', 'bbbbbb']) {
+      expect((await getSyncStatuses('timelog')).get(id)?.status).toBe('uploaded')
+    }
+  })
+
+  it('imports mixed partitions: segments alongside per-event records', async () => {
+    const a = remoteCapture(1, 'aaaaaa')
+    const b = remoteCapture(2, 'bbbbbb')
+    const c = remoteCapture(3, 'cccccc')
+    const { partition } = seedRemote([c]) // c as a plain record
+    drive.add(segmentFileName([a, b]), partition, 'application/x-ndjson', serializeSegment([a, b]))
+
+    const { pullStream } = await import('./pull')
+    const res = await pullStream('tok', 'timelog')
+    expect(res).toEqual({ outcome: 'pulled', pulled: 3 })
+    const { listEvents } = await import('../store/events')
+    expect((await listEvents('timelog')).map((e) => e.id)).toEqual(['aaaaaa', 'bbbbbb', 'cccccc'])
+  })
+
+  it('dedupes a segment overlapping an already-imported single record', async () => {
+    // 'bbbbbb' was already imported as a per-event record; a segment then
+    // arrives whose first member 'aaaaaa' is new but which resends 'bbbbbb'.
+    // (Discovery keys on the segment's *first* member — SPEC §5.8 — so an
+    // overlap at the first member is skipped as already-held wholesale; a
+    // deeper overlap must dedupe line by line.)
+    const a = remoteCapture(1, 'aaaaaa')
+    const b = remoteCapture(2, 'bbbbbb')
+    const { partition } = seedRemote([b])
+    const { pullStream } = await import('./pull')
+    await pullStream('tok', 'timelog') // 'bbbbbb' imported as a single
+
+    drive.add(segmentFileName([a, b]), partition, 'application/x-ndjson', serializeSegment([a, b]))
+
+    const res = await pullStream('tok', 'timelog')
+    expect(res).toEqual({ outcome: 'pulled', pulled: 1 }) // only 'aaaaaa'
+    const { listEvents } = await import('../store/events')
+    expect((await listEvents('timelog')).map((e) => e.id)).toEqual(['aaaaaa', 'bbbbbb'])
+  })
+
+  it('discovers segments through the changes feed', async () => {
+    const { log } = seedRemote([remoteCapture(1, 'aaaaaa')])
+    const { pullStream } = await import('./pull')
+    await pullStream('tok', 'timelog') // cold start + cursor mint
+
+    // Another device pushes a segment into a new partition.
+    const a = { ...remoteCapture(2, 'dddddd'), loggedAt: '2026-08-02T10:00:00-04:00' }
+    const b = { ...remoteCapture(3, 'eeeeee'), loggedAt: '2026-08-02T10:01:00-04:00' }
+    const partition2 = drive.add('2026-08-02', log, FOLDER_MIME)
+    drive.add(segmentFileName([a, b]), partition2, 'application/x-ndjson', serializeSegment([a, b]))
+
+    drive.listChildren.mockClear()
+    const res = await pullStream('tok', 'timelog')
+    expect(res).toEqual({ outcome: 'pulled', pulled: 2 })
+    expect(drive.listChildren).toHaveBeenCalledTimes(1) // just the dirty partition
+
+    const { listEvents } = await import('../store/events')
+    expect((await listEvents('timelog')).map((e) => e.id)).toEqual(['aaaaaa', 'dddddd', 'eeeeee'])
+  })
+
+  it('ignores segment changes whose first member is already local (our own pushes)', async () => {
+    const a = remoteCapture(1, 'aaaaaa')
+    const b = remoteCapture(2, 'bbbbbb')
+    const { partition } = seedRemote([])
+    drive.add(segmentFileName([a, b]), partition, 'application/x-ndjson', serializeSegment([a, b]))
+    const { pullStream } = await import('./pull')
+    await pullStream('tok', 'timelog')
+
+    // A metadata touch re-journals the segment; its first id is local now.
+    const segment = drive.nodes.find((f) => f.name.endsWith('.ndjson'))!
+    drive.touch(segment.id)
+
+    drive.listChildren.mockClear()
+    drive.readFileText.mockClear()
+    const res = await pullStream('tok', 'timelog')
+    expect(res).toEqual({ outcome: 'idle', pulled: 0 })
+    expect(drive.listChildren).not.toHaveBeenCalled()
+    expect(drive.readFileText).not.toHaveBeenCalled()
+  })
+
+  it('fails a malformed segment as a unit — imports none of its lines', async () => {
+    const a = remoteCapture(1, 'aaaaaa')
+    const { partition } = seedRemote([])
+    drive.add(
+      '000001-000002_2026-08-01T10-00-00-0400_aaaaaa.ndjson',
+      partition,
+      'application/x-ndjson',
+      serializeSegment([a]).concat('{nope\n'),
+    )
+
+    const { pullStream } = await import('./pull')
+    const res = await pullStream('tok', 'timelog')
+    expect(res.outcome).toBe('error')
+    expect(res.error).toMatch(/invalid segment line 2/)
+    // Nothing half-imported: not even the valid first line.
+    const { listEvents } = await import('../store/events')
+    expect(await listEvents('timelog')).toEqual([])
+  })
+
+  it('treats a v1 cursor as unusable and walks the full listing once (SPEC §5.8)', async () => {
+    const a = remoteCapture(1, 'aaaaaa')
+    const b = remoteCapture(2, 'bbbbbb')
+    const { partition } = seedRemote([])
+    drive.add(segmentFileName([a, b]), partition, 'application/x-ndjson', serializeSegment([a, b]))
+
+    // A v1 engine persisted its cursor as a bare string — and had already
+    // consumed (and ignored) the segment's change entry.
+    const { getDb } = await import('../store/db')
+    await (await getDb()).put('meta', String(drive.nodes.length + 10), 'drive:changes:timelog')
+
+    const { pullStream } = await import('./pull')
+    const res = await pullStream('tok', 'timelog')
+    expect(res).toEqual({ outcome: 'pulled', pulled: 2 })
+    expect(drive.getStartPageToken).toHaveBeenCalledTimes(1) // cold start walk
+    expect(drive.listChanges).not.toHaveBeenCalled()
+
+    // The fresh cursor is format-2: the next pull is an O(1) no-op.
+    drive.listChildren.mockClear()
+    expect(await pullStream('tok', 'timelog')).toEqual({ outcome: 'idle', pulled: 0 })
+    expect(drive.listChanges).toHaveBeenCalledTimes(1)
+    expect(drive.listChildren).not.toHaveBeenCalled()
   })
 
   it('merges with locally queued events without disturbing their pending status', async () => {
