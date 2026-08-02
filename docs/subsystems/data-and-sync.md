@@ -200,6 +200,42 @@ plus `lastSyncAt` = the **oldest** per-stream stamp — the conservative
 "everything is synced as of" figure — or `null` while any stream has never
 completed a clean cycle.
 
+## 2b. Live progress during a cycle
+
+A manual cycle can push many attachments/records/batched segments across
+several streams and pull remote changes, with nothing to show for it until it
+finishes — an owner directive called this out directly ("syncing has GOT to
+have a progress indicator"). `drainSync` keeps a live `syncProgress:
+SyncProgress | null` (`appStore.ts`) up to date throughout, built by a pure
+reducer, `reduceSyncProgress` (`src/store/syncProgress.ts`, module doc:
+[store.md](../modules/store.md)), from a typed `SyncProgressEvent` stream:
+
+- `drainSync` itself emits `cycle-start` once (with the stream count) and
+  wraps each stream's pull-then-push pair in `stream-start`/`stream-done` — it
+  already owns that loop, so `src/drive/pull`/`src/drive/queue` don't need to
+  know their position across streams.
+- `pullStream` emits `pull-progress` once per imported partition (the
+  cold-start walk or a changes-feed dirty partition) — a page of events, never
+  per event.
+- `drainStream` emits `upload-start` once (the stream's pending count, so the
+  UI can show a determinate bar) and `upload-progress` once per committed
+  batch — a lone record or a whole sealed segment (SPEC §5.7), never per file
+  inside one.
+
+Both `pullStream` and `drainStream` take this `onProgress` callback as an
+**optional** parameter defaulting to a no-op, so every pre-existing call site
+and test is unaffected. `syncProgress` is cleared back to null when the cycle
+ends (`drainSync`'s `finally`, alongside `syncing`) — it is live-only, never
+persisted, and carries no error state of its own: a `'reconnect'`/
+`'retry-later'`/`'error'` outcome still surfaces exactly as before (`lastError`,
+the reconnect pill, `globalSyncSummary`), preserving the rule that failures
+never get a quieter second channel. The Settings screen renders a live label
+(`formatSyncProgress`) and a bar (`ProgressBar`, `src/ui` — determinate once
+`itemsTotal` is known, an indeterminate sweep otherwise) while `syncing`; the
+bottom nav shows the same bar, scaled down, on the Settings tab so progress on
+a long sync stays visible from any screen — not just while Settings itself is
+open (app-shell doc: [app-shell-ui-and-tooling.md](../modules/app-shell-ui-and-tooling.md)).
+
 ## 3. Pull path: Drive → IndexedDB (bidirectional sync)
 
 The local log is a **replica** of the Drive log, not just its source. Every sync

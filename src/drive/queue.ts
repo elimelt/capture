@@ -45,6 +45,7 @@ import {
   listPendingSync,
   putSyncStatus,
 } from '../store/events'
+import type { SyncProgressEvent } from '../store/syncProgress'
 import { DriveError, FOLDER_MIME, createFolder, findFile, uploadFile } from './client'
 import { ensureAccountBound } from './account'
 import { allocateIds } from './ids'
@@ -339,7 +340,11 @@ async function uploadSegment(
  * first use. Stops early (keeping rows queued) on auth or retryable errors so
  * the caller can surface the reconnect pill or schedule a later drain.
  */
-export async function drainStream(token: string, stream: string): Promise<DrainResult> {
+export async function drainStream(
+  token: string,
+  stream: string,
+  onProgress: (event: SyncProgressEvent) => void = () => {},
+): Promise<DrainResult> {
   let pending = await listPendingSync(stream)
   if (pending.length === 0) return { outcome: 'idle', uploaded: 0 }
 
@@ -361,6 +366,8 @@ export async function drainStream(token: string, stream: string): Promise<DrainR
     }
     items.push({ row, event })
   }
+
+  if (items.length > 0) onProgress({ kind: 'upload-start', stream, itemsTotal: items.length })
 
   let uploaded = 0
   let parkedError: string | undefined
@@ -385,6 +392,7 @@ export async function drainStream(token: string, stream: string): Promise<DrainR
         await pruneAudio(stream, event)
         uploaded++
       }
+      onProgress({ kind: 'upload-progress', stream, delta: batch.items.length })
     } catch (err) {
       // A batch fails as a unit: every member row records the attempt.
       if (err instanceof DriveError && err.isAuth) {

@@ -12,9 +12,11 @@ import { reverseGeocode } from '../places/geocode'
 import { NotificationsSection } from './NotificationsSection'
 import { useAppStore } from '../store/appStore'
 import { formatBytes } from '../store/space'
+import { formatSyncProgress, syncProgressFraction } from '../store/syncProgress'
 import {
   Button,
   FieldRow,
+  ProgressBar,
   ScreenHeader,
   Section,
   Select,
@@ -567,6 +569,7 @@ function CalendarPicker() {
 function GoogleSection() {
   const connection = useAppStore((s) => s.driveConnection)
   const syncing = useAppStore((s) => s.syncing)
+  const syncProgress = useAppStore((s) => s.syncProgress)
   const connectDrive = useAppStore((s) => s.connectDrive)
   const disconnectDrive = useAppStore((s) => s.disconnectDrive)
   const drainSync = useAppStore((s) => s.drainSync)
@@ -610,6 +613,12 @@ function GoogleSection() {
           </Button>
         )}
       </div>
+      {connected && syncing && syncProgress && (
+        <div className={cx('flex flex-col gap-1', motion.fadeIn)}>
+          <ProgressBar fraction={syncProgressFraction(syncProgress)} />
+          <p className={cx(type_.caption, tone.textFaint)}>{formatSyncProgress(syncProgress)}</p>
+        </div>
+      )}
       {connected && syncNote && !syncing && (
         <p className={cx(type_.sub, tone.textFaint)}>{syncNote}</p>
       )}
