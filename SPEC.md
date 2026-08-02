@@ -955,7 +955,12 @@ this scenario is the acceptance test for the extensibility invariant (§5.5).
 ## 7. Location
 
 - Snapshot at capture only, via `getCurrentPosition`; never blocks capture; entirely
-  optional (Settings toggle removes all geolocation calls).
+  optional (the Settings `locationEnabled` toggle removes ambient geolocation calls
+  made passively at capture time). Explicit user gestures — "add current location as
+  place" in Settings, "use current location" in the location editor — call geolocation
+  directly regardless of the toggle: an explicit tap is deliberate intent, not passive
+  stamping, and the browser's own permission prompt still gates the actual read either
+  way. Both surface a short error line on failure rather than a silent no-op.
 - Labels come from user-defined Places (§3.4); capturing at an unmatched coordinate
   prompts to name a new place (dismissable), which retro-labels the entry. A best-effort
   reverse geocode (OSM Nominatim) adds a short `address` ("near …") to Places and to a

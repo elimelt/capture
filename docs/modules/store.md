@@ -71,8 +71,9 @@ Key exports:
   crashed drains; absent on rows written by older versions (no migration needed —
   the drainer falls back to find-before-upload for those).
 - `interface Place { id; name; lat; lng; radiusM; address? }`.
-- `interface GeocacheRow { key; address; cachedAt }` — reverse-geocode cache row keyed by
-  a rounded `"lat,lng"` cell (SPEC §7).
+- `interface GeocacheRow { key; address?; cachedAt }` — reverse-geocode cache row keyed
+  by a rounded `"lat,lng"` cell (SPEC §7); `address` is omitted for a cached "no
+  address found" (negative) result, which `places/geocode.ts` expires sooner than a hit.
 - `interface StoredChatRow { id; createdAt; updatedAt; messages: unknown[] }` — a
   **legacy** persisted assistant conversation; live chats are event-sourced in the
   `assistant-chats` stream (see `migrateChatsV1.ts` and `assistant/chatSync.ts`), and
