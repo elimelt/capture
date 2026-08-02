@@ -495,7 +495,9 @@ the folded entry list with results annotations, §3.5).
 - **Skill setup** (per stream): a guided page that (a) shows the skill install
   instructions per provider, (b) renders the stream's canonical skill prompt (§6.2) with
   the user's folder path and calendar choice substituted in, with a copy button.
-- **Data**: open Drive folder link; wipe local data; storage usage — local device
+- **Data**: open Drive folder link; wipe local data (clears the local IndexedDB log,
+  every SW Cache Storage bucket — including the Nominatim/OSM-tile runtime caches — and
+  best-effort revokes the Google OAuth grant, issue #65); storage usage — local device
   usage/quota (`storage.estimate()`) with an app-data breakdown, plus Drive account
   usage/quota and the app's Drive footprint, checked on demand (never polled).
 
@@ -1120,7 +1122,7 @@ chat subscription instead of per-call API keys.
 | Layer | Choice |
 |---|---|
 | Framework | React 18 + TypeScript, Vite |
-| PWA | `vite-plugin-pwa` (Workbox), `registerType: 'autoUpdate'` |
+| PWA | `vite-plugin-pwa` (Workbox), `registerType: 'prompt'` with an in-session update-available reload prompt (issue #61) |
 | State | Zustand (UI) + IndexedDB via `idb` (entries keyed by stream, blobs, queue, places, settings) |
 | Routing | React Router: `/` capture, `/day/:date`, `/settings`, `/chat` (opt-in assistant) |
 | Styling | Tailwind CSS; dark-mode aware; ≥44pt touch targets |

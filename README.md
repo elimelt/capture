@@ -39,7 +39,8 @@ no-ops when offline or disabled).
   log — read tools plus narrow create/update/delete entry tools that append
   ordinary events (delete is a soft-delete revoke) through the store's write
   path; nothing stored server-side
-- Installable PWA with auto-updating service worker and precached app shell
+- Installable PWA with a precached app shell and a service worker that prompts
+  to reload when an update is ready, rather than silently swapping mid-session
 
 ## Tech stack
 

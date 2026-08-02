@@ -11,6 +11,7 @@ import {
   setLastSyncAt,
   summarizeSyncStatuses,
   wipeAll,
+  wipeCaches,
   type NewAttachment,
 } from './events'
 import { deletePlace, listPlaces, savePlace, type Place } from './places'
@@ -421,7 +422,17 @@ export const useAppStore = create<AppState>()((set, get) => {
     }),
 
     wipe: guard('Could not wipe data', async () => {
+      // Best-effort revoke the Google grant first (issue #65) — a wipe is a
+      // privacy reset, so the OAuth consent must not outlive it. Runs before
+      // wipeAll so a mid-wipe failure still leaves the token cleared.
+      const token = await getStoredToken()
+      await disconnect(token?.accessToken)
       await wipeAll()
+      // SW Cache Storage (Nominatim addresses, OSM tiles) is not part of the
+      // IndexedDB log wipeAll clears; drop it too or a "wiped" device still
+      // holds a reconstructible location history.
+      await wipeCaches()
+      set({ driveConnection: 'disconnected' })
       // refreshSpace included so the Settings storage line never shows the
       // pre-wipe number (it used to be measured once on mount and go stale).
       await Promise.all([get().refresh(), get().loadPlaces(), get().refreshSpace()])

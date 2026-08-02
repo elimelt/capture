@@ -300,9 +300,13 @@ export default function SettingsScreen() {
         >
           {wipeArmed ? 'Tap again to wipe everything' : 'Wipe local data'}
         </Button>
-        {wipeArmed && (
+        {wipeArmed ? (
           <p className={cx('mt-2 text-center', type_.caption, tone.textMuted)}>
             Entries not yet synced will be lost permanently.
+          </p>
+        ) : (
+          <p className={cx('mt-2 text-center', type_.caption, tone.textMuted)}>
+            Clears this device's log, caches, and Google connection.
           </p>
         )}
       </Section>
