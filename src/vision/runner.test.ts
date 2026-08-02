@@ -17,12 +17,21 @@ const photoAttachment = () => ({
 
 // The runner keeps module-level state (retry backoff, in-flight drain), so
 // each test gets a fresh module registry and a fresh IndexedDB.
-async function setup() {
+//
+// Enrichment is opt-in and off by default (issue #89); these tests exercise
+// the drain's per-file behavior, so setup() opts in unless a test explicitly
+// asserts the off-by-default gate itself.
+async function setup(options: { enrichmentEnabled?: boolean } = {}) {
   const events = await import('../store/events')
   const db = await import('../store/db')
   const livetext = await import('../store/livetext')
+  const settings = await import('../store/settings')
   const runner = await import('./runner')
-  return { ...events, ...db, ...runner, liveCaptions: livetext.liveCaptions }
+  await settings.saveSettings({
+    ...settings.APP_SETTINGS_DEFAULTS,
+    enrichmentEnabled: options.enrichmentEnabled ?? true,
+  })
+  return { ...events, ...db, ...settings, ...runner, liveCaptions: livetext.liveCaptions }
 }
 
 async function appendPhotoCapture(s: Awaited<ReturnType<typeof setup>>) {
@@ -201,5 +210,62 @@ describe('drainCaptions', () => {
     expect(await first).toBe(1)
     expect(await second).toBe(1)
     expect(captionPhoto).toHaveBeenCalledTimes(1)
+  })
+})
+
+// Owner policy (issue #89): automatic captioning is fully opt-in. These pin
+// the pure drain-gate predicate plus the runner-level early-return that makes
+// it impossible to reach llm.elimelt.com while enrichment is off.
+describe('shouldDrain (pure gate predicate)', () => {
+  it('requires both online and enrichment opted in', async () => {
+    const { shouldDrain } = await setup()
+    expect(shouldDrain(true, true)).toBe(true)
+    expect(shouldDrain(true, false)).toBe(false)
+    expect(shouldDrain(false, true)).toBe(false)
+    expect(shouldDrain(false, false)).toBe(false)
+  })
+})
+
+describe('drainCaptions — enrichment opt-in gate', () => {
+  it('never calls the API while enrichment is disabled (the default)', async () => {
+    const s = await setup({ enrichmentEnabled: false })
+    captionPhoto.mockResolvedValue('A latte on a wooden table.')
+    await appendPhotoCapture(s)
+
+    expect(await s.drainCaptions('timelog')).toBe(0)
+    expect(captionPhoto).not.toHaveBeenCalled()
+    expect(amendsOf(await s.listEvents('timelog'))).toEqual([])
+  })
+
+  it('backfills photos captured while enrichment was off once it is turned on', async () => {
+    const s = await setup({ enrichmentEnabled: false })
+    captionPhoto.mockResolvedValue('A latte on a wooden table.')
+    const cap = await appendPhotoCapture(s)
+
+    // Off: nothing is sent, and the pending photo just accumulates in the log.
+    expect(await s.drainCaptions('timelog')).toBe(0)
+    expect(captionPhoto).not.toHaveBeenCalled()
+
+    // On: the same drain logic picks up the backlog with no special-casing —
+    // pendingCaptions() already scans the full event history.
+    await s.saveSettings({ ...s.APP_SETTINGS_DEFAULTS, enrichmentEnabled: true })
+    expect(await s.drainCaptions('timelog')).toBe(1)
+    expect(captionPhoto).toHaveBeenCalledTimes(1)
+
+    const [amend] = amendsOf(await s.listEvents('timelog'))
+    expect(amend.targets).toEqual([cap.id])
+    expect(amend.attachments![0].derivedFrom).toBe(cap.attachments[0].file)
+  })
+
+  it('runner-level gate holds even if a caller forgets to check the setting first', async () => {
+    // Simulates a future caller that doesn't gate at the call site: the
+    // runner's own early-return is the one that must hold (defense in depth).
+    const s = await setup({ enrichmentEnabled: false })
+    captionPhoto.mockResolvedValue('A latte on a wooden table.')
+    await appendPhotoCapture(s)
+
+    await s.drainCaptions('timelog')
+    await s.drainCaptions('timelog') // a second, unconditional call from a hypothetical caller
+    expect(captionPhoto).not.toHaveBeenCalled()
   })
 })
