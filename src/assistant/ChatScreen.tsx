@@ -11,6 +11,7 @@ import { useAppStore } from '../store/appStore'
 import {
   Button,
   ScreenHeader,
+  Select,
   TextInput,
   cx,
   motion,
@@ -18,7 +19,7 @@ import {
   type_,
   useKeyboardInset,
 } from '../ui'
-import { modelLabel } from './config'
+import { ASSISTANT_MODELS } from './config'
 import { buildInstructions } from './context'
 import { clearChatHistory, loadChatHistory, saveChatHistory } from './history'
 import { Markdown } from './Markdown'
@@ -101,6 +102,8 @@ function ChatView({
   onReset: () => void
 }) {
   const { messages, sendMessage, stop, status, error, clearError } = useChat({ chat })
+  const appSettings = useAppStore((s) => s.appSettings)
+  const updateSettings = useAppStore((s) => s.updateSettings)
   const [input, setInput] = useState('')
   const keyboardInset = useKeyboardInset()
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -135,7 +138,26 @@ function ChatView({
     <div className={cx('flex flex-col gap-4 p-4 pb-20', motion.fadeIn)}>
       <ScreenHeader
         title="Assistant"
-        subtitle={modelLabel(model)}
+        subtitle={
+          <Select
+            aria-label="Chat model"
+            value={model}
+            disabled={busy}
+            onChange={(event) =>
+              void updateSettings({
+                ...appSettings,
+                assistantModel: event.target.value,
+              })
+            }
+            className="max-w-full py-0 text-[13px]"
+          >
+            {ASSISTANT_MODELS.map((assistantModel) => (
+              <option key={assistantModel.id} value={assistantModel.id}>
+                {assistantModel.label}
+              </option>
+            ))}
+          </Select>
+        }
         trailing={
           messages.length > 0 && (
             <Button variant="ghost" size="sm" onClick={newChat}>
@@ -163,10 +185,13 @@ function ChatView({
       <div className="flex flex-col gap-4" style={{ paddingBottom: keyboardInset }}>
         {messages.map((m) =>
           m.role === 'user' ? (
-            <div key={m.id} className={cx('self-end', motion.riseIn)}>
+            <div
+              key={m.id}
+              className={cx('min-w-0 max-w-[85%] self-end', motion.riseIn)}
+            >
               <div
                 className={cx(
-                  'max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-md px-3.5 py-2',
+                  'whitespace-pre-wrap rounded-2xl rounded-br-md px-3.5 py-2 [overflow-wrap:anywhere]',
                   tone.accentWash,
                   type_.ui,
                   tone.textPrimary,
@@ -176,7 +201,7 @@ function ChatView({
               </div>
             </div>
           ) : (
-            <div key={m.id} className={cx('self-stretch', motion.fadeIn)}>
+            <div key={m.id} className={cx('min-w-0 self-stretch', motion.fadeIn)}>
               <Markdown>{messageText(m)}</Markdown>
             </div>
           ),

@@ -8,14 +8,14 @@ export function ScreenHeader({
   trailing,
 }: {
   title: string
-  subtitle?: string
+  subtitle?: ReactNode
   trailing?: ReactNode
 }) {
   return (
     <header className="flex items-baseline justify-between gap-3">
       <div className="min-w-0">
         <h1 className={cx(type_.title, tone.textPrimary)}>{title}</h1>
-        {subtitle && <p className={cx('mt-0.5', type_.sub, tone.textMuted)}>{subtitle}</p>}
+        {subtitle && <div className={cx('mt-1', type_.sub, tone.textMuted)}>{subtitle}</div>}
       </div>
       {trailing && <div className="shrink-0">{trailing}</div>}
     </header>

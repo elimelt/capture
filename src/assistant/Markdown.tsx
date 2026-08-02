@@ -27,7 +27,12 @@ const components: Components = {
     <h3 className={cx(type_.heading, tone.textPrimary, 'mb-1.5 mt-3 first:mt-0')}>{children}</h3>
   ),
   a: ({ children, href }) => (
-    <a href={href} target="_blank" rel="noreferrer" className={cx(tone.accent, 'underline')}>
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className={cx(tone.accent, 'underline [overflow-wrap:anywhere]')}
+    >
       {children}
     </a>
   ),
@@ -46,7 +51,12 @@ const components: Components = {
       </code>
     ),
   pre: ({ children }) => (
-    <pre className={cx('mb-2 overflow-x-auto rounded-xl p-3 last:mb-0', tone.sunken)}>
+    <pre
+      className={cx(
+        'mb-2 overflow-x-auto rounded-xl p-3 [overflow-wrap:normal] last:mb-0',
+        tone.sunken,
+      )}
+    >
       {children}
     </pre>
   ),
@@ -70,8 +80,10 @@ const components: Components = {
 
 export function Markdown({ children }: { children: string }) {
   return (
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
-      {children}
-    </ReactMarkdown>
+    <div className="min-w-0 [overflow-wrap:anywhere]">
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+        {children}
+      </ReactMarkdown>
+    </div>
   )
 }
