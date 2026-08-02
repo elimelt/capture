@@ -2,7 +2,6 @@
  * Sync-specific edge case tests for the event repository — validates
  * importEvents behavior, seq counter management, and queue ordering.
  */
-import 'fake-indexeddb/auto'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { EVENT_SCHEMA } from '../contract/types'
 import type { CaptureEvent } from '../contract/types'
@@ -23,6 +22,31 @@ function deleteDb(name: string): Promise<void> {
     req.onerror = () => reject(req.error ?? new Error('deleteDatabase failed'))
     req.onblocked = () => reject(new Error('deleteDatabase blocked'))
   })
+}
+
+/** Drop and forget the DB so the next `getDb()` starts from empty — the same
+ * reset the top-level `beforeEach` does, exposed for the permutation test
+ * below, which needs a fresh database between orderings, not just between
+ * `it()`s. */
+async function freshDb(): Promise<void> {
+  ;(await getDb()).close()
+  resetDbCache()
+  await deleteDb('timebox')
+}
+
+/** All N! orderings of `items` (small N only — see fold.edge-cases.test.ts's
+ * `permutations`, duplicated here rather than shared across a contract/store
+ * layering boundary for a five-line pure helper). */
+function permutations<T>(items: readonly T[]): T[][] {
+  if (items.length <= 1) return [items.slice()]
+  const [head, ...rest] = items
+  const result: T[][] = []
+  for (const perm of permutations(rest)) {
+    for (let i = 0; i <= perm.length; i++) {
+      result.push([...perm.slice(0, i), head, ...perm.slice(i)])
+    }
+  }
+  return result
 }
 
 const AT = '2026-08-02T09:04:11-04:00'
@@ -166,5 +190,35 @@ describe('cross-device merge scenarios', () => {
 
     const local = await appendCapture({ stream: 'timelog', capturedAt: AT, attachments: [] })
     expect(local.seq).toBe(4)
+  })
+
+  it('converges to the same state under every import order (issue #70)', async () => {
+    // Four remote events, colliding seqs included, each imported one at a
+    // time (as separate pull pages might) — every one of the 4! = 24 arrival
+    // orders must fold to the same entries, mirroring the exhaustive fold
+    // permutation test but through the actual repo (seq counter, sync rows,
+    // fold) rather than fold() directly.
+    const events = [
+      remoteCapture(1, 'r1', '2026-08-02T09:00:00-04:00'),
+      remoteCapture(1, 'r1b', '2026-08-02T09:01:00-04:00'), // colliding seq
+      remoteCapture(2, 'r2', '2026-08-02T09:02:00-04:00'),
+      remoteCapture(3, 'r3', '2026-08-02T09:03:00-04:00'),
+    ]
+    const orderings = permutations(events)
+    expect(orderings).toHaveLength(24)
+
+    let expected: unknown
+    for (const ordering of orderings) {
+      await freshDb()
+      for (const event of ordering) {
+        await importEvents('timelog', [event], new Map())
+      }
+      const entries = await listEntries('timelog')
+      const nextSeq = (await appendCapture({ stream: 'timelog', capturedAt: AT, attachments: [] }))
+        .seq
+      const result = { ids: entries.map((e) => e.id), nextSeq }
+      expected ??= result
+      expect(result).toEqual(expected)
+    }
   })
 })

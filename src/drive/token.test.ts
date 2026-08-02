@@ -1,21 +1,13 @@
-import 'fake-indexeddb/auto'
-import { IDBFactory } from 'fake-indexeddb'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
+import { useFreshIndexedDb } from '../testing/freshDb'
+
+useFreshIndexedDb()
 
 async function setup() {
   const db = await import('../store/db')
   const token = await import('./token')
   return { ...db, ...token }
 }
-
-beforeEach(() => {
-  vi.resetModules()
-  vi.stubGlobal('indexedDB', new IDBFactory())
-})
-
-afterEach(() => {
-  vi.unstubAllGlobals()
-})
 
 const NOW = 1_000_000_000_000
 

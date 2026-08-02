@@ -6,13 +6,16 @@ import {
   appendCapture,
   appendRevoke,
   getLastSyncAt,
+  getLastSyncResult,
   getSyncStatuses,
   listEntries,
   setLastSyncAt,
+  setLastSyncResult,
   summarizeSyncStatuses,
   wipeAll,
   wipeCaches,
   type NewAttachment,
+  type PersistedSyncResult,
 } from './events'
 import { reclaimStreamBlobs } from './blobGc'
 import { deletePlace, listPlaces, savePlace, type Place } from './places'
@@ -155,6 +158,13 @@ interface AppState {
   localSpace: LocalSpaceEstimate | null
   /** Byte breakdown of the app's own IndexedDB data; null until refreshSpace(). */
   appSpace: AppSpace | null
+  /**
+   * The last full sync-cycle attempt, persisted (issue #67) so a pull error —
+   * which never writes a sync row — is still visible in Settings after the
+   * 6 s error toast is gone or the app has been relaunched. Null before the
+   * first cycle this install has ever run.
+   */
+  lastSyncResult: PersistedSyncResult | null
 
   refresh: (streamId?: string) => Promise<void>
   loadPlaces: () => Promise<void>
@@ -241,6 +251,17 @@ export const useAppStore = create<AppState>()((set, get) => {
       }
     }
 
+  // Stamps and persists the just-finished sync cycle (issue #67), and mirrors
+  // it into in-memory state so Settings re-renders without a reload. Only
+  // called for a cycle that actually ran (not the "already syncing" or
+  // "no token" short-circuits, which are already durably reflected by
+  // `syncing`/`driveConnection`).
+  const persistSyncResult = async (result: SyncResult): Promise<void> => {
+    const persisted: PersistedSyncResult = { at: toLocalIso(new Date()), ...result }
+    await setLastSyncResult(persisted)
+    set({ lastSyncResult: persisted })
+  }
+
   return {
     ready: false,
     currentStreamId: 'timelog',
@@ -263,6 +284,7 @@ export const useAppStore = create<AppState>()((set, get) => {
     globalSyncSummary: { pending: 0, errors: 0, lastSyncAt: null },
     localSpace: null,
     appSpace: null,
+    lastSyncResult: null,
 
     refresh: async (streamId) => {
       const stream = streamId ?? get().currentStreamId
@@ -306,13 +328,18 @@ export const useAppStore = create<AppState>()((set, get) => {
     init: async () => {
       try {
         // Local-only status computation: entries, sync rows, lastSyncAt, and
-        // the stored token's expiry. Sync itself is manual ("Sync now").
-        await Promise.all([
+        // the stored token's expiry. Sync itself is manual ("Sync now"). The
+        // persisted lastSyncResult only ever changes from drainSync() in this
+        // same session, so a one-time read here (rather than in refresh()) is
+        // enough to surface it after a relaunch (issue #67).
+        const [, , , , lastSyncResult] = await Promise.all([
           get().refresh(),
           get().loadPlaces(),
           get().loadSettings(),
           get().refreshConnection(),
+          getLastSyncResult(),
         ])
+        set({ lastSyncResult: lastSyncResult ?? null })
       } finally {
         // Even a failed boot must lift the splash so the error is visible.
         set({ ready: true })
@@ -417,11 +444,21 @@ export const useAppStore = create<AppState>()((set, get) => {
           // settings, so the in-memory settings cache reloads too.
           await get().refresh()
           await get().loadSettings()
-          return { outcome, uploaded, pulled, ...(error ? { error } : {}), perStream }
+          const result: SyncResult = { outcome, uploaded, pulled, ...(error ? { error } : {}), perStream }
+          await persistSyncResult(result)
+          return result
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err)
           set({ lastError: `Sync failed: ${message}` })
-          return { outcome: 'error', uploaded: 0, pulled: 0, error: message, perStream: [] }
+          const result: SyncResult = {
+            outcome: 'error',
+            uploaded: 0,
+            pulled: 0,
+            error: message,
+            perStream: [],
+          }
+          await persistSyncResult(result)
+          return result
         } finally {
           emitProgress({ kind: 'cycle-done' })
           // The cycle is over; live detail is only meaningful while syncing.

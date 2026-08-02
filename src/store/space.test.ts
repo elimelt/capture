@@ -1,4 +1,3 @@
-import 'fake-indexeddb/auto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { serializeEvent } from '../contract/serialize'
 import type { CaptureEvent } from '../contract/types'

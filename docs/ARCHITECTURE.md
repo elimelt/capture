@@ -186,8 +186,17 @@ involved, and the CSP in `index.html` whitelists exactly these endpoints.
 (`*.test.ts` throughout `src/`), run with Vitest via `npm test`. The one
 network-dependent test (`src/assistant/transport.integration.test.ts`) is excluded
 unless `VITEST_INTEGRATION=1` (`npm run test:integration`), so the default suite is
-hermetic. `src/layering.test.ts` turns the architecture's dependency rules into a
-failing test. CI runs `npm test` before every deploy.
+hermetic — it also runs on a weekly schedule in CI (`.github/workflows/integration.yml`,
+issue #71) so transport rot surfaces as a red scheduled run instead of only when a
+human remembers to run it locally. `src/layering.test.ts` turns the architecture's
+dependency rules into a failing test, and a post-build bundle-size check
+(`scripts/check-bundle-size.mjs`, run in CI after `npm run build`) turns the
+lazy-assistant-chunk promise above into a failing check instead of a silent
+regression. `src/testing/` holds infrastructure shared across suites — a Vitest
+`setupFiles` entry installing `fake-indexeddb` once for the whole run, and
+`useFreshIndexedDb()` for suites that need per-test isolation — and
+`src/drive/testing/fakeDrive.ts` is the one in-memory Drive-client fake (issue #70;
+CONTRIBUTING.md has details). CI runs `npm test` before every deploy.
 
 ## Build & deploy
 

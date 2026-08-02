@@ -9,6 +9,7 @@ import { CalendarError, listCalendars } from '../gcal/client'
 import { getTargetCalendar, resolveTargetSelection, setTargetCalendar } from '../gcal/config'
 import type { CalendarSummary } from '../gcal/events'
 import { reverseGeocode } from '../places/geocode'
+import { lastSyncAttemptSummary, notableStreamLines } from './diagnostics'
 import { NotificationsSection } from './NotificationsSection'
 import { useAppStore } from '../store/appStore'
 import { formatBytes } from '../store/space'
@@ -313,6 +314,50 @@ export default function SettingsScreen() {
           </p>
         )}
       </Section>
+
+      <Section title="Diagnostics">
+        <DiagnosticsSection />
+      </Section>
+    </div>
+  )
+}
+
+/**
+ * Read-only sync diagnostics (issue #67): the last full cycle's outcome
+ * survives a relaunch (persisted via `store/events.ts`), so a pull error —
+ * which never writes a sync row and is otherwise gone the moment the 6 s
+ * error toast clears — stays inspectable here. Streams that finished clean
+ * are omitted from the detail list; nothing to report reads as reassuring,
+ * not empty.
+ */
+function DiagnosticsSection() {
+  const lastSyncResult = useAppStore((s) => s.lastSyncResult)
+  const driveConnection = useAppStore((s) => s.driveConnection)
+
+  if (!lastSyncResult) {
+    return (
+      <p className={cx(type_.sub, tone.textFaint)}>
+        No sync attempted yet on this device ({CONNECTION_LABEL[driveConnection]}).
+      </p>
+    )
+  }
+
+  const lines = notableStreamLines(lastSyncResult)
+  return (
+    <div className="flex flex-col gap-1">
+      <p className={cx(type_.sub, tone.textMuted)}>{lastSyncAttemptSummary(lastSyncResult)}</p>
+      <p className={cx(type_.caption, tone.textFaint)}>
+        {lastSyncedLabel(lastSyncResult.at)} · {CONNECTION_LABEL[driveConnection]}
+      </p>
+      {lines.length > 0 && (
+        <ul className="mt-1 flex flex-col gap-0.5">
+          {lines.map((line) => (
+            <li key={line} className={cx(type_.caption, tone.danger)}>
+              {line}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   )
 }

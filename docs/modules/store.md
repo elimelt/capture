@@ -225,6 +225,17 @@ Key exports:
 - `getLastSyncAt(stream): Promise<string | undefined>` / `setLastSyncAt(stream, at)` —
   the moment the last full pull+push cycle completed cleanly, persisted per stream in
   the `meta` store (key `lastSyncAt:<stream>`); unset = never synced.
+- `interface PersistedStreamSyncResult { stream; outcome: string; uploaded; pulled:
+  number; error? }` / `interface PersistedSyncResult { at: string; outcome: string;
+  uploaded; pulled: number; error?; perStream: PersistedStreamSyncResult[] }` /
+  `getLastSyncResult(): Promise<PersistedSyncResult | undefined>` /
+  `setLastSyncResult(result)` — the **whole** last sync-cycle attempt (every stream,
+  including pull errors — a pull failure never writes a `sync` row, so without this
+  it left no trace once the toast cleared), persisted in the `meta` store (key
+  `lastSyncResult`, issue #67). Outcome is kept as a plain `string` here (not
+  `DrainOutcome`) so this generic-layer module doesn't need to import `drive/`'s type
+  just to describe storage; `appStore.drainSync` writes the narrower `SyncResult` it
+  already computes.
 - `getEventById(id): Promise<LogEvent | undefined>` / `putSyncStatus(row)` — used
   by the drive queue to read the event being uploaded and record progress.
 - `stripPendingFileIds(): Promise<void>` — drops `fileIds` from every row with
@@ -432,7 +443,11 @@ cycle doesn't hit quota again), `syncing`
 in flight — see `syncProgress.ts` below; null whenever `syncing` is false, and never
 persisted), and the storage-space snapshot — `localSpace:
 LocalSpaceEstimate | null` (null = unsupported or not yet loaded) and `appSpace:
-AppSpace | null` (both from `space.ts`, set by `refreshSpace`).
+AppSpace | null` (both from `space.ts`, set by `refreshSpace`) — and
+`lastSyncResult: PersistedSyncResult | null` (the last full sync-cycle attempt,
+loaded once in `init()` and refreshed after every `drainSync()`; null before this
+install has ever run a cycle — issue #67, rendered by Settings' `Diagnostics`
+section, see [app-shell-ui-and-tooling.md](app-shell-ui-and-tooling.md)).
 
 Also exports:
 
@@ -510,6 +525,11 @@ Actions:
     callback for the granular `pull-progress`/`upload-start`/`upload-progress`
     events) through `reduceSyncProgress` (`syncProgress.ts`) into `syncProgress`;
     the `finally` clears it back to null alongside `syncing`.
+  - Every real attempt (not the no-token or already-syncing/lock-busy
+    short-circuits) also stamps and persists the whole cycle via
+    `setLastSyncResult` (private `persistSyncResult` helper) — including the
+    `catch` branch — so `lastSyncResult` and the `meta` store agree with what
+    Settings' Diagnostics section shows even across a relaunch (issue #67).
 - Places/settings/data — `addPlace`, `removePlace`, `updateSettings`,
   `updateStreamSettings`, `wipe()`, `clearError()`. `wipe()` (issue #65) is a full
   privacy reset, in order: best-effort revoke the Google grant (`disconnect(token?.accessToken)`
@@ -651,7 +671,10 @@ Sync-specific edge case tests: `importEvents` marking pulled events as `uploaded
 re-pushed), seq counter bump correctness, idempotent re-import, blob keying by contract
 filename, `listPendingSync` ordering by seq, exclusion of uploaded events from pending
 queue, cross-device merge scenarios with seq collisions, and sequential multi-import
-handling.
+handling. Also a re-import idempotency permutation test (issue #70): four remote events
+(with a colliding seq) imported one at a time, in every one of the 4! = 24 possible
+arrival orders (each against a freshly deleted database), converge to the same folded
+entries and the same next local seq.
 
 ### src/store/migrateChatsV1.test.ts
 

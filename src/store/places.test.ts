@@ -1,4 +1,3 @@
-import 'fake-indexeddb/auto'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { getDb, resetDbCache } from './db'
 import { deletePlace, listPlaces, savePlace, type Place } from './places'

@@ -331,7 +331,11 @@ order.
 Validates `compareEvents` total ordering properties (transitivity, antisymmetry),
 fold determinism under adversarial conditions: multiple permutations of the same
 event set, concurrent multi-device amends with seq collisions, and tiebreak
-correctness when seq/loggedAt/id collide in various combinations.
+correctness when seq/loggedAt/id collide in various combinations. Also includes an
+exhaustive-permutation invariant test (issue #70): a 5-event mixed
+capture/amend/revoke log folds identically under all 120 (5!) arrival orderings —
+enumerated with a small local `permutations()` helper rather than a property-testing
+dependency, since N ≤ 5 needs none.
 
 ### src/contract/ids.test.ts
 

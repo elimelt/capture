@@ -8,7 +8,6 @@
  * request, and (b) drive all three write tools end-to-end into a mocked
  * EntryWriter with the results streaming back as UI tool-output chunks.
  */
-import 'fake-indexeddb/auto'
 import { describe, expect, it, vi } from 'vitest'
 import type { UIMessage } from 'ai'
 import type { LanguageModelV3StreamPart } from '@ai-sdk/provider'

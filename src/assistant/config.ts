@@ -4,8 +4,12 @@
  * is fully opt-in via AppSettings.assistantEnabled, and none of this code
  * loads until the user enables it (ChatScreen is lazy).
  */
+import { ENDPOINTS } from '../config'
 
-export const ASSISTANT_BASE_URL = 'https://llm.elimelt.com/v1'
+/** Re-exported from the build-config module (`src/config.ts`, issue #69) so
+ * every other endpoint move is a one-line diff there, not a hunt across
+ * three modules plus the CSP. */
+export const ASSISTANT_BASE_URL = ENDPOINTS.assistant
 
 /** Curated models known to exist on the endpoint. First entry is the default.
  * gpt-oss:20b is the only hosted model that emits well-formed tool_calls,

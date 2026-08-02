@@ -458,7 +458,8 @@ because audio filenames never collide with photo filenames.
 
 Client for photo captioning: `VISION_MODEL` (`gemma4:e4b`) on the LLM host via its
 native (Ollama-style) `/api/chat` endpoint at `VISION_CHAT_URL` (`src/enrich/config.ts`,
-`https://llm.elimelt.com/api/chat`) — the native API (not the OpenAI-compat `/v1`) is
+`https://llm.elimelt.com/api/chat`; `dayview/daySummaryClient.ts` reuses the same
+constant for day-prose synthesis) — the native API (not the OpenAI-compat `/v1`) is
 used because only it honors `think: false`, which turns a ~20 s reasoning detour into
 a ~2–3 s caption. CORS is origin-gated; no API key.
 
