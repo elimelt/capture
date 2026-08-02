@@ -13,6 +13,7 @@
  * invalidation surface for zero benefit.
  */
 import { getDb } from '../store/db'
+import { daySynthesisKey } from '../store/metaKeys'
 
 export interface DaySynthesisCacheEntry {
   date: string
@@ -25,17 +26,13 @@ export interface DaySynthesisCacheEntry {
   generatedAt: string
 }
 
-function metaKey(date: string): string {
-  return `daySynthesis:${date}`
-}
-
 /** Best-effort read; `undefined` on any failure (never throws). */
 export async function readDaySynthesisCache(
   date: string,
 ): Promise<DaySynthesisCacheEntry | undefined> {
   try {
     const db = await getDb()
-    return (await db.get('meta', metaKey(date))) as DaySynthesisCacheEntry | undefined
+    return (await db.get('meta', daySynthesisKey(date))) as DaySynthesisCacheEntry | undefined
   } catch {
     return undefined
   }
@@ -45,7 +42,7 @@ export async function readDaySynthesisCache(
 export async function writeDaySynthesisCache(entry: DaySynthesisCacheEntry): Promise<void> {
   try {
     const db = await getDb()
-    await db.put('meta', entry, metaKey(entry.date))
+    await db.put('meta', entry, daySynthesisKey(entry.date))
   } catch {
     // Cache write failures are non-fatal — same convention as geocode.ts.
   }

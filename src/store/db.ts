@@ -6,6 +6,7 @@ import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
 import type { LogEvent } from '../contract/types'
 import { migrateChatsV1 } from './migrateChatsV1'
 import { migrateSettingsV1 } from './migrateSettingsV1'
+import { LEGACY_ASSISTANT_CHAT_KEY } from './metaKeys'
 
 export type SyncStatus = 'queued' | 'uploaded' | 'error'
 
@@ -128,7 +129,13 @@ export interface TimeboxDB extends DBSchema {
     key: string
     value: GeocacheRow
   }
-  /** Small key-value bag: settings, per-stream counters. */
+  /**
+   * Small key-value bag: settings, per-stream counters, sync stamps, drive
+   * caches, migration markers. Every key is minted by a builder in
+   * `store/metaKeys.ts` (issue #57) — that module's doc comment is the
+   * authoritative registry of what lives here, who owns it, and whether
+   * `wipeAll()`'s `meta.clear()` is the right behavior for it.
+   */
   meta: {
     key: string
     value: unknown
@@ -215,7 +222,7 @@ export function getDb(): Promise<TimeboxDatabase> {
         // migrate it into a chats row so it becomes the most recent chat.
         db.createObjectStore('chats', { keyPath: 'id' })
         const meta = tx.objectStore('meta')
-        const legacy = (await meta.get('assistant:chat')) as unknown[] | undefined
+        const legacy = (await meta.get(LEGACY_ASSISTANT_CHAT_KEY)) as unknown[] | undefined
         if (Array.isArray(legacy) && legacy.length > 0) {
           const now = new Date().toISOString()
           await tx.objectStore('chats').put({
@@ -225,7 +232,7 @@ export function getDb(): Promise<TimeboxDatabase> {
             messages: legacy,
           })
         }
-        if (legacy !== undefined) await meta.delete('assistant:chat')
+        if (legacy !== undefined) await meta.delete(LEGACY_ASSISTANT_CHAT_KEY)
       }
       if (oldVersion < 4) {
         // v4: reverse-geocode cache so a coordinate cell is looked up once.

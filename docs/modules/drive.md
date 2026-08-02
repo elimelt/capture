@@ -29,8 +29,9 @@ is the only consumer of `connect`/`disconnect`/`pullStream`/`drainStream`;
 ### src/drive/token.ts
 
 Access-token persistence and expiry logic — the pure, testable storage layer under
-`auth.ts`. Tokens are mirrored to the IndexedDB `meta` store (key `drive:token`) so a
-relaunch within the hour reuses them.
+`auth.ts`. Tokens are mirrored to the IndexedDB `meta` store (key `drive:token`, built
+by `store/metaKeys.ts` — see [store.md](store.md), issue #57) so a relaunch within the
+hour reuses them.
 
 Key exports:
 

@@ -23,11 +23,12 @@
  */
 import { createEnrichmentRunner } from '../enrich/runner'
 import { liveTranscripts } from '../store/livetext'
+import { skipKeyPrefix } from '../store/metaKeys'
 import { transcribeAudio } from './api'
 import { pendingTranscriptions, type PendingTranscription } from './plan'
 
 const runner = createEnrichmentRunner<PendingTranscription>({
-  skipPrefix: 'transcribe:skip:',
+  skipPrefix: skipKeyPrefix('transcribe'),
   plan: pendingTranscriptions,
   sourceOf: (item) => item.audio,
   targetOf: (item) => ({ entryId: item.entryId, stream: item.stream }),

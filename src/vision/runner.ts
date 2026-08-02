@@ -27,11 +27,12 @@
  */
 import { createEnrichmentRunner } from '../enrich/runner'
 import { liveCaptions } from '../store/livetext'
+import { skipKeyPrefix } from '../store/metaKeys'
 import { captionPhoto } from './api'
 import { pendingCaptions, type PendingCaption } from './plan'
 
 const runner = createEnrichmentRunner<PendingCaption>({
-  skipPrefix: 'caption:skip:',
+  skipPrefix: skipKeyPrefix('caption'),
   plan: pendingCaptions,
   sourceOf: (item) => item.photo,
   targetOf: (item) => ({ entryId: item.entryId, stream: item.stream }),

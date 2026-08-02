@@ -21,10 +21,10 @@ import {
 import { ensureTree } from '../drive/bootstrap'
 import { findFile, readFileText, updateFileContent } from '../drive/client'
 import { getDb } from '../store/db'
+import { GCAL_TARGET_CALENDAR_KEY as TARGET_KEY } from '../store/metaKeys'
 import { TIMELOG_STREAM } from '../streams/registry'
 import type { CalendarSummary } from './events'
 
-const TARGET_KEY = 'gcal:targetCalendar'
 const CONFIG_MIME = 'application/json'
 
 /** The chosen calendar, stored locally and mirrored into config.json (§5.3). */

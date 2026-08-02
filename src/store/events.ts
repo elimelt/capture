@@ -20,6 +20,7 @@ import { attachmentFileName, eventBaseName } from '../contract/filenames'
 import { newEventId } from '../contract/ids'
 import { deviceTz, toLocalIso } from '../contract/time'
 import { getDb, type SyncStatusRow } from './db'
+import { LAST_SYNC_RESULT_KEY, lastSyncAtKey, seqKey } from './metaKeys'
 
 export interface NewAttachment {
   kind: AttachmentKind
@@ -41,12 +42,10 @@ interface AppendArgs {
   attachments?: NewAttachment[]
 }
 
-const SEQ_KEY = (stream: string) => `nextSeq:${stream}`
-
 async function append({ stream, build, attachments = [] }: AppendArgs): Promise<LogEvent> {
   const db = await getDb()
   const tx = db.transaction(['events', 'blobs', 'sync', 'meta'], 'readwrite')
-  const nextSeq = ((await tx.objectStore('meta').get(SEQ_KEY(stream))) as number | undefined) ?? 1
+  const nextSeq = ((await tx.objectStore('meta').get(seqKey(stream))) as number | undefined) ?? 1
   const base = {
     id: newEventId(),
     seq: nextSeq,
@@ -70,7 +69,7 @@ async function append({ stream, build, attachments = [] }: AppendArgs): Promise<
   if (event.type === 'capture') event.attachments = attachmentMeta
   else if (event.type === 'amend' && attachmentMeta.length > 0) event.attachments = attachmentMeta
 
-  await tx.objectStore('meta').put(nextSeq + 1, SEQ_KEY(stream))
+  await tx.objectStore('meta').put(nextSeq + 1, seqKey(stream))
   await tx.objectStore('events').put(event)
   for (let i = 0; i < attachments.length; i++) {
     await tx.objectStore('blobs').put({ file: attachmentMeta[i].file, blob: attachments[i].blob })
@@ -226,17 +225,15 @@ export function summarizeSyncStatuses(rows: Iterable<SyncStatusRow>): SyncSummar
   return { pending, errors, ...(lastErrored?.error ? { lastError: lastErrored.error } : {}) }
 }
 
-const LAST_SYNC_KEY = (stream: string) => `lastSyncAt:${stream}`
-
 /** Moment the last full pull+push cycle completed cleanly; unset = never synced. */
 export async function getLastSyncAt(stream: string): Promise<string | undefined> {
   const db = await getDb()
-  return (await db.get('meta', LAST_SYNC_KEY(stream))) as string | undefined
+  return (await db.get('meta', lastSyncAtKey(stream))) as string | undefined
 }
 
 export async function setLastSyncAt(stream: string, at: string): Promise<void> {
   const db = await getDb()
-  await db.put('meta', at, LAST_SYNC_KEY(stream))
+  await db.put('meta', at, lastSyncAtKey(stream))
 }
 
 /** One stream's slice of a persisted sync-cycle result (issue #67). Mirrors
@@ -267,8 +264,6 @@ export interface PersistedSyncResult {
   error?: string
   perStream: PersistedStreamSyncResult[]
 }
-
-const LAST_SYNC_RESULT_KEY = 'lastSyncResult'
 
 /** Last persisted sync-cycle result; unset before the first cycle ever runs. */
 export async function getLastSyncResult(): Promise<PersistedSyncResult | undefined> {
@@ -317,7 +312,7 @@ export async function importEvents(
     await tx.objectStore('blobs').put({ file, blob })
   }
   const meta = tx.objectStore('meta')
-  const key = SEQ_KEY(stream)
+  const key = seqKey(stream)
   const current = ((await meta.get(key)) as number | undefined) ?? 1
   const maxSeq = events.reduce((m, e) => Math.max(m, e.seq), 0)
   if (maxSeq + 1 > current) await meta.put(maxSeq + 1, key)

@@ -9,8 +9,7 @@
  * wrong-account ids never reach ensurePartition/pull.
  */
 import { getDb } from '../store/db'
-
-const TREE_KEY = 'drive:tree'
+import { DRIVE_TREE_KEY as TREE_KEY } from '../store/metaKeys'
 
 /** Cached ids for the parts of the tree the upload engine reaches for. */
 export interface DriveTree {

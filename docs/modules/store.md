@@ -97,7 +97,7 @@ Object stores (schema `TimeboxDB`):
 | `sync` | event `id` | `SyncStatusRow` |
 | `places` | `id` | `Place` |
 | `geocache` | rounded `"lat,lng"` | `GeocacheRow` |
-| `meta` | string (out-of-line) | `unknown` — per-stream seq counters, sync stamps, migration markers, legacy settings |
+| `meta` | string (out-of-line), minted by `metaKeys.ts` | `unknown` — per-stream seq counters, sync stamps, Drive caches, migration markers, legacy settings |
 | `chats` | `id` | `StoredChatRow` (legacy; migrated to the `assistant-chats` stream, kept for rollback) |
 | `overlayEvents` | event `id` (+ `by-stream` index) | `OverlayEventRow` — the calendar-overlay log, **owned by `gcal/overlay`**; local-only until wired into sync |
 | `waveforms` | contract filename | `{ file, peaks: number[] }` — cached per-clip waveform fingerprint (#86), derived/rebuildable, never synced |
@@ -156,6 +156,52 @@ Lifecycle behavior is covered by `db.test.ts` (fake-indexeddb supports
 multi-connection blocking, and its `forceCloseDatabase` simulates abnormal
 termination). Not simulatable there: a real browser's cross-process timing and the
 splash DOM itself (tests stub `document`).
+
+### src/store/metaKeys.ts
+
+The `meta` object store's key registry (issue #57). Before this module, nine
+different files minted `meta` keys as independent bare string templates — most
+concretely, `nextSeq:<stream>` was re-derived by hand in three places
+(`gcal/overlay/store.ts`, `migrateChatsV1.ts`, `migrateSettingsV1.ts`), one
+rename away from silently forking seq counters. This module centralizes every
+key *builder* without changing any key's on-disk bytes — a pure refactor, so
+no data migration is needed; existing rows keep reading under the same string,
+just constructed in one place now.
+
+Exports (one builder function or constant per key family): `seqKey(stream)`
+(`nextSeq:<stream>`, shared by `events.ts`, `gcal/overlay/store.ts`,
+`migrateChatsV1.ts`, `migrateSettingsV1.ts`), `lastSyncAtKey(stream)`
+(`lastSyncAt:<stream>`), `LAST_SYNC_RESULT_KEY` (`lastSyncResult`),
+`DRIVE_TOKEN_KEY` (`drive:token`), `DRIVE_TREE_KEY` (`drive:tree`),
+`DRIVE_CHANGES_PREFIX`/`driveChangesKey(stream)` (`drive:changes:<stream>`),
+`DRIVE_ACCOUNT_KEY` (`drive:account`), `GCAL_TARGET_CALENDAR_KEY`
+(`gcal:targetCalendar`), `skipKeyPrefix(pipeline)` (`<pipeline>:skip:`, bound
+by `transcribe/runner.ts`/`vision/runner.ts` to `'transcribe'`/`'caption'` and
+combined with the source file by `enrich/runner.ts`), `daySynthesisKey(date)`
+(`daySynthesis:<date>`), `SETTINGS_MIGRATION_MARKER`
+(`migrated:settings-stream-v1`), `CHATS_MIGRATION_MARKER`
+(`migrated:chats:v1`), `LEGACY_SETTINGS_APP_KEY`/`legacySettingsStreamKey(id)`
+(`settings:app` / `settings:stream:<id>`, read-only rollback sources for the
+v9 migration), and `LEGACY_ASSISTANT_CHAT_KEY` (`assistant:chat`, the v3
+migration's one-time read/delete target).
+
+The module's doc comment carries the authoritative table of every key: owner
+module, value type, and whether `wipeAll()`'s `meta.clear()` is the *correct*
+behavior for it (every key today is wiped — the table records *why* that's
+right per key, e.g. a self-healing Drive cache vs. a user-visible reset,
+rather than leaving it as an undocumented side effect of a blanket `.clear()`).
+It also flags the one open, deliberately-unaddressed issue: `<pipeline>:skip:*`
+and `daySynthesis:*` both grow one row per item forever with no sweep — cheap
+per row, accepted as a known limitation rather than fixed here.
+
+`metaKeys.test.ts` pins two things: golden literals (every builder reproduces
+the exact string it replaced, so this refactor cannot be a silent format
+change) and an architecture guard — in the spirit of `layering.test.ts` — that
+greps every non-test source file for a raw string/template literal passed
+directly to `meta.get`/`.put`/`.delete` (including through a local
+`objectStore('meta')` alias) and fails the suite if one exists outside this
+module, so a future key can't casually reintroduce the ad-hoc-template pattern
+this issue removed.
 
 ### src/store/migrateChatsV1.ts
 
