@@ -101,8 +101,11 @@ deleted-with-Undo, discarded).
   (`at <place>` when a saved place matches, `location on` when only coordinates are
   available, nothing when location is disabled).
 - **Text/photo capture:** `submitText(text)` and `submitPhoto(file)` each snapshot
-  location at submit time and call `capture` with a single `text` / `photo` attachment
-  (photo mime falls back to `image/jpeg` when `file.type` is empty).
+  location at submit time and call `capture` with a single `text` / `photo` attachment.
+  `submitPhoto` and the gesture accelerator's photo add-on both run the file through
+  `photo.ts#downscalePhoto` first (issue #58) — every photo attachment this screen ever
+  builds is the downscaled/re-encoded JPEG (or the original blob, on a decode failure),
+  never the multi-megabyte camera original.
 - **Toasts:** a single `ToastState` (`captured` with `entryId`, or `discarded`)
   auto-clears after 5s. "Undo" on the captured toast calls `revoke([entryId])`
   immediately. Delete requests (`handleDelete`) clear any capture toast first so only
@@ -119,6 +122,47 @@ deleted-with-Undo, discarded).
   `reverseGeocode` "near …" address) and retro-labels the just-captured entry via
   `amend({ targets: [entryId], patch: { location } })`; skipping just closes the sheet —
   the entry is already saved.
+
+### src/capture/photo.ts
+
+**Purpose:** Photo downscaling at the capture boundary (issue #58) — a camera
+original (3-8MB JPEG/HEIC) is downscaled and re-encoded once here, before it ever
+reaches `capture`/`amend`, so every replica (local IndexedDB, every other device's
+pull) stores and syncs the same right-sized blob. Chosen over the alternative fix
+shape offered by the issue (a `keepPhotosLocally` setting + on-demand pull,
+mirroring `keepAudioLocally`) because photo *originals* were never the useful
+artifact here — every consumer (thumbnails, the full-screen viewer, the vision
+captioner's own 1024px re-encode) already works from a downscaled copy — and
+because deciding this once at capture time avoids retrofitting a multi-GB backlog
+later, which the issue calls out as the harder path.
+
+**Exports:**
+
+- `MAX_PHOTO_EDGE_PX = 2048` — long edge of the stored photo.
+- `scaledDimensions(width, height, maxEdge): { width; height }` — pure: target
+  dimensions preserving aspect ratio, capped at `maxEdge` on the long side, never
+  upscaling. The tested core (`photo.test.ts`).
+- `interface DownscaledPhoto { blob: Blob; mimeType: string }`.
+- `downscalePhoto(blob: Blob): Promise<DownscaledPhoto>` — decodes with
+  `createImageBitmap(blob, { imageOrientation: 'from-image' })` (bakes in EXIF
+  rotation so a portrait doesn't land sideways), draws to a canvas sized by
+  `scaledDimensions`, and re-encodes to JPEG at quality 0.85. Falls back to the
+  original blob untouched on any decode/encode failure (exotic formats, no canvas
+  context) — a bigger original beats a lost photo. Not unit-tested directly:
+  `createImageBitmap`/`canvas` are browser APIs unavailable under the project's
+  node test environment, the same untested-precedent as `vision/api.ts`'s
+  identical canvas path.
+
+Called from every place a photo attachment is built: `CaptureScreen.submitPhoto`,
+the gesture accelerator's photo add-on, and `EntryList.onAddPhoto`.
+
+### src/capture/photo.test.ts
+
+Vitest unit tests for `scaledDimensions` (the tested pure core; `downscalePhoto`
+itself isn't unit-tested — see above): a source already under the cap is left
+untouched, a source exactly at the cap is never upscaled, landscape/portrait/square
+sources downscale by their long edge preserving aspect ratio, and extreme aspect
+ratios never round a dimension down to zero.
 
 ### src/capture/holdGesture.ts
 
@@ -367,7 +411,9 @@ hides the entry immediately and appends the revoke only after the undo window.
 - `onSetTime(time)` → `patch.capturedAt = withTimeOfDayIso(entry.capturedAt, time)`
   (keeps the entry's date, changes only time-of-day).
 - `onAddNote` / `onAddPhoto` / `onAddAudio` → amend with a single new `text` / `photo` /
-  `audio` attachment.
+  `audio` attachment. `onAddPhoto` runs the file through `photo.ts#downscalePhoto`
+  first, same as `CaptureScreen` (issue #58) — no photo attachment anywhere in the app
+  skips downscaling.
 - `onEditText(oldFile, text, derivedFrom?)` → one amend that both removes the old file
   (`patch.removeAttachments: [oldFile]`) and adds the replacement text; `derivedFrom` is
   carried over so an edited transcript/caption stays machine-derived and is never

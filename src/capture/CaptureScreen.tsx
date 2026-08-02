@@ -7,6 +7,7 @@ import { useAppStore } from '../store/appStore'
 import { EmptyState, ScreenHeader, Toast, cx, motion } from '../ui'
 import { useRecorder, type RecordingResult } from './useRecorder'
 import { needsPlacePrompt, snapshotLocation } from './geo'
+import { downscalePhoto } from './photo'
 import { usePendingDelete } from './usePendingDelete'
 import { EntryList } from './EntryList'
 import { RecordPanel } from './RecordPanel'
@@ -194,10 +195,11 @@ export default function CaptureScreen() {
 
   async function submitPhoto(file: File) {
     const location = await snapshotLocation(places, appSettings.locationEnabled)
+    const photo = await downscalePhoto(file)
     const event = await capture({
       capturedAt: toLocalIso(new Date()),
       location,
-      attachments: [{ kind: 'photo', blob: file, mimeType: file.type || 'image/jpeg' }],
+      attachments: [{ kind: 'photo', blob: photo.blob, mimeType: photo.mimeType }],
     })
     showToast({ kind: 'captured', entryId: event.id })
     maybePromptPlace(event)
@@ -284,10 +286,13 @@ export default function CaptureScreen() {
           const target = addOnTarget
           setAddOnTarget(null)
           if (file && target?.kind === 'photo') {
-            void amend({
-              targets: [target.entryId],
-              attachments: [{ kind: 'photo', blob: file, mimeType: file.type || 'image/jpeg' }],
-            })
+            void (async () => {
+              const photo = await downscalePhoto(file)
+              await amend({
+                targets: [target.entryId],
+                attachments: [{ kind: 'photo', blob: photo.blob, mimeType: photo.mimeType }],
+              })
+            })()
           }
           e.target.value = ''
         }}

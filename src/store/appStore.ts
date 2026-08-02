@@ -14,6 +14,7 @@ import {
   wipeCaches,
   type NewAttachment,
 } from './events'
+import { reclaimStreamBlobs } from './blobGc'
 import { deletePlace, listPlaces, savePlace, type Place } from './places'
 import {
   getSettings,
@@ -136,7 +137,12 @@ interface AppState {
   loadPlaces: () => Promise<void>
   loadSettings: () => Promise<void>
   refreshConnection: () => Promise<void>
-  /** Re-measure local storage (origin estimate + app breakdown). No network. */
+  /**
+   * Reclaim GC-eligible blobs (issue #53 — fold-hidden and durably uploaded,
+   * see `store/blobGc.ts`) across every registered stream, then re-measure
+   * local storage (origin estimate + app breakdown). No network: the GC
+   * sweep only reads local events/sync-rows and deletes local blobs.
+   */
   refreshSpace: () => Promise<void>
   init: () => Promise<void>
   clearError: () => void
@@ -254,6 +260,7 @@ export const useAppStore = create<AppState>()((set, get) => {
     },
 
     refreshSpace: async () => {
+      for (const stream of allSyncStreams()) await reclaimStreamBlobs(stream)
       const [localSpace, appSpace] = await Promise.all([estimateLocalSpace(), measureAppSpace()])
       set({ localSpace, appSpace })
     },

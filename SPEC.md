@@ -239,7 +239,10 @@ interface Attachment {
   kind: 'audio' | 'text' | 'photo';
   // audio: Blob + mimeType (audio/mp4 on iOS) + durationSec
   // text:  string (typed or pasted note)
-  // photo: Blob + mimeType (image/jpeg|png|heic->jpeg)
+  // photo: Blob + mimeType — downscaled/re-encoded to JPEG at capture time
+  //        (long edge 2048px, quality 0.85, EXIF rotation baked in; issue
+  //        #58), regardless of camera source format; the original blob is
+  //        kept as-is only if decode/encode fails (src/capture/photo.ts)
   derivedFrom?: string;        // sibling attachment this was machine-derived
                                // from (e.g. a transcript's source audio);
                                // absent = user-created content
@@ -1033,6 +1036,12 @@ user's assistant, authorized separately by the user in that product.
    `appProperties` at creation time; tags are advisory (older files carry none)
    and invisible to other readers.
 4. Success → status `uploaded`; local audio blob retained or pruned per Settings.
+   Separately, a blob GC sweep (issue #53, `src/store/blobGc.ts`) reclaims any
+   attachment blob — any kind, not just audio — that the fold no longer shows
+   (a `revoke`d entry or a `removeAttachments`-dropped file) once its owning
+   event has reached `uploaded`; it never touches a blob whose event is still
+   queued or errored. This is local bookkeeping (no network) run opportunistically
+   (Settings' Data section, after wipe), not part of the sync cycle itself.
 5. Failures: 429/5xx → keep queued, stop the drain; the next manual "Sync now"
    retries immediately (no persisted backoff — sync has no automatic trigger, so a
    retry window could only swallow the user's explicit ask). 401/403 → keep queued +
@@ -1067,7 +1076,11 @@ device — or a reinstalled/wiped one — converges on the full log:
 2. **Download eagerly.** For each missing carrier: fetch the record `.json` (or the
    segment `.ndjson`, splitting it into events — a segment imports as a unit, all
    lines or none, deduped against events already held), then fetch every
-   referenced attachment blob not already local (full offline availability). An
+   referenced attachment blob not already local (full offline availability) —
+   **except audio when the stream's `keepAudioLocally` setting is off** (issue
+   #53): the event still imports, only its audio blob is left unfetched, so a
+   pull can never re-inflate audio the setting says to never keep (whether it's
+   this device's own previously-pruned audio or another device's history). An
    attachment absent on Drive (pruned, or a §5.2 push race) is skipped and picked up on
    a later pull — the record commits last on push, so this is rare.
 3. **Import atomically.** Events + blobs commit in one transaction; pulled events get
