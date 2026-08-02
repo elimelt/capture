@@ -81,7 +81,7 @@ skills) and must stay in sync with the code.
 | `src/drive/` | `docs/modules/drive.md` |
 | `src/capture/`, `src/dayview/` | `docs/modules/capture-and-dayview.md` |
 | `src/assistant/` | `docs/modules/assistant.md` |
-| `src/transcribe/`, `src/vision/`, `src/places/` | `docs/modules/pipelines-and-places.md` |
+| `src/transcribe/`, `src/vision/`, `src/places/`, `src/enrich/` | `docs/modules/pipelines-and-places.md` |
 | `src/notify/` | `docs/modules/notify.md` |
 | `src/ui/`, `src/settings/`, app shell & tooling | `docs/modules/app-shell-ui-and-tooling.md` |
 | `src/gcal/` | `docs/modules/gcal.md` |
@@ -125,7 +125,7 @@ Details in [CONTRIBUTING.md](CONTRIBUTING.md) and
   a contract change; see the golden-file tests in
   `src/contract/serialize.test.ts`.
 - **Layering rule.** Generic layers (`streams/`, `capture/`, `contract/`,
-  `store/`, `places/`, `drive/`, `transcribe/`, `vision/`, `notify/`, `ui/`) must not
+  `store/`, `places/`, `drive/`, `transcribe/`, `vision/`, `enrich/`, `notify/`, `ui/`) must not
   import from `gcal/`, `dayview/`, `settings/`, or `assistant/`. Enforced by
   `src/layering.test.ts`.
 - **Tokens-only palette in screens.** Screens never hardcode palette or

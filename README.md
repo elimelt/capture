@@ -82,10 +82,11 @@ or API keys. A fork needs to change:
   origin, e.g. `https://time.elimelt.com`). You will need your own Google Cloud
   OAuth client authorized for your origin, with the `drive.file` and
   `calendar.readonly` scopes.
-- `src/transcribe/api.ts` — the Whisper transcription endpoint
-  (`https://transcribe.elimelt.com`).
-- `src/vision/api.ts` — the vision-LLM captioning endpoint
-  (`https://llm.elimelt.com/api/chat`).
+- `src/enrich/config.ts` — the transcription and vision-LLM captioning endpoints
+  + models (`TRANSCRIBE_BASE_URL`/`TRANSCRIBE_MODEL`, `VISION_CHAT_URL`/
+  `VISION_MODEL`; defaults `https://transcribe.elimelt.com` and
+  `https://llm.elimelt.com/api/chat`) — the one file both pipelines' `api.ts`
+  read from.
 - `src/assistant/config.ts` — the OpenAI-compatible assistant endpoint
   (`https://llm.elimelt.com/v1`).
 - `index.html` — the Content-Security-Policy whitelists exactly the endpoints

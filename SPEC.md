@@ -1286,6 +1286,14 @@ applies to §10.1 above and to the background transcription/captioning pipelines
   differ from defaults, so independently-migrating devices rarely collide.
 - **iOS mic regression in a point release**: runtime feature-check at tap; text-entry
   fallback (§4.1); never gate the app on audio.
+- **Transcription/captioning service permanently rejects a clip or photo** (bad codec,
+  oversized body, undecodable image format): classified as a permanent failure and
+  skip-marked immediately, not retried every session forever; the reason is inspectable
+  and the user can retry from Settings (issues #55/#60, `src/enrich/error.ts`). A
+  stalled/unreachable host trips a per-drain circuit breaker instead of wedging a whole
+  drain behind serial per-item timeouts (issue #62). A source blob missing locally
+  (e.g. pruned after upload when "Keep audio locally" is off) defers rather than
+  permanently abandoning that item — it is picked up the next time a blob is local.
 
 ---
 

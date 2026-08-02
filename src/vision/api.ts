@@ -9,10 +9,10 @@
  * for live UI; the resolved value is the full caption, identical to what a
  * non-streaming call would have returned.
  */
+import { VISION_CHAT_URL as CHAT_URL, VISION_MODEL as MODEL } from '../enrich/config'
+import { EnrichmentError, isRetryableStatus } from '../enrich/error'
 import { assembleCaption, feedLines, parseChatLine } from './stream'
 
-const CHAT_URL = 'https://llm.elimelt.com/api/chat'
-const MODEL = 'gemma4:e4b'
 const TIMEOUT_MS = 60_000
 
 /** Long edge of the downscaled upload; gemma's vision tower sees ~896px. */
@@ -29,18 +29,32 @@ const PROMPT =
  * multi-megabyte camera original (which iOS hands us as JPEG/HEIC).
  */
 async function toJpegBase64(blob: Blob): Promise<string> {
-  const bitmap = await createImageBitmap(blob)
+  // createImageBitmap throws on a format this browser can't decode (e.g. a
+  // HEIC picked from the library on a non-Safari browser — the photo input
+  // accepts image/*). That photo will never decode on this device, on any
+  // retry: permanent, not transient (issue #55/#60).
+  let bitmap: ImageBitmap
+  try {
+    bitmap = await createImageBitmap(blob)
+  } catch (err) {
+    throw new EnrichmentError(`caption failed: image decode (${describeCause(err)})`, {
+      retryable: false,
+    })
+  }
   try {
     const scale = Math.min(1, MAX_EDGE_PX / Math.max(bitmap.width, bitmap.height))
     const canvas = document.createElement('canvas')
     canvas.width = Math.max(1, Math.round(bitmap.width * scale))
     canvas.height = Math.max(1, Math.round(bitmap.height * scale))
     const ctx = canvas.getContext('2d')
-    if (!ctx) throw new Error('caption failed: no 2d canvas context')
+    if (!ctx) throw new EnrichmentError('caption failed: no 2d canvas context', { retryable: false })
     ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
     const jpeg = await new Promise<Blob>((resolve, reject) => {
       canvas.toBlob(
-        (b) => (b ? resolve(b) : reject(new Error('caption failed: JPEG encode'))),
+        (b) =>
+          b
+            ? resolve(b)
+            : reject(new EnrichmentError('caption failed: JPEG encode', { retryable: false })),
         'image/jpeg',
         JPEG_QUALITY,
       )
@@ -55,6 +69,10 @@ async function toJpegBase64(blob: Blob): Promise<string> {
   } finally {
     bitmap.close()
   }
+}
+
+function describeCause(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
 }
 
 /**
@@ -79,7 +97,11 @@ export async function captionPhoto(
     }),
     signal: AbortSignal.timeout(TIMEOUT_MS),
   })
-  if (!res.ok) throw new Error(`caption failed: HTTP ${res.status}`)
+  if (!res.ok) {
+    throw new EnrichmentError(`caption failed: HTTP ${res.status}`, {
+      retryable: isRetryableStatus(res.status),
+    })
+  }
 
   const contentType = res.headers.get('content-type') ?? ''
   if (!contentType.includes('ndjson') || !res.body) {

@@ -13,6 +13,8 @@ import { NotificationsSection } from './NotificationsSection'
 import { useAppStore } from '../store/appStore'
 import { formatBytes } from '../store/space'
 import { formatSyncProgress, syncProgressFraction } from '../store/syncProgress'
+import { drainTranscriptions, listSkippedTranscriptions, retryTranscription } from '../transcribe/runner'
+import { drainCaptions, listSkippedCaptions, retryCaption } from '../vision/runner'
 import {
   Button,
   FieldRow,
@@ -262,6 +264,7 @@ export default function SettingsScreen() {
             deletes transcripts or captions you already have — it only stops new ones from being
             generated.
           </p>
+          <EnrichmentStatusLine />
           <Toggle
             label="Enable AI assistant"
             checked={appSettings.assistantEnabled}
@@ -310,6 +313,72 @@ export default function SettingsScreen() {
           </p>
         )}
       </Section>
+    </div>
+  )
+}
+
+/**
+ * Surfaces enrichment items the transcribe/vision runners have permanently
+ * given up on (issue #55: previously invisible and unrecoverable — an entry
+ * simply never grew a transcript/caption, with no explanation). Counts are
+ * loaded on mount/toggle only (Settings entry stays network-free otherwise);
+ * "Retry" clears every skip marker and runs both drains once immediately so
+ * the user sees the outcome without waiting for the next entries-changed
+ * drain trigger.
+ */
+function EnrichmentStatusLine() {
+  const enrichmentEnabled = useAppStore((s) => s.appSettings.enrichmentEnabled)
+  const currentStreamId = useAppStore((s) => s.currentStreamId)
+  const refresh = useAppStore((s) => s.refresh)
+  const [skipped, setSkipped] = useState<number | null>(null)
+  const [retrying, setRetrying] = useState(false)
+
+  async function loadSkipped() {
+    const [transcripts, captions] = await Promise.all([
+      listSkippedTranscriptions(),
+      listSkippedCaptions(),
+    ])
+    setSkipped(transcripts.length + captions.length)
+  }
+
+  useEffect(() => {
+    if (!enrichmentEnabled) {
+      setSkipped(null)
+      return
+    }
+    void loadSkipped()
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- loadSkipped is stable across renders
+  }, [enrichmentEnabled])
+
+  async function retryAll() {
+    setRetrying(true)
+    try {
+      const [transcripts, captions] = await Promise.all([
+        listSkippedTranscriptions(),
+        listSkippedCaptions(),
+      ])
+      await Promise.all([
+        ...transcripts.map((t) => retryTranscription(t.file)),
+        ...captions.map((c) => retryCaption(c.file)),
+      ])
+      await Promise.all([drainTranscriptions(currentStreamId), drainCaptions(currentStreamId)])
+      await refresh()
+      await loadSkipped()
+    } finally {
+      setRetrying(false)
+    }
+  }
+
+  if (!enrichmentEnabled || !skipped) return null
+
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <p className={cx(type_.sub, tone.textMuted)}>
+        {skipped === 1 ? '1 item' : `${skipped} items`} couldn’t be processed automatically.
+      </p>
+      <Button variant="secondary" size="sm" disabled={retrying} onClick={() => void retryAll()}>
+        {retrying ? 'Retrying…' : 'Retry'}
+      </Button>
     </div>
   )
 }
