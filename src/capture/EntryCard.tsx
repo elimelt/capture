@@ -22,13 +22,14 @@ import {
 } from '../ui'
 import { EditEntrySheet } from './EditEntrySheet'
 import { TextSheet } from './TextSheet'
-import { AttachmentBody } from './AttachmentBody'
+import { AttachmentBody, SpokenMark } from './AttachmentBody'
 import { LifecycleBadge } from './LifecycleBadge'
 import { entryLifecycle, hasPendingEnrichment } from './lifecycle'
 import { groupAttachments } from './attachmentGroups'
 import { cardViewModel } from './cardView'
 import { PlaceCard } from './PlaceCard'
 import { locationName } from './placeCardModel'
+import type { Authorship } from './authorship'
 import { reasonLabel, relativeDayLabel } from './related'
 import { useAudioPlayback } from './useAudioPlayback'
 import { useRecorder, type RecordingResult } from './useRecorder'
@@ -196,7 +197,7 @@ export function EntryCard({
       {!expanded && vm.primaryText && (
         <PrimaryTextPreview
           file={vm.primaryText.file}
-          transcript={vm.primaryText.derivedFrom !== undefined}
+          authorship={vm.primaryText.authorship}
           onTap={() => setExpanded(true)}
         />
       )}
@@ -363,13 +364,12 @@ export function EntryCard({
 /**
  * Up to `RELATED_MAX_RESULTS` quiet related-memory rows (#83 v1): relative
  * day label + "why" + a first-line snippet, tapping through to the related
- * entry's day. Styled at the same weight as `AttachmentBody`'s caption
- * treatment (`type_.bodySmall`/`tone.textMuted` for the snippet,
- * `type_.caption`/`tone.textFaint` for the meta line) — this is inferred
- * relatedness, not the user's own words, matching #80's "machine inference
- * is lighter than authored text" direction (landing separately; this reuses
- * the same muted/small tokens already used for captions rather than
- * inventing a parallel token ahead of that issue).
+ * entry's day. The snippet renders in `type_.derived`/`tone.textDerived`
+ * (#80) — this is the app's *inference* that another memory relates, not
+ * the user's own words in this position, so it gets the same quiet
+ * treatment as a photo caption or generated prose, never the authored/
+ * spoken weight — while the meta line stays `type_.caption`/`tone.textFaint`
+ * chrome.
  */
 function RelatedRows({
   rows,
@@ -397,7 +397,7 @@ function RelatedRows({
           >
             <span className={cx('block', type_.caption, tone.textFaint)}>{meta}</span>
             {row.snippet && (
-              <span className={cx('line-clamp-1 block', type_.bodySmall, tone.textMuted)}>
+              <span className={cx('line-clamp-1 block', type_.derived, tone.textDerived)}>
                 {row.snippet}
               </span>
             )}
@@ -418,12 +418,16 @@ function RelatedRows({
  */
 function PrimaryTextPreview({
   file,
-  transcript,
+  authorship,
   onTap,
 }: {
   file: string
-  /** True for a machine transcript (reads as the entry's own voice); false for a user note. */
-  transcript: boolean
+  /** Authored (typed note) or spoken (transcript) — both render at the same
+   *  heaviest/darkest weight (#80): the collapsed preview is the entry's own
+   *  voice either way. Spoken text additionally gets the quiet
+   *  `SpokenMark` glyph noting it was transcribed. Never `'derived'` here —
+   *  `cardViewModel` never picks a caption as primary text. */
+  authorship: Authorship
   onTap: () => void
 }) {
   const [text, setText] = useState<string | null>(null)
@@ -443,9 +447,10 @@ function PrimaryTextPreview({
         className={cx(
           'line-clamp-2 block whitespace-pre-wrap break-words',
           type_.bodyStrong,
-          transcript ? tone.textPrimary : tone.textSecondary,
+          tone.textPrimary,
         )}
       >
+        {authorship === 'spoken' && <SpokenMark />}
         {text}
       </span>
     </button>

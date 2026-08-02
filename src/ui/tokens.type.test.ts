@@ -11,7 +11,7 @@ import { type_ } from './tokens'
  */
 
 /** Tokens that render the user's/app's content voice — serif. */
-const SERIF_TOKENS = ['title', 'heading', 'body', 'bodyStrong', 'bodySmall'] as const
+const SERIF_TOKENS = ['title', 'heading', 'body', 'bodyStrong', 'bodySmall', 'derived'] as const
 
 /** Tokens that render chrome: labels, controls, metadata — sans. */
 const SANS_TOKENS = ['sub', 'caption', 'overline', 'ui'] as const
@@ -31,6 +31,15 @@ describe('type_ functional contract (serif = content, sans = chrome)', () => {
     // often mistaken for body text (timestamps, subtitles, badges).
     expect(type_.caption).toMatch(/\bfont-sans\b/)
     expect(type_.sub).toMatch(/\bfont-sans\b/)
+  })
+
+  it('type_.derived never reads bolder than authored/spoken text (#80)', () => {
+    // Machine-inferred content must never outweigh the user's own words
+    // (`bodyStrong`, which carries font-medium); `derived` is italic
+    // instead of bold-and-never bold itself.
+    expect(type_.derived).not.toContain('font-medium')
+    expect(type_.derived).not.toContain('font-semibold')
+    expect(type_.derived).toContain('italic')
   })
 
   it('covers every type_ key with exactly one classification', () => {
