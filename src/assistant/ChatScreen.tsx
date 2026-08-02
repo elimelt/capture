@@ -15,6 +15,7 @@ import {
   ScreenHeader,
   TextInput,
   cx,
+  layer,
   motion,
   tone,
   type_,
@@ -243,7 +244,8 @@ function ChatView({
           its blurred surface extends under the iOS status bar. */}
       <div
         className={cx(
-          'sticky top-0 z-30 -mx-4 -mt-[calc(env(safe-area-inset-top)_+_1rem)] border-b px-4 pb-3 pt-[calc(env(safe-area-inset-top)_+_1rem)] backdrop-blur-xl',
+          'sticky top-0 -mx-4 -mt-[calc(env(safe-area-inset-top)_+_1rem)] border-b px-4 pb-3 pt-[calc(env(safe-area-inset-top)_+_1rem)] backdrop-blur-xl',
+          layer.nav,
           tone.border,
           'bg-paper/85 dark:bg-paper-dark/85',
         )}
@@ -333,7 +335,8 @@ function ChatView({
           (fixed elements stay in the layout viewport in standalone mode). */}
       <div
         className={cx(
-          'fixed inset-x-0 z-40 border-t px-3 py-2 backdrop-blur-xl',
+          'fixed inset-x-0 border-t px-3 py-2 backdrop-blur-xl',
+          layer.raised,
           tone.border,
           'bg-card/80 dark:bg-card-dark/80',
         )}

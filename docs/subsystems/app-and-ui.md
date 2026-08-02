@@ -91,12 +91,18 @@ by necessity, the splash colors in `index.html` and the manifest colors in
   chrome), `motion` (entrance animations only; exits are instant via conditional
   rendering), `tap` (the 44 pt minimum tap target), and the `cx` class combiner.
 - **Primitives**: `Button`/`IconButton`, `Card`/`Section`/`EmptyState`, `Sheet` (modal
-  bottom sheet with body scroll lock and keyboard-inset padding), `Toast` (transient,
-  caller-owned dismissal — it never auto-dismisses itself), form fields (`TextInput`,
-  `Select`, `TextArea`, `Toggle`, `FieldRow`), `ScreenHeader`, `ErrorBoundary`.
-- **Z-index ladder** (keep new overlays within it): Leaflet maps capped at `z-0`
-  (isolated stacking context in `index.css`, so inline maps never paint over sheets) →
-  `Toast` `z-40` → `Sheet` `z-50` → boot splash `z-100`.
+  bottom sheet with body scroll lock and keyboard-inset padding, portaled to
+  `document.body` via `OverlayPortal`), `Toast` (transient, caller-owned dismissal —
+  it never auto-dismisses itself), form fields (`TextInput`, `Select`, `TextArea`,
+  `Toggle`, `FieldRow`), `ScreenHeader`, `ErrorBoundary`.
+- **Z-index ladder** — the `layer` token scale in `src/ui/tokens.ts`; never hardcode
+  a `z-*` class: Leaflet maps capped at `z-0` (isolated stacking context in
+  `index.css`, so inline maps never paint over sheets) → `layer.nav` `z-30` (tab bar,
+  sticky headers) → `layer.raised` `z-40` (toasts, chat composer) → `layer.overlay`
+  `z-50` (sheets, scrims, fullscreen viewers) → boot splash `z-100`. Overlays must
+  mount through `OverlayPortal` (`src/ui/Sheet.tsx`): entrance animations run with
+  fill `both`, keeping screens/cards permanent stacking contexts that would otherwise
+  trap an in-place overlay beneath the tab bar.
 
 ## State flow
 

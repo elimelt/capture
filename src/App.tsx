@@ -10,7 +10,7 @@ import { summarizeSyncStatuses } from './store/events'
 import { drainTranscriptions } from './transcribe/runner'
 import { drainCaptions } from './vision/runner'
 import { ReconnectPill } from './drive/ReconnectPill'
-import { Toast, cx, tone, type_ } from './ui'
+import { Toast, cx, layer, tone, type_ } from './ui'
 
 // Opt-in assistant: lazy so users who never enable it never download the
 // chat bundle (AI SDK + markdown renderer).
@@ -135,10 +135,13 @@ export default function App() {
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>
-        {/* iOS-style tab bar: translucent surface + blur (not tone.surface). */}
+        {/* iOS-style tab bar: translucent surface + blur (not tone.surface).
+            Explicitly on layer.nav so overlays (layer.overlay, portaled to
+            document.body) always paint — and hit-test — above it. */}
         <nav
           className={cx(
             'fixed inset-x-0 bottom-0 border-t pb-[env(safe-area-inset-bottom)] backdrop-blur-xl',
+            layer.nav,
             tone.border,
             'bg-card/80 dark:bg-card-dark/80',
           )}
