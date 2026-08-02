@@ -152,7 +152,10 @@ Stage by stage:
    interrupted upload reference nothing and are invisible to any fold.
 
 After a successful upload, local audio blobs are pruned unless the stream's
-`keepAudioLocally` setting says otherwise.
+`keepAudioLocally` setting says otherwise. The pull side honors the same setting
+symmetrically (§3, issue #53): a pull never downloads audio for a stream with
+`keepAudioLocally: false`, so re-syncing (a second device, or the wipe→re-pull
+recovery flow) can't silently re-inflate audio the setting says to never keep.
 
 ## 2a. Multi-stream sync: capture streams + system streams
 
@@ -227,7 +230,10 @@ converges the replica with Drive before anything is pushed:
    by event id, and **eagerly** download every attachment the events reference
    that isn't already stored (tolerating pruned or still-uploading attachments —
    the carrier is the commit, so a referenced-but-absent attachment is a
-   transient race, not corruption).
+   transient race, not corruption) — **except audio when `keepAudioLocally` is
+   false** (issue #53): the setting is read once per `pullStream` call and
+   applied the same way on this side as `pruneAudio` applies it on the push
+   side, so a pull can never re-inflate audio the setting says to never keep.
 3. **Import.** `importEvents()` (`src/store/events.ts`) writes events + blobs in
    one transaction per partition, marks their sync rows `uploaded`/`done` (they
    came *from* Drive — the drainer must never re-push them), and bumps
@@ -255,6 +261,31 @@ pending or errored on any stream or any stream has never completed a clean cycle
 plus "Last synced …" / "Never synced" — visibility in place of automatic
 background sync. Skills perform the mirror-image read on the Drive side: list `log/`
 partitions past their checkpoint, parse records, and run the same fold.
+
+## 4a. Blob lifecycle: GC for fold-hidden attachments (issue #53)
+
+Before `src/store/blobGc.ts` existed, the only blob-deletion paths were
+`wipeAll()` and `pruneAudio`'s `keepAudioLocally` pruning (§2) — nothing ever
+reclaimed a blob a `revoke` or an `AmendPatch.removeAttachments` had hidden from
+the *fold*. The log itself stays append-only (removed attachments and revoked
+captures remain in the log forever, per §1), but their blobs have no reason to:
+a hidden attachment's bytes serve no reader once nothing folds it into view.
+
+`planBlobGc(events, syncStatuses)` (pure) computes, for one stream, which
+attachment filenames are safe to delete right now: a file qualifies iff it is
+absent from every entry `fold(events)` currently returns **and** the event that
+attached it already has sync status `'uploaded'` — a still-`queued`/`error` row
+(or a missing one) is never touched, so GC can never delete the only copy of
+something Drive doesn't have yet. `reclaimStreamBlobs(stream)` runs the sweep
+and deletes the result. It is attachment-kind-agnostic (audio, photo, text
+alike), unlike `pruneAudio`, which only ever prunes *visible* entries' audio —
+the two are complementary, not overlapping.
+
+The sweep runs from `appStore.refreshSpace()` — called when Settings' Data
+section mounts and after `wipe()` — across every `allSyncStreams()` stream,
+before re-measuring `appSpace`. It touches no network (only local
+events/sync-rows/blobs), so calling it from a local-only action rather than
+`drainSync` does not add an automatic sync trigger.
 
 ## 5. Auth lifecycle and failure model
 

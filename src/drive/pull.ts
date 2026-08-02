@@ -4,7 +4,10 @@
  * local replica lacks (by id: record names carry seq_ts_id and segment
  * names carry range_ts_firstId, so discovery needs no file reads), downloads
  * each missing carrier plus every referenced attachment blob (eager: full
- * offline availability), and imports them atomically. A segment imports as
+ * offline availability) — except audio when the stream's `keepAudioLocally`
+ * setting is off (issue #53): the event still imports, only its audio blob
+ * is left unfetched, so a pull can never re-inflate audio the setting says
+ * to never keep — and imports them atomically. A segment imports as
  * a unit — all lines or none, deduped by event id against events already
  * held (§5.8) — and one malformed line fails the whole partition's import
  * rather than half-importing silently.
@@ -43,6 +46,7 @@ import { parseSegment } from '../contract/segments'
 import { idOfRecordName, parseSegmentName } from '../contract/filenames'
 import type { Attachment, LogEvent } from '../contract/types'
 import { getBlob, importEvents, listEvents } from '../store/events'
+import { getStreamSettings } from '../store/settings'
 import {
   DriveError,
   FOLDER_MIME,
@@ -113,10 +117,15 @@ export async function pullStream(token: string, stream: string): Promise<PullRes
     const tree = (await getTree()) ?? (await ensureTree(token, [stream]))
     const st = tree.streams[stream] ?? (await ensureTree(token, [stream])).streams[stream]
     const known = new Set((await listEvents(stream)).map((e) => e.id))
+    // Read once per pull: honored the same way on the pull side as the push
+    // side prunes after upload (queue.ts#pruneAudio) — a false setting means
+    // audio is never kept locally, whether it got here by local capture or
+    // by a pull re-inflating another device's history (issue #53).
+    const { keepAudioLocally } = await getStreamSettings(stream)
 
     const cursor = await getChangesToken(stream)
     if (!cursor) {
-      pulled = await pullEverything(token, stream, tree, st, known)
+      pulled = await pullEverything(token, stream, tree, st, known, keepAudioLocally)
       return { outcome: pulled > 0 ? 'pulled' : 'idle', pulled }
     }
 
@@ -130,14 +139,14 @@ export async function pullStream(token: string, stream: string): Promise<PullRes
       // one full listing walk, which re-mints a fresh cursor.
       if (err instanceof DriveError && !err.isAuth && !err.isRetryable) {
         await clearChangesToken(stream)
-        pulled = await pullEverything(token, stream, tree, st, known)
+        pulled = await pullEverything(token, stream, tree, st, known, keepAudioLocally)
         return { outcome: pulled > 0 ? 'pulled' : 'idle', pulled }
       }
       throw err
     }
 
     for (const partition of await dirtyPartitions(token, stream, tree, st, known, feed.changes)) {
-      pulled += await importPartition(token, stream, tree, st, partition, known)
+      pulled += await importPartition(token, stream, tree, st, partition, known, keepAudioLocally)
     }
     // Advance the cursor only after everything imported: a mid-pull failure
     // replays the same change window next time (idempotent — ids we already
@@ -166,6 +175,7 @@ async function pullEverything(
   tree: DriveTree,
   st: StreamTree,
   known: Set<string>,
+  keepAudioLocally: boolean,
 ): Promise<number> {
   const startToken = await getStartPageToken(token)
   let pulled = 0
@@ -173,7 +183,7 @@ async function pullEverything(
     (c) => c.mimeType === FOLDER_MIME && PARTITION_RE.test(c.name),
   )
   for (const partition of partitions) {
-    pulled += await importPartition(token, stream, tree, st, partition, known)
+    pulled += await importPartition(token, stream, tree, st, partition, known, keepAudioLocally)
   }
   await saveChangesToken(stream, startToken)
   return pulled
@@ -269,6 +279,14 @@ async function resolvePartition(
  * commit in one transaction; a malformed record or segment line throws
  * before anything from this partition is imported. Returns how many events
  * were imported.
+ *
+ * `keepAudioLocally = false` skips downloading audio attachments entirely
+ * (issue #53): without this, a pull would re-inflate audio the push side had
+ * already pruned (or another device's audio the setting says never to keep),
+ * silently defeating the setting the moment sync is bidirectional. The event
+ * still imports — only its audio blob is left unfetched, exactly like the
+ * post-upload-pruned case the drainer and `uploadAttachment` already
+ * tolerate (`if (!blob) return`).
  */
 async function importPartition(
   token: string,
@@ -277,6 +295,7 @@ async function importPartition(
   st: StreamTree,
   partition: PartitionRef,
   known: Set<string>,
+  keepAudioLocally: boolean,
 ): Promise<number> {
   // Keep the push path's partition cache warm as a side benefit.
   if (st.partitions[partition.name] !== partition.id) {
@@ -302,6 +321,7 @@ async function importPartition(
       // another carrier (§5.8); records claiming another stream are skipped.
       if (event.stream !== stream || known.has(event.id)) continue
       for (const att of attachmentsOf(event)) {
+        if (att.kind === 'audio' && !keepAudioLocally) continue
         const child = byName.get(att.file)
         // Missing on Drive (pruned or push race) or already local: skip.
         if (!child || (await getBlob(att.file))) continue
