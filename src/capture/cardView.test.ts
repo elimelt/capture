@@ -44,7 +44,7 @@ describe('cardViewModel', () => {
       primaryText: undefined,
       primaryAudio: undefined,
       collapsedShowsLocation: false,
-      extraCount: 0,
+      photoGroups: [],
     })
   })
 
@@ -70,16 +70,41 @@ describe('cardViewModel', () => {
     expect(vm.primaryAudio).toEqual(AUDIO)
   })
 
-  it('counts exactly the attachments hidden behind expansion', () => {
-    // TRANSCRIPT is primary text, AUDIO is primary audio — both surfaced
-    // collapsed. PHOTO + CAPTION are only revealed on expansion.
+  it('exposes every photo for the always-visible collapsed grid, paired with its caption (#102)', () => {
+    // Nothing is hidden behind expansion any more: PHOTO + CAPTION must
+    // surface on the view-model even though AUDIO/TRANSCRIPT are already
+    // primary — the "extraCount" concept (attachments hidden until
+    // expansion) is gone along with the content it used to count.
     const vm = vmOf(entry({ attachments: [AUDIO, TRANSCRIPT, PHOTO, CAPTION] }))
-    expect(vm.extraCount).toBe(2)
+    expect(vm.photoGroups).toEqual([{ photo: PHOTO, captions: [CAPTION] }])
   })
 
-  it('extraCount is zero when every attachment is the primary text/audio', () => {
-    const vm = vmOf(entry({ attachments: [AUDIO, TRANSCRIPT] }))
-    expect(vm.extraCount).toBe(0)
+  it('photo grid ordering is deterministic — capture order, not insertion order of captions', () => {
+    const photo2: Attachment = { kind: 'photo', file: '000041_x_photo2.jpg', mimeType: 'image/jpeg' }
+    const caption2: Attachment = {
+      kind: 'text',
+      file: '000041_x_note4.txt',
+      mimeType: 'text/plain',
+      derivedFrom: photo2.file,
+    }
+    // Attachments arrive in the order they were captured/amended: PHOTO
+    // first, its caption later, then a second photo, then its caption.
+    const vm = vmOf(entry({ attachments: [PHOTO, CAPTION, photo2, caption2] }))
+    expect(vm.photoGroups.map((g) => g.photo.file)).toEqual([PHOTO.file, photo2.file])
+    expect(vm.photoGroups).toEqual([
+      { photo: PHOTO, captions: [CAPTION] },
+      { photo: photo2, captions: [caption2] },
+    ])
+  })
+
+  it('pairs a captionless photo with an empty captions array rather than omitting it', () => {
+    const vm = vmOf(entry({ attachments: [PHOTO] }))
+    expect(vm.photoGroups).toEqual([{ photo: PHOTO, captions: [] }])
+  })
+
+  it('yields an empty photoGroups array for an entry with no photos', () => {
+    const vm = vmOf(entry({ attachments: [AUDIO, TRANSCRIPT, NOTE] }))
+    expect(vm.photoGroups).toEqual([])
   })
 
   it('reports collapsedShowsLocation true for a place label', () => {

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Button, FieldRow, Sheet, TextInput, commitNumericDraft } from '../ui'
+import { Button, FieldRow, Sheet, TextInput, commitNumericDraft, cx, tone, type_ } from '../ui'
 import { DEFAULT_PLACE_RADIUS_M } from './geo'
 
 interface NamePlaceSheetProps {
@@ -25,7 +25,7 @@ export function NamePlaceSheet({ address, onSave, onClose }: NamePlaceSheetProps
 
   return (
     <Sheet title="Name this place" onClose={onClose}>
-      {address && <p className="mb-3 -mt-1 text-ink-muted dark:text-ink-muted-dark">near {address}</p>}
+      {address && <p className={cx('mb-3 -mt-1', type_.caption, tone.textMuted)}>near {address}</p>}
       <TextInput
         autoFocus
         type="text"

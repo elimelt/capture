@@ -218,6 +218,48 @@ describe('DriveError classification', () => {
     const e500 = new DriveError(500, 'boom')
     expect(e500.isRetryable).toBe(true)
   })
+
+  // Issue #88: Drive returns 403 (not just 429) for both a full Drive and
+  // rate limiting; only reason-less 403s (or unrecognized reasons) are auth.
+  it('reclassifies a 403 storageQuotaExceeded as quota, not auth or retryable', () => {
+    const e = new DriveError(403, 'Drive 403: The user has exceeded their Drive storage quota', 'storageQuotaExceeded')
+    expect(e.isQuotaExceeded).toBe(true)
+    expect(e.isAuth).toBe(false)
+    expect(e.isRetryable).toBe(false)
+  })
+
+  it('reclassifies rate-limited 403 reasons as retryable, not auth', () => {
+    for (const reason of ['rateLimitExceeded', 'userRateLimitExceeded', 'dailyLimitExceeded']) {
+      const e = new DriveError(403, 'slow down', reason)
+      expect(e.isRetryable).toBe(true)
+      expect(e.isAuth).toBe(false)
+      expect(e.isQuotaExceeded).toBe(false)
+    }
+  })
+
+  it('keeps a reason-less or unrecognized-reason 403 as auth', () => {
+    expect(new DriveError(403, 'scope').isAuth).toBe(true)
+    expect(new DriveError(403, 'scope', 'somethingElse').isAuth).toBe(true)
+  })
+
+  it('parses error.errors[0].reason from the response body onto the thrown DriveError', async () => {
+    stubFetch(
+      jsonResponse(
+        {
+          error: {
+            message: 'The user has exceeded their Drive storage quota',
+            errors: [{ reason: 'storageQuotaExceeded' }],
+          },
+        },
+        403,
+      ),
+    )
+    await expect(findFile('tok', { name: 'x', parentId: 'root' })).rejects.toMatchObject({
+      status: 403,
+      reason: 'storageQuotaExceeded',
+      isQuotaExceeded: true,
+    })
+  })
 })
 
 describe('readFileText', () => {

@@ -12,21 +12,55 @@ export const FOLDER_MIME = 'application/vnd.google-apps.folder'
 /** SPEC §8.4: resumable upload for anything > 5 MB (rare audio, some photos). */
 const RESUMABLE_THRESHOLD = 5 * 1024 * 1024
 
-/** A Drive HTTP failure, classified for the queue's retry policy (§8.4). */
+/**
+ * Drive reason codes (`error.errors[0].reason`) that mean "you've hit a rate
+ * limit", not "the token is bad" — Drive sometimes reports these as 403
+ * instead of 429 (issue #88).
+ */
+const RATE_LIMIT_REASONS = new Set(['rateLimitExceeded', 'userRateLimitExceeded', 'dailyLimitExceeded'])
+
+/** A Drive HTTP failure, classified for the queue's retry policy (§8.4, §8.4.5). */
 export class DriveError extends Error {
   readonly status: number
-  constructor(status: number, message: string) {
+  /**
+   * Drive's machine-readable reason code for this failure, when the error
+   * body parsed and carried one (`error.errors[0].reason`, e.g.
+   * `storageQuotaExceeded`, `rateLimitExceeded`). Undefined otherwise — a
+   * plain 403 with no reason (or an unparseable body) is treated as a scope
+   * problem, i.e. auth (see `isAuth`).
+   */
+  readonly reason?: string
+  constructor(status: number, message: string, reason?: string) {
     super(message)
     this.name = 'DriveError'
     this.status = status
+    this.reason = reason
   }
-  /** 401/403 → token invalid or scope missing: stop and reconnect. */
+  /**
+   * Drive is full: 403 with reason `storageQuotaExceeded` (SPEC §8.4.5). Not
+   * auth (the token is fine) and not retryable (retrying changes nothing
+   * until the user frees space) — a distinct outcome the queue and store
+   * surface explicitly instead of looping the reconnect pill forever.
+   */
+  get isQuotaExceeded(): boolean {
+    return this.status === 403 && this.reason === 'storageQuotaExceeded'
+  }
+  /** A 403 whose reason is actually rate limiting, not a scope/auth problem. */
+  private get isRateLimited403(): boolean {
+    return this.status === 403 && this.reason !== undefined && RATE_LIMIT_REASONS.has(this.reason)
+  }
+  /**
+   * 401 always; 403 only when it isn't quota-exceeded or rate-limited (i.e.
+   * insufficient scope, revoked grant) → stop and reconnect. Issue #88: a
+   * full Drive or a rate-limited 403 used to misclassify here, causing an
+   * endless, unfixable "reconnect" loop when Drive was simply full.
+   */
   get isAuth(): boolean {
-    return this.status === 401 || this.status === 403
+    return this.status === 401 || (this.status === 403 && !this.isQuotaExceeded && !this.isRateLimited403)
   }
-  /** 429/5xx → transient: back off and retry. */
+  /** 429/5xx, or a 403 that's really rate limiting → transient: back off and retry. */
   get isRetryable(): boolean {
-    return this.status === 429 || this.status >= 500
+    return this.status === 429 || this.status >= 500 || this.isRateLimited403
   }
 }
 
@@ -37,13 +71,17 @@ function bearer(token: string): HeadersInit {
 async function ensureOk(res: Response): Promise<Response> {
   if (res.ok) return res
   let detail = res.statusText
+  let reason: string | undefined
   try {
-    const body = (await res.json()) as { error?: { message?: string } }
+    const body = (await res.json()) as {
+      error?: { message?: string; errors?: { reason?: string }[] }
+    }
     if (body.error?.message) detail = body.error.message
+    reason = body.error?.errors?.[0]?.reason
   } catch {
     // Non-JSON error body; the status alone is enough to classify.
   }
-  throw new DriveError(res.status, `Drive ${res.status}: ${detail}`)
+  throw new DriveError(res.status, `Drive ${res.status}: ${detail}`, reason)
 }
 
 /** Escape a value for use inside a Drive query-string literal. */

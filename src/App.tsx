@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect } from 'react'
+import { Suspense, lazy, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom'
 import CaptureScreen from './capture/CaptureScreen'
 import DayScreen from './dayview/DayScreen'
@@ -7,15 +7,48 @@ import { applyAppBadge, badgeCount } from './notify/badge'
 import { showAppNotification } from './notify/local'
 import { useAppStore } from './store/appStore'
 import { summarizeSyncStatuses } from './store/events'
+import { syncProgressFraction } from './store/syncProgress'
+import { swUpdate } from './swUpdate'
 import { drainTranscriptions } from './transcribe/runner'
 import { drainCaptions } from './vision/runner'
 import { ReconnectPill } from './drive/ReconnectPill'
-import { Toast, cx, layer, shape, tone, type_ } from './ui'
+import { ProgressBar, RouteErrorBoundary, Toast, cx, layer, shape, tone, type_ } from './ui'
 import { TABS, visibleTabs } from './navTabs'
 
-// Opt-in assistant: lazy so users who never enable it never download the
-// chat bundle (AI SDK + markdown renderer).
-const ChatScreen = lazy(() => import('./assistant/ChatScreen'))
+/**
+ * Opt-in assistant route (issue #66). Lazy so users who never enable it
+ * never download the chat bundle (AI SDK + markdown renderer) — but its
+ * chunk is deliberately kept out of the precache (vite.config.ts
+ * `globIgnores`), so a stale or absent runtime cache entry after a deploy
+ * means the `import()` can reject outright when offline. Wrapped in its own
+ * `RouteErrorBoundary` (not the root one) so that failure degrades to an
+ * inline retry instead of taking down Capture and every other screen, and
+ * given a real Suspense fallback instead of `null` so a slow fetch isn't a
+ * blank screen. `attempt` is bumped on Retry and threaded into both the
+ * lazy() call and the boundary's `key`: React.lazy caches a rejected
+ * `import()` forever on its own reference, so only a fresh lazy() inside a
+ * remounted boundary actually re-fetches the chunk.
+ */
+function ChatRoute() {
+  const [attempt, setAttempt] = useState(0)
+  const ChatScreen = useMemo(() => lazy(() => import('./assistant/ChatScreen')), [attempt])
+  return (
+    <RouteErrorBoundary
+      key={attempt}
+      title="Chat couldn't load"
+      body="This screen hasn't been downloaded yet and there's no connection to fetch it. Reconnect and try again."
+      onRetry={() => setAttempt((n) => n + 1)}
+    >
+      <Suspense
+        fallback={
+          <p className={cx('p-6 text-center', type_.sub, tone.textMuted)}>Loading Chat…</p>
+        }
+      >
+        <ChatScreen />
+      </Suspense>
+    </RouteErrorBoundary>
+  )
+}
 
 /** "2 transcripts ready · 1 caption ready" — only the parts that happened. */
 function enrichmentNoticeBody(transcribed: number, captioned: number): string {
@@ -36,7 +69,11 @@ export default function App() {
   const clearError = useAppStore((s) => s.clearError)
   const assistantEnabled = useAppStore((s) => s.appSettings.assistantEnabled)
   const enrichmentEnabled = useAppStore((s) => s.appSettings.enrichmentEnabled)
+  const syncing = useAppStore((s) => s.syncing)
+  const syncProgress = useAppStore((s) => s.syncProgress)
   const tabs = visibleTabs(TABS, assistantEnabled)
+  // Issue #61: a waiting SW update, published by main.tsx's registerSW callback.
+  const updateAvailable = useSyncExternalStore(swUpdate.subscribe, swUpdate.snapshot)
 
   // The HTML boot splash (index.html) covers the app until the store is
   // hydrated, so the first paint is real content, never a flash of empty
@@ -124,15 +161,7 @@ export default function App() {
             <Route path="/day/:date" element={<DayScreen />} />
             <Route
               path="/chat"
-              element={
-                assistantEnabled ? (
-                  <Suspense fallback={null}>
-                    <ChatScreen />
-                  </Suspense>
-                ) : (
-                  <Navigate to="/" replace />
-                )
-              }
+              element={assistantEnabled ? <ChatRoute /> : <Navigate to="/" replace />}
             />
             <Route path="/settings" element={<SettingsScreen />} />
             <Route path="*" element={<Navigate to="/" replace />} />
@@ -157,7 +186,7 @@ export default function App() {
                 end={tab.to === '/'}
                 className={({ isActive }) =>
                   cx(
-                    'flex min-h-14 flex-1 flex-col items-center justify-center gap-1',
+                    'relative flex min-h-14 flex-1 flex-col items-center justify-center gap-1',
                     type_.sub,
                     isActive
                       ? cx('font-semibold', tone.accent)
@@ -167,6 +196,24 @@ export default function App() {
               >
                 {({ isActive }) => (
                   <>
+                    {/* Global sync affordance: syncing is manual-only and can
+                        run long (many attachments/batches/streams), so a
+                        subtle indicator on the Settings tab — where "Sync
+                        now" lives — makes progress visible from any screen,
+                        not just while Settings is open. Determinate once the
+                        current stream's upload total is known, an
+                        indeterminate sweep otherwise (e.g. a pull page).
+                        aria-hidden: purely visual — the link's accessible
+                        name must stay "Settings", not gain a stray percent
+                        from the progressbar role; the live progress text
+                        already exists in Settings itself. */}
+                    {tab.to === '/settings' && syncing && (
+                      <span aria-hidden="true" className="absolute inset-x-3 top-0">
+                        <ProgressBar
+                          fraction={syncProgress ? syncProgressFraction(syncProgress) : null}
+                        />
+                      </span>
+                    )}
                     {tab.label}
                     {/* Active indicator: a shape, not just color/weight, per
                         the design review ("active-tab indication is almost
@@ -188,6 +235,15 @@ export default function App() {
           </div>
         </nav>
       </div>
+      {updateAvailable && (
+        <Toast
+          actionLabel="Reload"
+          onAction={() => swUpdate.apply()}
+          bottomRem={lastError ? 8.5 : 5.5}
+        >
+          New version available
+        </Toast>
+      )}
       {lastError && (
         <Toast actionLabel="Dismiss" onAction={clearError}>
           {lastError}

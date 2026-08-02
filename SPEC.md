@@ -239,7 +239,10 @@ interface Attachment {
   kind: 'audio' | 'text' | 'photo';
   // audio: Blob + mimeType (audio/mp4 on iOS) + durationSec
   // text:  string (typed or pasted note)
-  // photo: Blob + mimeType (image/jpeg|png|heic->jpeg)
+  // photo: Blob + mimeType — downscaled/re-encoded to JPEG at capture time
+  //        (long edge 2048px, quality 0.85, EXIF rotation baked in; issue
+  //        #58), regardless of camera source format; the original blob is
+  //        kept as-is only if decode/encode fails (src/capture/photo.ts)
   derivedFrom?: string;        // sibling attachment this was machine-derived
                                // from (e.g. a transcript's source audio);
                                // absent = user-created content
@@ -495,7 +498,9 @@ the folded entry list with results annotations, §3.5).
 - **Skill setup** (per stream): a guided page that (a) shows the skill install
   instructions per provider, (b) renders the stream's canonical skill prompt (§6.2) with
   the user's folder path and calendar choice substituted in, with a copy button.
-- **Data**: open Drive folder link; wipe local data; storage usage — local device
+- **Data**: open Drive folder link; wipe local data (clears the local IndexedDB log,
+  every SW Cache Storage bucket — including the Nominatim/OSM-tile runtime caches — and
+  best-effort revokes the Google OAuth grant, issue #65); storage usage — local device
   usage/quota (`storage.estimate()`) with an app-data breakdown, plus Drive account
   usage/quota and the app's Drive footprint, checked on demand (never polled).
 
@@ -950,7 +955,12 @@ this scenario is the acceptance test for the extensibility invariant (§5.5).
 ## 7. Location
 
 - Snapshot at capture only, via `getCurrentPosition`; never blocks capture; entirely
-  optional (Settings toggle removes all geolocation calls).
+  optional (the Settings `locationEnabled` toggle removes ambient geolocation calls
+  made passively at capture time). Explicit user gestures — "add current location as
+  place" in Settings, "use current location" in the location editor — call geolocation
+  directly regardless of the toggle: an explicit tap is deliberate intent, not passive
+  stamping, and the browser's own permission prompt still gates the actual read either
+  way. Both surface a short error line on failure rather than a silent no-op.
 - Labels come from user-defined Places (§3.4); capturing at an unmatched coordinate
   prompts to name a new place (dismissable), which retro-labels the entry. A best-effort
   reverse geocode (OSM Nominatim) adds a short `address` ("near …") to Places and to a
@@ -1013,7 +1023,12 @@ user's assistant, authorized separately by the user in that product.
    **every registered stream** (system streams first, then capture streams — §3.1);
    this is intentional: system streams are never the on-screen stream, and it is a
    strict improvement for any future second capture stream. A stream with nothing
-   queued costs no upload-side Drive calls at all. Per stream: sequential uploads
+   queued costs no upload-side Drive calls at all. Concurrent calls are serialized by
+   a Web Locks lock spanning every tab/window on the origin, not just in-memory state
+   (prevents two overlapping cycles from minting divergent pre-generated file ids for
+   the same contract filename); a call that finds the lock held reports a distinct
+   "busy" outcome immediately rather than queuing or running alongside the holder. Per
+   stream: sequential uploads
    into the event's stream/date partition, following the atomic append protocol
    (§5.2): attachments first (resumable upload for anything > 5 MB — rare for audio;
    possible for photos), the event record `.json` last — the record is the commit.
@@ -1031,10 +1046,21 @@ user's assistant, authorized separately by the user in that product.
    `appProperties` at creation time; tags are advisory (older files carry none)
    and invisible to other readers.
 4. Success → status `uploaded`; local audio blob retained or pruned per Settings.
-5. Failures: 429/5xx → keep queued, stop the drain; the next manual "Sync now"
-   retries immediately (no persisted backoff — sync has no automatic trigger, so a
-   retry window could only swallow the user's explicit ask). 401/403 → keep queued +
-   reconnect pill; storage-quota errors surface explicitly (Drive full).
+   Separately, a blob GC sweep (issue #53, `src/store/blobGc.ts`) reclaims any
+   attachment blob — any kind, not just audio — that the fold no longer shows
+   (a `revoke`d entry or a `removeAttachments`-dropped file) once its owning
+   event has reached `uploaded`; it never touches a blob whose event is still
+   queued or errored. This is local bookkeeping (no network) run opportunistically
+   (Settings' Data section, after wipe), not part of the sync cycle itself.
+5. Failures: 429/5xx, or a 403 whose reason is Drive-side rate limiting
+   (`rateLimitExceeded`/`userRateLimitExceeded`/`dailyLimitExceeded`) → keep queued,
+   stop the drain; the next manual "Sync now" retries immediately (no persisted
+   backoff — sync has no automatic trigger, so a retry window could only swallow the
+   user's explicit ask). 401, or a 403 with no reason (or an unrecognized one) → keep
+   queued + reconnect pill. A 403 with reason `storageQuotaExceeded` (Drive full)
+   surfaces explicitly as its own outcome — kept queued like the retryable case, but
+   never prompting reconnect (the token is fine; only Drive's storage is full, so
+   reconnecting can never resolve it).
 
 ### 8.5 Pull engine (Drive → local; bidirectional sync)
 
@@ -1065,7 +1091,11 @@ device — or a reinstalled/wiped one — converges on the full log:
 2. **Download eagerly.** For each missing carrier: fetch the record `.json` (or the
    segment `.ndjson`, splitting it into events — a segment imports as a unit, all
    lines or none, deduped against events already held), then fetch every
-   referenced attachment blob not already local (full offline availability). An
+   referenced attachment blob not already local (full offline availability) —
+   **except audio when the stream's `keepAudioLocally` setting is off** (issue
+   #53): the event still imports, only its audio blob is left unfetched, so a
+   pull can never re-inflate audio the setting says to never keep (whether it's
+   this device's own previously-pruned audio or another device's history). An
    attachment absent on Drive (pruned, or a §5.2 push race) is skipped and picked up on
    a later pull — the record commits last on push, so this is rare.
 3. **Import atomically.** Events + blobs commit in one transaction; pulled events get
@@ -1120,7 +1150,7 @@ chat subscription instead of per-call API keys.
 | Layer | Choice |
 |---|---|
 | Framework | React 18 + TypeScript, Vite |
-| PWA | `vite-plugin-pwa` (Workbox), `registerType: 'autoUpdate'` |
+| PWA | `vite-plugin-pwa` (Workbox), `registerType: 'prompt'` with an in-session update-available reload prompt (issue #61) |
 | State | Zustand (UI) + IndexedDB via `idb` (entries keyed by stream, blobs, queue, places, settings) |
 | Routing | React Router: `/` capture, `/day/:date`, `/settings`, `/chat` (opt-in assistant) |
 | Styling | Tailwind CSS; dark-mode aware; ≥44pt touch targets |

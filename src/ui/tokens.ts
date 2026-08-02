@@ -63,10 +63,11 @@ export const type_ = {
   heading: 'font-serif text-[17px] font-semibold leading-snug',
   /** Primary reading content: entries, notes. */
   body: 'font-serif text-[16px] leading-normal',
-  /** Main entry text — transcripts and notes. A step up from `body` so the
-   *  entry's own words lead the card over descriptive metadata. `leading-snug`
-   *  (not `leading-normal`) so a two-line-clamped preview (#78) reads as a
-   *  compact fragment of speech rather than a roomy headline (#85). */
+  /** Main entry text — transcripts and notes, rendered in full (#102: content
+   *  is never clamped/hidden). A step up from `body` so the entry's own
+   *  words lead the card over descriptive metadata. `leading-snug` (not
+   *  `leading-normal`) so it reads as a compact fragment of speech rather
+   *  than a roomy headline (#85), even at full, unclamped length. */
   bodyStrong: 'font-serif text-[17px] font-medium leading-snug',
   /** Secondary descriptive content: photo captions and similar derived text. */
   bodySmall: 'font-serif text-[14px] leading-normal',
@@ -103,6 +104,14 @@ export const motion = {
   sheetIn: 'animate-sheet-in',
   /** Toasts. */
   toastIn: 'animate-toast-in',
+  /**
+   * The one continuous (non-entrance) animation: the sweeping fill of an
+   * indeterminate `ProgressBar` (a phase with no known total, e.g. a sync
+   * pull). Like every other `motion` token, `prefers-reduced-motion: reduce`
+   * (src/index.css) collapses its duration to ~0 — the bar goes static
+   * instead of moving, rather than being hidden.
+   */
+  indeterminate: 'animate-sync-sweep',
 } as const
 
 /**

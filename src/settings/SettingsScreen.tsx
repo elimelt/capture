@@ -12,11 +12,13 @@ import { reverseGeocode } from '../places/geocode'
 import { NotificationsSection } from './NotificationsSection'
 import { useAppStore } from '../store/appStore'
 import { formatBytes } from '../store/space'
+import { formatSyncProgress, syncProgressFraction } from '../store/syncProgress'
 import { drainTranscriptions, listSkippedTranscriptions, retryTranscription } from '../transcribe/runner'
 import { drainCaptions, listSkippedCaptions, retryCaption } from '../vision/runner'
 import {
   Button,
   FieldRow,
+  ProgressBar,
   ScreenHeader,
   Section,
   Select,
@@ -301,9 +303,13 @@ export default function SettingsScreen() {
         >
           {wipeArmed ? 'Tap again to wipe everything' : 'Wipe local data'}
         </Button>
-        {wipeArmed && (
+        {wipeArmed ? (
           <p className={cx('mt-2 text-center', type_.caption, tone.textMuted)}>
             Entries not yet synced will be lost permanently.
+          </p>
+        ) : (
+          <p className={cx('mt-2 text-center', type_.caption, tone.textMuted)}>
+            Clears this device's log, caches, and Google connection.
           </p>
         )}
       </Section>
@@ -467,8 +473,18 @@ const CONNECTION_LABEL: Record<string, string> = {
   disconnected: 'Not connected',
 }
 
-/** Human summary of a manual "Sync now" outcome; null when there's nothing
- * to say (the reconnect case is already covered by the connection pill). */
+/**
+ * Human summary of a manual "Sync now" outcome; null when there's nothing to
+ * say (the reconnect case is already covered by the connection pill).
+ *
+ * `'busy'` and `'retry-later'` used to share one label ("A sync is already
+ * in progress") even though only `'busy'` means that — `'retry-later'` is a
+ * real Drive-side 429/5xx outage after streams *did* run (issue #64), which
+ * that message actively misled the owner about (nothing was in progress;
+ * double-tapping right after could even no-op silently). They're split here,
+ * and `'retry-later'`/`'quota'` both surface the row-level error Drive gave,
+ * when the drainer captured one (`src/drive/queue.ts`, `pull.ts`).
+ */
 function syncResultLabel(result: SyncResult): string | null {
   switch (result.outcome) {
     case 'drained': {
@@ -483,8 +499,12 @@ function syncResultLabel(result: SyncResult): string | null {
     }
     case 'idle':
       return 'Already up to date'
-    case 'retry-later':
+    case 'busy':
       return 'A sync is already in progress'
+    case 'retry-later':
+      return `Drive is busy or temporarily unavailable — will retry${result.error ? ` (${result.error})` : ''}`
+    case 'quota':
+      return `Google Drive storage is full — free up space, then Sync now${result.error ? ` (${result.error})` : ''}`
     case 'error':
       return `Sync failed${result.error ? `: ${result.error}` : ''}`
     case 'reconnect':
@@ -635,7 +655,9 @@ function CalendarPicker() {
 
 function GoogleSection() {
   const connection = useAppStore((s) => s.driveConnection)
+  const quotaExceeded = useAppStore((s) => s.driveQuotaExceeded)
   const syncing = useAppStore((s) => s.syncing)
+  const syncProgress = useAppStore((s) => s.syncProgress)
   const connectDrive = useAppStore((s) => s.connectDrive)
   const disconnectDrive = useAppStore((s) => s.disconnectDrive)
   const drainSync = useAppStore((s) => s.drainSync)
@@ -663,6 +685,16 @@ function GoogleSection() {
         {connected && <span className={cx('ml-1', tone.textFaint)}>· Drive file access</span>}
       </p>
       <SyncStatusLine />
+      {connected && quotaExceeded && (
+        // Persists across remounts (unlike syncNote below, which is local
+        // component state) until a cycle that doesn't hit quota runs again —
+        // SPEC §8.4.5 requires this to surface explicitly rather than as the
+        // reconnect pill, which a full-but-authorized Drive can never clear
+        // (issue #88).
+        <p className={cx(type_.sub, tone.danger)}>
+          Google Drive storage is full — free up space, then Sync now.
+        </p>
+      )}
       <div className="flex gap-2">
         {connected ? (
           <>
@@ -679,6 +711,12 @@ function GoogleSection() {
           </Button>
         )}
       </div>
+      {connected && syncing && syncProgress && (
+        <div className={cx('flex flex-col gap-1', motion.fadeIn)}>
+          <ProgressBar fraction={syncProgressFraction(syncProgress)} />
+          <p className={cx(type_.caption, tone.textFaint)}>{formatSyncProgress(syncProgress)}</p>
+        </div>
+      )}
       {connected && syncNote && !syncing && (
         <p className={cx(type_.sub, tone.textFaint)}>{syncNote}</p>
       )}

@@ -244,6 +244,24 @@ describe('pullStream', () => {
     expect(await blob!.text()).toBe('audio-bytes')
   })
 
+  it('skips downloading audio blobs when keepAudioLocally is false (issue #53)', async () => {
+    const remote = remoteCapture(1, 'aaaaaa', true)
+    const file = remote.attachments[0].file
+    seedRemote([remote], { [file]: 'audio-bytes' })
+
+    const { saveStreamSettings, STREAM_SETTINGS_DEFAULTS } = await import('../store/settings')
+    await saveStreamSettings('timelog', { ...STREAM_SETTINGS_DEFAULTS, keepAudioLocally: false })
+
+    const { pullStream } = await import('./pull')
+    const res = await pullStream('tok', 'timelog')
+    expect(res).toEqual({ outcome: 'pulled', pulled: 1 })
+
+    // The event still imports — only the audio blob is left unfetched.
+    const { getBlob, listEvents } = await import('../store/events')
+    expect((await listEvents('timelog')).map((e) => e.id)).toEqual(['aaaaaa'])
+    expect(await getBlob(file)).toBeUndefined()
+  })
+
   it('is idempotent and skips events already local', async () => {
     seedRemote([remoteCapture(1, 'aaaaaa')])
     const { pullStream } = await import('./pull')
@@ -253,6 +271,50 @@ describe('pullStream', () => {
     const res = await pullStream('tok', 'timelog')
     expect(res).toEqual({ outcome: 'idle', pulled: 0 })
     expect(drive.readFileText).not.toHaveBeenCalled()
+  })
+
+  it('defaults onProgress to a no-op — existing callers are unaffected', async () => {
+    seedRemote([remoteCapture(1, 'aaaaaa')])
+    const { pullStream } = await import('./pull')
+    // No third argument: must not throw.
+    await expect(pullStream('tok', 'timelog')).resolves.toEqual({ outcome: 'pulled', pulled: 1 })
+  })
+
+  it('reports one pull-progress per imported partition on a cold-start walk', async () => {
+    seedRemote([remoteCapture(1, 'aaaaaa'), remoteCapture(2, 'bbbbbb')])
+    const { pullStream } = await import('./pull')
+    const events: unknown[] = []
+    const res = await pullStream('tok', 'timelog', (e) => events.push(e))
+    expect(res).toEqual({ outcome: 'pulled', pulled: 2 })
+    // Both records share the one seeded partition: one page, not one per event.
+    expect(events).toEqual([{ kind: 'pull-progress', stream: 'timelog', delta: 2 }])
+  })
+
+  it('reports no pull-progress for a no-op incremental pull', async () => {
+    seedRemote([remoteCapture(1, 'aaaaaa')])
+    const { pullStream } = await import('./pull')
+    await pullStream('tok', 'timelog')
+
+    const events: unknown[] = []
+    const res = await pullStream('tok', 'timelog', (e) => events.push(e))
+    expect(res).toEqual({ outcome: 'idle', pulled: 0 })
+    expect(events).toEqual([])
+  })
+
+  it('reports pull-progress for a dirty partition discovered via the changes feed', async () => {
+    const { log } = seedRemote([remoteCapture(1, 'aaaaaa')])
+    const { pullStream } = await import('./pull')
+    await pullStream('tok', 'timelog') // cold start, cursor minted
+
+    // Another device pushes a new partition + record after our cold start.
+    const remote = remoteCapture(2, 'bbbbbb')
+    const partition2 = drive.add('2026-08-02', log, FOLDER_MIME)
+    drive.add(eventRecordName(remote), partition2, 'application/json', serializeEvent(remote))
+
+    const events: unknown[] = []
+    const res = await pullStream('tok', 'timelog', (e) => events.push(e))
+    expect(res).toEqual({ outcome: 'pulled', pulled: 1 })
+    expect(events).toEqual([{ kind: 'pull-progress', stream: 'timelog', delta: 1 }])
   })
 
   it('bumps the local seq counter past pulled seqs (no collision pile-up)', async () => {

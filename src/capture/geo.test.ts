@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Place } from '../store/places'
-import { needsPlacePrompt, snapshotLocation } from './geo'
+import { locateCurrent, needsPlacePrompt, snapshotLocation } from './geo'
 
 const home: Place = { id: 'p1', name: 'Home', lat: 40.7, lng: -74, radiusM: 100 }
 
@@ -68,6 +68,46 @@ describe('snapshotLocation', () => {
       },
     })
     expect(await snapshotLocation([home], true)).toBeUndefined()
+  })
+})
+
+describe('locateCurrent', () => {
+  it('attempts geolocation even when location capture is disabled (#59)', async () => {
+    const getCurrentPosition = vi.fn((ok: PositionCallback) => ok(position(40.7, -74, 12.4)))
+    vi.stubGlobal('navigator', { geolocation: { getCurrentPosition } })
+    // Unlike snapshotLocation, there is no `locationEnabled` argument at all —
+    // an explicit tap always asks the browser, never silently no-ops.
+    expect(await locateCurrent([home])).toEqual({
+      ok: true,
+      location: { lat: 40.7, lng: -74, accuracyM: 12, placeLabel: 'Home' },
+    })
+    expect(getCurrentPosition).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports "unsupported" when the device has no geolocation API', async () => {
+    vi.stubGlobal('navigator', {})
+    expect(await locateCurrent([])).toEqual({ ok: false, reason: 'unsupported' })
+  })
+
+  it('reports "failed" on a geolocation error, distinct from "unsupported"', async () => {
+    vi.stubGlobal('navigator', {
+      geolocation: {
+        getCurrentPosition: (_ok: PositionCallback, err: PositionErrorCallback) =>
+          err({ code: 1, message: 'denied' } as GeolocationPositionError),
+      },
+    })
+    expect(await locateCurrent([])).toEqual({ ok: false, reason: 'failed' })
+  })
+
+  it('reports "failed" when getCurrentPosition throws synchronously', async () => {
+    vi.stubGlobal('navigator', {
+      geolocation: {
+        getCurrentPosition: () => {
+          throw new Error('boom')
+        },
+      },
+    })
+    expect(await locateCurrent([])).toEqual({ ok: false, reason: 'failed' })
   })
 })
 

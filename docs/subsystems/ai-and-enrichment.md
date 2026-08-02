@@ -254,7 +254,9 @@ than transcription/captioning/the assistant do:
 | Geocoding | `nominatim.openstreetmap.org/reverse` | rounded coordinates |
 
 None of these require an API key: the LLM/transcription hosts are CORS origin-gated,
-and Nominatim is public (identified via a `Referer`). There is no Capture server;
+and Nominatim is public — identified only by the browser's own default `Referer` (the
+page origin), since script cannot set a custom `Referer`/`User-Agent` in a browser
+request. There is no Capture server;
 beyond these calls, data goes only to the user's own Google Drive (SPEC §9.3). Every
 AI/LLM feature here is opt-in and off by default (owner policy, issue #89): the
 assistant makes no request at all until the user both enables it *and* sends a

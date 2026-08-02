@@ -152,7 +152,10 @@ Stage by stage:
    interrupted upload reference nothing and are invisible to any fold.
 
 After a successful upload, local audio blobs are pruned unless the stream's
-`keepAudioLocally` setting says otherwise.
+`keepAudioLocally` setting says otherwise. The pull side honors the same setting
+symmetrically (§3, issue #53): a pull never downloads audio for a stream with
+`keepAudioLocally: false`, so re-syncing (a second device, or the wipe→re-pull
+recovery flow) can't silently re-inflate audio the setting says to never keep.
 
 ## 2a. Multi-stream sync: capture streams + system streams
 
@@ -179,12 +182,13 @@ nothing in `src/drive/` changed. Rules:
   `StreamSyncResult { stream, outcome, uploaded, pulled, error? }` in the
   returned `SyncResult.perStream`, and the aggregate `SyncResult` is the
   worst-of outcome with summed counts.
-- **Failure isolation.** A `'reconnect'` (401/403) on any stream aborts the rest
-  of the cycle immediately — the token is dead for every stream — and the
-  skipped streams are marked `'reconnect'` in `perStream`. A `'retry-later'` or
-  `'error'` on one stream does **not** block the others: each stream's Drive
-  folders, sync rows, and `drive:changes:<stream>` cursor are
-  independent.
+- **Failure isolation.** A `'reconnect'` (401, or 403 that isn't quota/rate-limit)
+  or a `'quota'` (403 `storageQuotaExceeded`, issue #88) on any stream aborts
+  the rest of the cycle immediately — the token is dead, or Drive is full, for
+  every stream alike — and the skipped streams are marked with that same
+  outcome in `perStream`. A `'retry-later'` or `'error'` on one stream does
+  **not** block the others: each stream's Drive folders, sync rows, and
+  `drive:changes:<stream>` cursor are independent.
 - **Per-stream `lastSyncAt`.** Each stream's stamp is written only when *that
   stream's* pull+push completed cleanly (`idle`/`drained`), regardless of what
   happened to other streams in the same cycle.
@@ -199,6 +203,42 @@ For the Settings status line, `refresh()` also computes an aggregate
 plus `lastSyncAt` = the **oldest** per-stream stamp — the conservative
 "everything is synced as of" figure — or `null` while any stream has never
 completed a clean cycle.
+
+## 2b. Live progress during a cycle
+
+A manual cycle can push many attachments/records/batched segments across
+several streams and pull remote changes, with nothing to show for it until it
+finishes — an owner directive called this out directly ("syncing has GOT to
+have a progress indicator"). `drainSync` keeps a live `syncProgress:
+SyncProgress | null` (`appStore.ts`) up to date throughout, built by a pure
+reducer, `reduceSyncProgress` (`src/store/syncProgress.ts`, module doc:
+[store.md](../modules/store.md)), from a typed `SyncProgressEvent` stream:
+
+- `drainSync` itself emits `cycle-start` once (with the stream count) and
+  wraps each stream's pull-then-push pair in `stream-start`/`stream-done` — it
+  already owns that loop, so `src/drive/pull`/`src/drive/queue` don't need to
+  know their position across streams.
+- `pullStream` emits `pull-progress` once per imported partition (the
+  cold-start walk or a changes-feed dirty partition) — a page of events, never
+  per event.
+- `drainStream` emits `upload-start` once (the stream's pending count, so the
+  UI can show a determinate bar) and `upload-progress` once per committed
+  batch — a lone record or a whole sealed segment (SPEC §5.7), never per file
+  inside one.
+
+Both `pullStream` and `drainStream` take this `onProgress` callback as an
+**optional** parameter defaulting to a no-op, so every pre-existing call site
+and test is unaffected. `syncProgress` is cleared back to null when the cycle
+ends (`drainSync`'s `finally`, alongside `syncing`) — it is live-only, never
+persisted, and carries no error state of its own: a `'reconnect'`/
+`'retry-later'`/`'error'` outcome still surfaces exactly as before (`lastError`,
+the reconnect pill, `globalSyncSummary`), preserving the rule that failures
+never get a quieter second channel. The Settings screen renders a live label
+(`formatSyncProgress`) and a bar (`ProgressBar`, `src/ui` — determinate once
+`itemsTotal` is known, an indeterminate sweep otherwise) while `syncing`; the
+bottom nav shows the same bar, scaled down, on the Settings tab so progress on
+a long sync stays visible from any screen — not just while Settings itself is
+open (app-shell doc: [app-shell-ui-and-tooling.md](../modules/app-shell-ui-and-tooling.md)).
 
 ## 3. Pull path: Drive → IndexedDB (bidirectional sync)
 
@@ -227,7 +267,10 @@ converges the replica with Drive before anything is pushed:
    by event id, and **eagerly** download every attachment the events reference
    that isn't already stored (tolerating pruned or still-uploading attachments —
    the carrier is the commit, so a referenced-but-absent attachment is a
-   transient race, not corruption).
+   transient race, not corruption) — **except audio when `keepAudioLocally` is
+   false** (issue #53): the setting is read once per `pullStream` call and
+   applied the same way on this side as `pruneAudio` applies it on the push
+   side, so a pull can never re-inflate audio the setting says to never keep.
 3. **Import.** `importEvents()` (`src/store/events.ts`) writes events + blobs in
    one transaction per partition, marks their sync rows `uploaded`/`done` (they
    came *from* Drive — the drainer must never re-push them), and bumps
@@ -256,6 +299,31 @@ plus "Last synced …" / "Never synced" — visibility in place of automatic
 background sync. Skills perform the mirror-image read on the Drive side: list `log/`
 partitions past their checkpoint, parse records, and run the same fold.
 
+## 4a. Blob lifecycle: GC for fold-hidden attachments (issue #53)
+
+Before `src/store/blobGc.ts` existed, the only blob-deletion paths were
+`wipeAll()` and `pruneAudio`'s `keepAudioLocally` pruning (§2) — nothing ever
+reclaimed a blob a `revoke` or an `AmendPatch.removeAttachments` had hidden from
+the *fold*. The log itself stays append-only (removed attachments and revoked
+captures remain in the log forever, per §1), but their blobs have no reason to:
+a hidden attachment's bytes serve no reader once nothing folds it into view.
+
+`planBlobGc(events, syncStatuses)` (pure) computes, for one stream, which
+attachment filenames are safe to delete right now: a file qualifies iff it is
+absent from every entry `fold(events)` currently returns **and** the event that
+attached it already has sync status `'uploaded'` — a still-`queued`/`error` row
+(or a missing one) is never touched, so GC can never delete the only copy of
+something Drive doesn't have yet. `reclaimStreamBlobs(stream)` runs the sweep
+and deletes the result. It is attachment-kind-agnostic (audio, photo, text
+alike), unlike `pruneAudio`, which only ever prunes *visible* entries' audio —
+the two are complementary, not overlapping.
+
+The sweep runs from `appStore.refreshSpace()` — called when Settings' Data
+section mounts and after `wipe()` — across every `allSyncStreams()` stream,
+before re-measuring `appSpace`. It touches no network (only local
+events/sync-rows/blobs), so calling it from a local-only action rather than
+`drainSync` does not add an automatic sync trigger.
+
 ## 5. Auth lifecycle and failure model
 
 **Token flow (SPEC §8.2).** There is no backend, so there are no refresh tokens.
@@ -283,8 +351,9 @@ consumes:
 
 | Failure | Queue behavior | Outcome → store reaction |
 |---|---|---|
-| 401 / 403 (`isAuth`) | row re-queued, drain stops | `'reconnect'` → `driveConnection: 'expired'` (pill) |
-| 429 / 5xx (`isRetryable`) | row re-queued, drain stops | `'retry-later'` (retried on next drain) |
+| 403 with reason `storageQuotaExceeded` (`isQuotaExceeded`) | row re-queued, drain stops | `'quota'` → `driveQuotaExceeded: true` (Settings banner; issue #88) |
+| 401, or 403 with no reason / an unrecognized one (`isAuth`) | row re-queued, drain stops | `'reconnect'` → `driveConnection: 'expired'` (pill) |
+| 429 / 5xx, or 403 with a rate-limit reason (`isRetryable`) | row re-queued, drain stops | `'retry-later'` (retried on next drain) |
 | anything else, row's `attempts` still below `MAX_ATTEMPTS_BEFORE_PARKED` | row marked `'error'`, drain stops | `'error'` → `lastError` toast |
 | anything else, row's `attempts` at/above `MAX_ATTEMPTS_BEFORE_PARKED` | row marked `'error'` and **parked**, drain continues past it | `'error'` (unless a later batch also failed worse) → `lastError` toast |
 
@@ -294,6 +363,25 @@ queued row — the user is the rate limiter. (Older versions persisted a
 `nextRetryAt` window and skipped rows inside it while reporting the drain
 clean, which presented as entries stuck "queued" forever; the drainer now
 ignores any legacy `nextRetryAt` still on a row.)
+
+**Quota vs. auth (issue #88).** Drive reports both "the account's Drive
+storage is full" and Drive-side rate limiting as HTTP 403 — the same status
+`isAuth` used to treat uniformly as "token invalid, reconnect". For a full
+Drive that produced an endless, unfixable loop: every upload 403s → the store
+sets `driveConnection: 'expired'` → the user taps the reconnect pill → it
+succeeds (the token was never the problem) → the next "Sync now" 403s again.
+`DriveError` now parses `error.errors[0].reason` from the response body
+(`client.ts#ensureOk`) and reclassifies: `storageQuotaExceeded` is its own
+`isQuotaExceeded` getter (neither auth nor retryable — retrying changes
+nothing until the user frees space, and reconnecting can't touch Drive's
+storage), and `rateLimitExceeded`/`userRateLimitExceeded`/`dailyLimitExceeded`
+join `isRetryable` instead of `isAuth`. The queue treats a quota row exactly
+like a retryable one (kept `queued`, no backoff gate — the very next "Sync
+now" retries it, which is what a user who just freed up space would do) but
+reports the distinct `'quota'` outcome so the store sets `driveQuotaExceeded`
+instead of `driveConnection`, and Settings shows "Google Drive storage is full
+— free up space, then Sync now" rather than either the generic retry-later
+copy or the reconnect pill (SPEC §8.4.5, §8.4 item 5).
 
 **Poison-row parking (issue #87).** Stopping the whole drain on the first
 failure protects the seq-monotonic commit order (§6.2's checkpoint contract
@@ -317,14 +405,41 @@ this doesn't close: a row already grouped into a persisted segment assignment
 with other members (crash-recovery, above) before it started failing stays
 grouped — that shared-segment case needs manual resolution (revoke the poison
 entry) rather than self-healing. `drainSync` merges each stream's pull and push
-outcomes worst-of (`idle < drained < retry-later < reconnect < error`), then the
-per-stream outcomes worst-of into the aggregate; a `'reconnect'` anywhere skips
-that stream's push and aborts the remaining streams (the token is dead either
-way), while retry-later/error stay stream-local (§2a). A stream's fully clean
-cycle (`idle`/`drained`) stamps *its* `lastSyncAt`; reconnect/retry-later/error
-outcomes leave it untouched. Offline is not a special case: capture works fully
-offline, and the cycle simply runs on the next manual "Sync now" that finds a
-valid token.
+outcomes worst-of (`idle < drained < retry-later < quota < reconnect < error`),
+then the per-stream outcomes worst-of into the aggregate; a `'reconnect'` or
+`'quota'` anywhere skips that stream's push and aborts the remaining streams
+(the token is dead, or Drive is full, either way), while retry-later/error stay
+stream-local (§2a). A stream's fully clean cycle (`idle`/`drained`) stamps
+*its* `lastSyncAt`; reconnect/quota/retry-later/error outcomes leave it
+untouched. Offline is not a special case: capture works fully offline, and the
+cycle simply runs on the next manual "Sync now" that finds a valid token.
+
+**Re-entrancy (issue #50).** A concurrent "Sync now" must never run a second
+pull+push cycle alongside the first: two drainers reading the same sync row
+before either persists could each mint a *different* pre-generated Drive file
+id for the same contract filename and both upload — a permanent duplicate in
+the user's Drive log, since the app never deletes anything from Drive. The
+pre-fix guard, an in-memory `syncing` flag on `appStore`, had two holes: it's
+per-tab (a second browser tab or an installed-PWA window has its own copy),
+and even within one tab there's an `await` (the access-token lookup) between
+checking the flag and setting it, so two rapid calls could both pass the
+check before either flipped it. `drainSync` now wraps the whole cycle — token
+lookup through the final `refresh()` — in a `navigator.locks.request('capture:sync',
+{ ifAvailable: true }, …)` lock, which serializes every caller sharing the
+origin (tabs, windows, a same-tab re-entry) with no gap between "is it free"
+and "claim it". A call that can't acquire the lock resolves immediately with
+`'busy'` — a new outcome distinct from `'retry-later'` (issue #64: that used
+to mean both "I'm already syncing" and "Drive had a 429/5xx", and Settings
+showed the same misleading "A sync is already in progress" for a real Drive
+outage) — rather than queuing behind the holder or running concurrently. As a
+second line of defense for whenever the lock is unavailable (very old
+browsers, which fall back to the flag alone) or somehow bypassed,
+`assignFileIds` (`src/drive/queue.ts`) persists newly-minted file ids through
+`mergeFileIds` (`src/store/events.ts`): an atomic read-then-merge inside one
+IndexedDB transaction against the row as *currently stored*, not a blind
+overwrite of a possibly-stale in-memory copy, so a name a concurrent drain
+already claimed keeps that drain's id rather than being clobbered by a second,
+differently-minted one.
 
 **Account switching.** The GIS account chooser lets a user grant a *different*
 Google account, and several pieces of local state are only meaningful on the

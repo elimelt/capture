@@ -61,7 +61,8 @@ export interface Place {
 export interface GeocacheRow {
   /** Rounded "lat,lng" cell key. */
   key: string
-  address: string
+  /** Omitted for a cached "no address found" (negative) result. */
+  address?: string
   /** ISO local time the lookup was cached. */
   cachedAt: string
 }

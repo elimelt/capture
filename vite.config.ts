@@ -27,15 +27,50 @@ export default defineConfig({
         })
       },
     },
+    // Issue #66: vite.config.ts hardcodes the `ChatScreen-*.js` filename
+    // pattern twice below (globIgnores + the assistant-chunk runtimeCaching
+    // rule) so the lazy assistant chunk is precache-excluded but still
+    // runtime-cacheable. Renaming/restructuring `ChatScreen` so it no longer
+    // emits exactly one matching chunk would silently break both — this
+    // fails the build instead.
+    {
+      name: 'assert-chatscreen-chunk',
+      generateBundle(_options, bundle) {
+        const matches = Object.keys(bundle).filter((file) => /ChatScreen-[^/]+\.js$/.test(file))
+        if (matches.length !== 1) {
+          this.error(
+            `Expected exactly one ChatScreen-*.js chunk, found ${matches.length}` +
+              (matches.length ? `: ${matches.join(', ')}` : '') +
+              '. vite.config.ts workbox.globIgnores and the assistant-chunk runtimeCaching ' +
+              'rule hardcode this filename pattern — update them if ChatScreen was renamed ' +
+              'or its chunking changed.',
+          )
+        }
+      },
+    },
     react(),
     tailwindcss(),
     VitePWA({
-      registerType: 'autoUpdate',
+      // 'prompt' (not 'autoUpdate'): a new SW installs and waits rather than
+      // skipWaiting + force-reloading every open window the instant it
+      // activates, which would silently blow away an in-progress recording
+      // or a typed-but-unsent chat message (issue #61). src/main.tsx wires
+      // the resulting onNeedRefresh callback to a "Reload" toast so updates
+      // are visible and applied on the user's own schedule.
+      registerType: 'prompt',
       workbox: {
         // The assistant is opt-in: keep its lazy chunk (AI SDK + markdown)
         // out of the precache so users who never enable it never download
         // it. Opted-in users get it runtime-cached below on first visit.
         globIgnores: ['**/ChatScreen-*.js'],
+        // vite-plugin-pwa defaults navigateFallback to index.html for every
+        // same-origin navigation once the SW controls the client. /agents is
+        // a distinct static page (public/agents/index.html), not an SPA
+        // route — without this denylist the SW would shadow it with the app
+        // shell, which then bounces to "/" via the router's catch-all
+        // (issue #68). The guide's HTML is already precached via the default
+        // html glob, so it keeps working offline once excluded here.
+        navigateFallbackDenylist: [/^\/agents/],
         // Offline-first: cache Google Fonts (stylesheet + font files) at
         // runtime so Libertinus Serif survives without a network.
         runtimeCaching: [

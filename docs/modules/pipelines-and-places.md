@@ -624,19 +624,38 @@ Exports:
   area through `city`/`town`/`village`/`suburb`/`county`), else the first two parts of
   `display_name`, else `undefined`.
 - `reverseGeocode(lat: number, lng: number): Promise<string | undefined>` — checks the
-  IndexedDB `geocache` store first; on a miss, fetches
-  `…/reverse?format=jsonv2&zoom=18&addressdetails=1&lat=…&lon=…` (with a
-  `Referer: capture-pwa` header to identify the app per Nominatim policy) and caches the
-  result with a `cachedAt` local-ISO timestamp. Returns `undefined` on any failure
-  (offline, non-OK response, cache errors).
+  IndexedDB `geocache` store first (a hit within its TTL short-circuits, no network
+  call); on a miss, joins an in-flight lookup for the same cell if one is already
+  running, else fetches `…/reverse?format=jsonv2&zoom=18&addressdetails=1&lat=…&lon=…`
+  and caches the result (positive or negative) with a `cachedAt` local-ISO timestamp.
+  Returns `undefined` on any failure (offline, non-OK response, cache errors, or a
+  response with no usable address).
+
+Identification: browsers treat `Referer` and `User-Agent` as forbidden request headers,
+so script cannot attach a custom app identity to the fetch (an earlier version tried a
+`Referer: capture-pwa` header — a silent no-op, browsers strip and override it). The
+module instead relies on the browser's own default referrer policy
+(`strict-origin-when-cross-origin`), which already sends this app's origin as the
+`Referer` on the cross-origin request — satisfying what Nominatim's usage policy means
+by "a valid HTTP Referer identifying the application" for browser-based clients.
 
 Nominatim's usage policy requires caching and ≤ 1 req/sec, so all network calls are
 serialized behind a module-level promise chain (`throttle`) enforcing an 1100 ms minimum
 interval app-wide; the chain swallows individual failures so it can never wedge. Cache
-reads and writes are individually try/caught and non-fatal.
+reads and writes are individually try/caught and non-fatal. Cache entries expire: a
+found address (`GeocacheRow.address` set) is good for 90 days (matching the workbox
+`osm-tiles`-adjacent cache TTL in `vite.config.ts`); a cell with no resolvable address
+(`address` omitted — a negative result) is retried after 24 hours rather than cached
+forever, since coverage can improve and the miss is cheap to recheck. Concurrent
+`reverseGeocode` calls for the same cell (e.g. two captures at the same spot) share one
+in-flight request via a `Map<cellKey, Promise>` instead of both missing the cache and
+each entering the throttle chain independently.
 
 Callers: `src/settings/SettingsScreen.tsx` (saving a place fills its `address`) and
-`src/capture/LocationSheet.tsx`. There is no `geocode.test.ts`.
+`src/capture/LocationSheet.tsx`. Covered by `src/places/geocode.test.ts`: `shortAddress`
+compression rules, cache hit/miss with TTL expiry (positive and negative), in-flight
+dedupe, the never-throws contract (network error, non-OK response), and that no
+`Referer` header is ever set.
 
 ### src/places/match.test.ts
 
