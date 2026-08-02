@@ -88,6 +88,15 @@ describe('searchChats', () => {
     expect(searchChats(chats, '3 entries').map((c) => c.id)).toEqual(['c1'])
   })
 
+  it('matches all query words regardless of order or which message holds them', () => {
+    expect(searchChats(chats, 'week summarize').map((c) => c.id)).toEqual(['c2'])
+    expect(searchChats(chats, 'entries today').map((c) => c.id)).toEqual(['c1'])
+  })
+
+  it('requires every query word to match', () => {
+    expect(searchChats(chats, 'summarize zebra')).toEqual([])
+  })
+
   it('returns nothing when nothing matches', () => {
     expect(searchChats(chats, 'zebra')).toEqual([])
   })

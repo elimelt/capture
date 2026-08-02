@@ -81,6 +81,13 @@ export function createAssistantTransport(
         model: provider.chatModel(modelId),
         instructions: await instructions(),
         tools,
+        // gpt-oss reasoning effort (the server rejects the knob for
+        // non-thinking models). Low cuts warm first-content latency from
+        // ~24s to ~7s and, in testing, dated "yesterday" more reliably than
+        // high (which overthought itself into the wrong day).
+        ...(modelId.startsWith('gpt-oss')
+          ? { providerOptions: { openaiCompatible: { reasoningEffort: 'low' } } }
+          : {}),
       })
       // DirectChatTransport defaults to UIMessage<unknown, never, ...> (no
       // data parts); our chat uses the plain UIMessage shape (text plus

@@ -33,6 +33,25 @@ interface SheetProps {
 /** Bottom sheet: backdrop tap closes, content lifts above the keyboard. */
 export function Sheet({ title, onClose, children }: SheetProps) {
   const keyboardInset = useKeyboardInset()
+
+  // Freeze the page behind the sheet: iOS scrolls the body through fixed
+  // overlays, so touches on the sheet would move the screen underneath.
+  // position:fixed (not overflow:hidden, which iOS ignores) keeps the page
+  // pinned; restore the scroll position on close.
+  useEffect(() => {
+    const { scrollY } = window
+    const body = document.body
+    body.style.position = 'fixed'
+    body.style.top = `-${scrollY}px`
+    body.style.width = '100%'
+    return () => {
+      body.style.position = ''
+      body.style.top = ''
+      body.style.width = ''
+      window.scrollTo(0, scrollY)
+    }
+  }, [])
+
   return (
     <div
       className={cx('fixed inset-0 z-50 flex items-end bg-black/40', motion.fadeIn)}

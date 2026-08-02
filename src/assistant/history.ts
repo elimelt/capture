@@ -41,14 +41,18 @@ export function chatTitle(messages: UIMessage[]): string {
 }
 
 /**
- * Case-insensitive substring match over every text part of every message.
- * Pure so the history sheet can filter as-you-type without touching idb.
- * Empty/whitespace query returns everything.
+ * Case-insensitive word-AND match: every whitespace-separated query word
+ * must appear somewhere in the conversation's text (any message, any
+ * order). Pure so the history sheet can filter as-you-type without
+ * touching idb. Empty/whitespace query returns everything.
  */
 export function searchChats(chats: StoredChat[], query: string): StoredChat[] {
-  const q = query.trim().toLowerCase()
-  if (!q) return chats
-  return chats.filter((c) => c.messages.some((m) => messageText(m).toLowerCase().includes(q)))
+  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean)
+  if (words.length === 0) return chats
+  return chats.filter((c) => {
+    const text = c.messages.map(messageText).join('\n').toLowerCase()
+    return words.every((w) => text.includes(w))
+  })
 }
 
 export async function loadChat(id: string): Promise<StoredChat | undefined> {

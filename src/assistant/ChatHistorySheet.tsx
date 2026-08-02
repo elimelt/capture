@@ -58,7 +58,10 @@ export function ChatHistorySheet({
         aria-label="Search past chats"
         className="w-full"
       />
-      <div className="mt-2 flex max-h-[55vh] flex-col overflow-y-auto">
+      {/* Fixed height (not max-) so the sheet stays tall while typing a
+          search; overscroll-contain stops rubber-banding from reaching the
+          page behind. */}
+      <div className="mt-2 flex h-[60dvh] flex-col overflow-y-auto overscroll-contain [-webkit-overflow-scrolling:touch]">
         {chats?.length === 0 && <EmptyNote>No past chats yet.</EmptyNote>}
         {chats && chats.length > 0 && filtered.length === 0 && (
           <EmptyNote>No matches.</EmptyNote>
