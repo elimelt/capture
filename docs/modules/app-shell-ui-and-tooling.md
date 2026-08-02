@@ -57,7 +57,7 @@ Design tokens as constant objects of Tailwind class strings ("Warm Editorial Sla
 
 - `tone` — surface/background (`bg`, `surface`, `sunken`), borders (`border`, `borderStrong`), text ramp (`textPrimary`…`textFaint`), spruce accent (`accent`, `accentBg`, `accentBgActive`, `accentWash`), clay danger (`danger`, `dangerBg`, `dangerBgActive`, `dangerWash`), and `pressWash` for pressed states. Every entry pairs light and `dark:` classes.
 - `shape` — `card` (14 px radius), `control` (`rounded-xl`), `pill` (`rounded-full`).
-- `type_` — typography scale: `title` (serif 26 px), `heading` (serif 17 px), `body` (serif 16 px), `sub` (sans 13 px), `caption` (sans 12 px), `overline` (sans 11 px uppercase), `ui` (sans 15 px, "chrome, never serif"). Named `type_` because `type` is reserved-ish.
+- `type_` — typography scale: `title` (serif 26 px), `heading` (serif 17 px), `body` (serif 16 px), `bodyStrong` (serif 17 px medium — main entry text: transcripts and notes, a step above descriptive metadata), `bodySmall` (serif 14 px — secondary descriptive content like photo captions), `sub` (sans 13 px), `caption` (sans 12 px), `overline` (sans 11 px uppercase), `ui` (sans 15 px, "chrome, never serif"). Named `type_` because `type` is reserved-ish.
 - `motion` — entrance animations only (`fadeIn`, `riseIn`, `scaleIn`, `sheetIn`, `toastIn`); exits are instant via conditional rendering. Keyframes live in `index.css`.
 - `tap` — `'min-h-11 min-w-11'`, the 44 pt Apple HIG minimum tap target.
 - `cx(...parts)` — joins truthy class strings.
@@ -65,11 +65,11 @@ Design tokens as constant objects of Tailwind class strings ("Warm Editorial Sla
 ### src/ui/Button.tsx
 
 - `Button({ variant?, size?, block?, ...rest })` — extends `ButtonHTMLAttributes<HTMLButtonElement>`. `ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger' | 'dangerGhost'` (default `secondary`); `ButtonSize = 'md' | 'sm'` (default `md`; `md` uses the `tap` minimum, `sm` is `min-h-9`). `block` stretches to full width. Variants map to token compositions (e.g. `primary` = accent background + white text).
-- `IconButton({ 'aria-label', variant?, ...rest })` — 44×44 px pill icon button, `variant: 'outline' | 'ghost'` (default `outline`). `aria-label` is a required prop so icon-only buttons stay accessible.
+- `IconButton({ 'aria-label', variant?, ...rest })` — 44×44 px pill icon button, `variant: IconButtonVariant = 'outline' | 'ghost' | 'accent' | 'danger'` (default `outline`). `accent` is an accent-washed fill + border for controls that must read as interactive against a card surface (e.g. an entry's play button); `danger` is muted clay for destructive icon actions (e.g. the entry card's delete). `aria-label` is a required prop so icon-only buttons stay accessible.
 
 ### src/ui/Card.tsx
 
-- `Card({ className?, children })` — bordered surface with 14 px radius, `p-3`, medium shadow in light mode and elevated shadow in dark mode for clear separation from the background.
+- `Card({ className?, children })` — bordered surface with 14 px radius, uniform `p-4` (16 px) padding on all sides, medium shadow in light mode and elevated shadow in dark mode for clear separation from the background.
 - `Section({ title, children })` — titled `<section>` card (`p-4`, serif `type_.heading` `<h2>`); used for settings/content groups.
 - `EmptyState({ title, children? })` — centered italic-serif empty message with optional sub-content.
 
