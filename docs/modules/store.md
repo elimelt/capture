@@ -710,7 +710,10 @@ Mocks `src/drive/{auth,queue,pull,token}` to test only the store's Drive wiring:
 `drainSync`'s no-token and re-entrant branches (the same-tab `syncing` flag
 returns `'busy'`, and — separately — a concurrent call that finds the
 cross-tab `navigator.locks` lock already held returns `'busy'` even while the
-flag itself hasn't been set yet, closing the pre-fix TOCTOU window), the
+flag itself hasn't been set yet, closing the pre-fix TOCTOU window; the suite
+stubs a minimal in-memory Web Locks fake onto `navigator` because Node ships
+`navigator` without `locks` before v24.5 — without the stub, older Nodes
+silently exercise the flag-only fallback and the TOCTOU test deadlocks), the
 multi-stream loop (every registered stream pulled-then-pushed in registry
 order, counts summed, per-stream results reported), failure isolation (a pull
 or drain `'reconnect'` aborts the remaining streams — their mocks are never

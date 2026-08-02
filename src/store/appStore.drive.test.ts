@@ -26,6 +26,36 @@ vi.mock('../drive/token', () => ({
 
 const STREAMS = allSyncStreams() // ['settings', 'assistant-chats', 'timelog']
 
+/**
+ * Minimal Web Locks fake covering exactly what `drainSync` uses:
+ * `request(name, { ifAvailable: true }, cb)` — cb(null) when held, else the
+ * lock is held for the callback's duration. Stubbed onto `navigator` so the
+ * suite is deterministic across Node versions (Node < 24 ships `navigator`
+ * without `locks`, which would silently exercise the flag-only fallback and
+ * deadlock the TOCTOU test below).
+ */
+function fakeWebLocks() {
+  const held = new Set<string>()
+  return {
+    request: async (
+      name: string,
+      options: { ifAvailable?: boolean },
+      callback: (lock: { name: string; mode: 'exclusive' } | null) => unknown,
+    ) => {
+      if (held.has(name)) {
+        if (!options.ifAvailable) throw new Error('fakeWebLocks: only ifAvailable is supported')
+        return callback(null)
+      }
+      held.add(name)
+      try {
+        return await callback({ name, mode: 'exclusive' })
+      } finally {
+        held.delete(name)
+      }
+    },
+  }
+}
+
 async function freshStore() {
   vi.resetModules()
   const { useAppStore } = await import('./appStore')
@@ -37,6 +67,7 @@ beforeEach(() => {
   // loop always covers the same fixed stream set — `useFreshIndexedDb()`
   // above gives each test its own empty IndexedDB.
   vi.clearAllMocks()
+  vi.stubGlobal('navigator', { locks: fakeWebLocks() })
   connectionState.mockResolvedValue('disconnected')
   getValidAccessToken.mockResolvedValue(undefined)
   getStoredToken.mockResolvedValue(undefined)
@@ -45,6 +76,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
 
