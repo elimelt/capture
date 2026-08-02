@@ -2,7 +2,7 @@ import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react
 import type { Attachment } from '../contract/types'
 import { getBlob } from '../store/events'
 import { liveCaptions, liveTranscripts } from '../store/livetext'
-import { cx, MicIcon, tone, type_ } from '../ui'
+import { cx, MicIcon, TextCursorIcon, tone, type_ } from '../ui'
 import { authorship, type Authorship } from './authorship'
 import { sortAttachmentsByLoggedAt } from './attachmentOrder'
 import { EDIT_TITLE, AUTHORSHIP_STYLE, renderWithMath, StreamingText } from './AttachmentBody'
@@ -166,7 +166,7 @@ function NoteText({
       aria-label={EDIT_TITLE[a]}
       className={cx('text-left', 'whitespace-pre-wrap break-words', AUTHORSHIP_STYLE[a])}
     >
-      {a === 'spoken' && <SpokenMark />}
+      {a === 'spoken' ? <SpokenMark /> : a === 'authored' ? <NoteMark /> : null}
       {renderWithMath(text)}
     </button>
   )
@@ -176,6 +176,14 @@ function SpokenMark() {
   return (
     <span aria-hidden="true" className={cx('mr-1 inline-flex -translate-y-px align-middle', tone.textFaint)}>
       <MicIcon size={11} />
+    </span>
+  )
+}
+
+function NoteMark() {
+  return (
+    <span aria-hidden="true" className={cx('mr-1 inline-flex -translate-y-px align-middle', tone.textFaint)}>
+      <TextCursorIcon size={11} />
     </span>
   )
 }
