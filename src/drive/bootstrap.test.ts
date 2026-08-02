@@ -1,79 +1,20 @@
-import 'fake-indexeddb/auto'
-import { IDBFactory } from 'fake-indexeddb'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { driveClientMock, fakeDrive, setActiveFakeDrive, type FakeDrive } from './testing/fakeDrive'
+import { useFreshIndexedDb } from '../testing/freshDb'
 
-/**
- * A tiny in-memory Drive: folders/files addressed by (name, parentId). Lets us
- * assert bootstrap is idempotent (re-run creates nothing) and never clobbers
- * the mutable stubs it pre-creates.
- */
-function fakeDrive() {
-  interface Node {
-    id: string
-    name: string
-    parentId: string
-    isFolder: boolean
-  }
-  const nodes: Node[] = []
-  let n = 0
-  const find = (name: string, parentId: string) =>
-    nodes.find((f) => f.name === name && f.parentId === parentId)
+useFreshIndexedDb()
 
-  const findFile = vi.fn(
-    async (_t: string, a: { name: string; parentId: string; mimeType?: string }) =>
-      find(a.name, a.parentId)?.id ?? null,
-  )
-  const createFolder = vi.fn(
-    async (_t: string, name: string, parentId: string, _appProperties?: Record<string, string>) => {
-      const id = `folder-${n++}`
-      nodes.push({ id, name, parentId, isFolder: true })
-      return id
-    },
-  )
-  const uploadFile = vi.fn(
-    async (_t: string, a: { name: string; parentId: string }) => {
-      const id = `file-${n++}`
-      nodes.push({ id, name: a.name, parentId: a.parentId, isFolder: false })
-      return id
-    },
-  )
-  let user = 'user-A'
-  const getAboutUser = vi.fn(async (_t: string) => ({ permissionId: user }))
-  return {
-    nodes,
-    find,
-    findFile,
-    createFolder,
-    uploadFile,
-    getAboutUser,
-    /** Simulate a Google-account switch for subsequent tokens. */
-    setUser(id: string) {
-      user = id
-    },
-  }
-}
+// Shared fake (issue #70) — see testing/fakeDrive.ts. Only the pieces this
+// suite actually exercises are used: folder/file addressing by
+// (name, parentId), appProperties on create/upload, and getAboutUser/setUser
+// for the account-binding tests below.
+vi.mock('./client', () => driveClientMock())
 
-let drive: ReturnType<typeof fakeDrive>
-
-vi.mock('./client', async () => {
-  const actual = await vi.importActual<typeof import('./client')>('./client')
-  return {
-    ...actual,
-    findFile: (...args: unknown[]) => drive.findFile(...(args as [string, never])),
-    createFolder: (...args: unknown[]) => drive.createFolder(...(args as [string, string, string])),
-    uploadFile: (...args: unknown[]) => drive.uploadFile(...(args as [string, never])),
-    getAboutUser: (...args: unknown[]) => drive.getAboutUser(...(args as [string])),
-  }
-})
+let drive: FakeDrive
 
 beforeEach(() => {
-  vi.resetModules()
-  vi.stubGlobal('indexedDB', new IDBFactory())
   drive = fakeDrive()
-})
-
-afterEach(() => {
-  vi.unstubAllGlobals()
+  setActiveFakeDrive(drive)
 })
 
 async function load() {

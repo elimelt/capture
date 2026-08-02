@@ -22,3 +22,6 @@ jobs:
       - run: npx tsc -b
       - run: npm run lint
       - run: npm run build
+      # Guards the lazy-chunk strategy (issue #71): the AI SDK must stay out
+      # of the eagerly-loaded entry chunk. See scripts/check-bundle-size.mjs.
+      - run: npm run check:bundle-size

@@ -1,4 +1,3 @@
-import 'fake-indexeddb/auto'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { deviceTz, toLocalIso } from '../contract/time'
 import { getDb, resetDbCache } from '../store/db'

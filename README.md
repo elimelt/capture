@@ -77,31 +77,38 @@ All configuration is build-time constants — there are no environment variables
 or API keys. A fork needs to change:
 
 - `src/config.ts` — `GOOGLE_CLIENT_ID` (the Google OAuth browser-client ID; a
-  public identifier, safe to ship in the bundle) and `APP_ORIGIN` (the deployed
-  origin, e.g. `https://time.elimelt.com`). You will need your own Google Cloud
-  OAuth client authorized for your origin, with the `drive.file` and
-  `calendar.readonly` scopes.
-- `src/transcribe/api.ts` — the Whisper transcription endpoint
-  (`https://transcribe.elimelt.com`).
-- `src/vision/api.ts` — the vision-LLM captioning endpoint
-  (`https://llm.elimelt.com/api/chat`).
-- `src/assistant/config.ts` — the OpenAI-compatible assistant endpoint
-  (`https://llm.elimelt.com/v1`).
-- `index.html` — the Content-Security-Policy whitelists exactly the endpoints
-  above (plus Google, OSM, and Nominatim); update it to match any changes.
+  public identifier, safe to ship in the bundle) and the `ENDPOINTS` block
+  (the transcription, vision-captioning, and OpenAI-compatible assistant
+  hosts — one place to change all three, consumed by `src/transcribe/api.ts`,
+  `src/vision/api.ts`, and `src/assistant/config.ts` respectively; issue #69).
+  You will need your own Google Cloud OAuth client with the deployed
+  origin(s) added under **Authorized JavaScript origins** (e.g.
+  `https://time.elimelt.com`) and the `drive.file` and `calendar.readonly`
+  scopes — the app has no runtime origin constant to change; GIS validates
+  against what's configured on the OAuth client itself.
+- `index.html` — the Content-Security-Policy whitelists exactly the
+  `ENDPOINTS` hosts above (plus Google, OSM, and Nominatim); update it to
+  match any changes (pinned by `src/config.test.ts`, which fails if an
+  `ENDPOINTS` host is missing from `connect-src`).
 - `vite.config.ts` — `base` path and PWA manifest, if deploying somewhere other
   than a domain root.
 
 ## CI and deployment
 
 The `CI` workflow (`.github/workflows/ci.yml`) runs on every pull request and
-push to `main`: `npm ci`, `npm test`, `npx tsc -b`, `npm run lint`, and
-`npm run build`.
+push to `main`: `npm ci`, `npm test`, `npx tsc -b`, `npm run lint`,
+`npm run build`, and `npm run check:bundle-size`.
 
 Deployment is GitHub Pages via `.github/workflows/deploy.yml`. On every push to
-`main` (or manual dispatch), CI runs `npm ci`, `npm test`, and `npm run build`,
-copies `dist/index.html` to `404.html` as an SPA fallback for deep links, and
-publishes the artifact with `deploy-pages`.
+`main` (or manual dispatch), it runs `npm ci`, `npm test`, `npm run build`, and
+`npm run check:bundle-size`, copies `dist/index.html` to `404.html` as an SPA
+fallback for deep links, and publishes the artifact with `deploy-pages`.
+
+A third workflow, `.github/workflows/integration.yml`, runs the live-endpoint
+integration test (`npm run test:integration`) on a weekly schedule and on
+manual dispatch — separate from `ci`/`deploy` so a flaky or down external
+endpoint never blocks a PR or a deploy, but transport rot still surfaces as a
+red run instead of a user report (issue #71).
 
 ## Documentation
 

@@ -1,4 +1,3 @@
-import 'fake-indexeddb/auto'
 import { forceCloseDatabase } from 'fake-indexeddb'
 import { unwrap } from 'idb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'

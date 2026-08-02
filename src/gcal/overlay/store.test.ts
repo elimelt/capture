@@ -1,4 +1,3 @@
-import 'fake-indexeddb/auto'
 import { openDB } from 'idb'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { appendCapture, listEvents, wipeAll } from '../../store/events'

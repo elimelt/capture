@@ -1,7 +1,8 @@
-import 'fake-indexeddb/auto'
-import { IDBFactory } from 'fake-indexeddb'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { useFreshIndexedDb } from '../testing/freshDb'
 import type { SyncStatusRow } from '../store/db'
+
+useFreshIndexedDb()
 
 /**
  * Fake identity + id-minting endpoints, in the style of the other drive/
@@ -34,13 +35,7 @@ vi.mock('./client', async () => {
 })
 
 beforeEach(() => {
-  vi.resetModules()
-  vi.stubGlobal('indexedDB', new IDBFactory())
   drive = fakeDrive()
-})
-
-afterEach(() => {
-  vi.unstubAllGlobals()
 })
 
 function row(overrides: Partial<SyncStatusRow>): SyncStatusRow {

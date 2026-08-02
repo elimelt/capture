@@ -1,0 +1,33 @@
+name: Integration (live LLM endpoint)
+
+# The assistant transport's only end-to-end check
+# (src/assistant/transport.integration.test.ts) hits llm.elimelt.com and is
+# excluded from the default `npm test` suite (VITEST_INTEGRATION-gated) so
+# CI/deploy stay hermetic — but that left it running only when a human
+# remembered `npm run test:integration` locally (issue #71). This workflow
+# runs it on a schedule instead, so a breaking endpoint or AI SDK change
+# (ai@7, @ai-sdk/* move fast) surfaces as a red scheduled run rather than a
+# user report. Deliberately not wired into `ci.yml`/`deploy.yml`: a flaky or
+# down external endpoint must never block a PR or a deploy.
+
+on:
+  schedule:
+    # Every Monday at 13:00 UTC. GitHub may delay scheduled runs under load;
+    # exact timing doesn't matter for a rot-detector.
+    - cron: '0 13 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run test:integration

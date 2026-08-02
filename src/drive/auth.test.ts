@@ -1,6 +1,7 @@
-import 'fake-indexeddb/auto'
-import { IDBFactory } from 'fake-indexeddb'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { useFreshIndexedDb } from '../testing/freshDb'
+
+useFreshIndexedDb()
 
 /** A controllable stand-in for the GIS oauth2 token client. */
 function stubGis() {
@@ -32,15 +33,6 @@ async function load() {
 async function tokenStore() {
   return import('./token')
 }
-
-beforeEach(() => {
-  vi.resetModules()
-  vi.stubGlobal('indexedDB', new IDBFactory())
-})
-
-afterEach(() => {
-  vi.unstubAllGlobals()
-})
 
 describe('connect', () => {
   it('persists the token and resolves with an expiry derived from expires_in', async () => {

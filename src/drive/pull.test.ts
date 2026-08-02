@@ -1,7 +1,10 @@
-import 'fake-indexeddb/auto'
-import { IDBFactory } from 'fake-indexeddb'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { DriveError, FOLDER_MIME } from './client'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+// `./testing/fakeDrive` must be imported before `./client` below: both are
+// intercepted once `vi.mock('./client', ...)` is registered, and the mock
+// factory needs `driveClientMock` already initialized (see fakeDrive.ts's
+// module doc for why it can't just import `../client` itself).
+import { driveClientMock, fakeDrive, setActiveFakeDrive, type FakeDrive } from './testing/fakeDrive'
+import { FOLDER_MIME } from './client'
 import { serializeEvent } from '../contract/serialize'
 import { serializeSegment } from '../contract/segments'
 import {
@@ -12,165 +15,20 @@ import {
 } from '../contract/filenames'
 import type { CaptureEvent } from '../contract/types'
 import { EVENT_SCHEMA } from '../contract/types'
+import { useFreshIndexedDb } from '../testing/freshDb'
 
-/**
- * In-memory Drive with folders/files, listable and readable, plus a faithful
- * changes feed: every node mutation appends a journal entry, cursors are
- * indexes into the journal, and getStartPageToken points past its end.
- */
-function fakeDrive() {
-  interface Node {
-    id: string
-    name: string
-    parentId: string
-    mimeType: string
-    content?: string | Blob
-    trashed?: boolean
-    appProperties?: Record<string, string>
-  }
-  interface JournalEntry {
-    fileId: string
-    removed?: boolean
-  }
-  const nodes: Node[] = []
-  const journal: JournalEntry[] = []
-  let n = 0
-  let failOn: 'list' | 'read' | 'changes' | null = null
-  let failStatus = 500
-  let user = 'user-A'
+useFreshIndexedDb()
 
-  const add = (
-    name: string,
-    parentId: string,
-    mimeType: string,
-    content?: string | Blob,
-    opts: { quiet?: boolean; trashed?: boolean; appProperties?: Record<string, string> } = {},
-  ) => {
-    const id = `node-${n++}`
-    nodes.push({
-      id,
-      name,
-      parentId,
-      mimeType,
-      content,
-      ...(opts.trashed ? { trashed: true } : {}),
-      ...(opts.appProperties ? { appProperties: opts.appProperties } : {}),
-    })
-    if (!opts.quiet) journal.push({ fileId: id })
-    return id
-  }
-  const byId = (id: string) => nodes.find((f) => f.id === id)
-  const changeOf = ({ fileId, removed }: JournalEntry) => {
-    if (removed) return { fileId, removed: true }
-    const f = byId(fileId)!
-    return {
-      fileId,
-      file: {
-        id: f.id,
-        name: f.name,
-        mimeType: f.mimeType,
-        ...(f.trashed ? { trashed: true } : {}),
-        parents: [f.parentId],
-        ...(f.appProperties ? { appProperties: f.appProperties } : {}),
-      },
-    }
-  }
+// Shared fake (issue #70) — see testing/fakeDrive.ts. This suite exercises
+// the full journal-backed changes feed: cursors, trash, appProperties, and
+// the list/read/changes failure-injection knob.
+vi.mock('./client', () => driveClientMock())
 
-  return {
-    nodes,
-    add,
-    /** Journal another change entry for an existing node (metadata touch). */
-    touch(fileId: string) {
-      journal.push({ fileId })
-    },
-    /** Journal a removal (permanent delete / lost visibility). */
-    remove(fileId: string) {
-      journal.push({ fileId, removed: true })
-    },
-    fail(on: 'list' | 'read' | 'changes' | null, status = 500) {
-      failOn = on
-      failStatus = status
-    },
-    findFile: vi.fn(
-      async (_t: string, a: { name: string; parentId: string; mimeType?: string }) =>
-        nodes.find(
-          (f) =>
-            f.name === a.name &&
-            f.parentId === a.parentId &&
-            (!a.mimeType || f.mimeType === a.mimeType),
-        )?.id ?? null,
-    ),
-    createFolder: vi.fn(async (_t: string, name: string, parentId: string) =>
-      add(name, parentId, FOLDER_MIME),
-    ),
-    uploadFile: vi.fn(
-      async (_t: string, a: { name: string; parentId: string; mimeType: string; body: string | Blob }) =>
-        add(a.name, a.parentId, a.mimeType, a.body),
-    ),
-    listChildren: vi.fn(async (_t: string, parentId: string) => {
-      if (failOn === 'list') throw new DriveError(failStatus, 'boom')
-      return nodes
-        .filter((f) => f.parentId === parentId && !f.trashed)
-        .map(({ id, name, mimeType }) => ({ id, name, mimeType }))
-    }),
-    readFileText: vi.fn(async (_t: string, id: string) => {
-      if (failOn === 'read') throw new DriveError(failStatus, 'boom')
-      const c = byId(id)?.content
-      return typeof c === 'string' ? c : ((await (c as Blob | undefined)?.text()) ?? '')
-    }),
-    readFileBlob: vi.fn(async (_t: string, id: string) => {
-      if (failOn === 'read') throw new DriveError(failStatus, 'boom')
-      const c = byId(id)?.content
-      return typeof c === 'string' ? new Blob([c]) : (c ?? new Blob())
-    }),
-    getFileMetadata: vi.fn(async (_t: string, id: string) => {
-      const f = byId(id)
-      if (!f) throw new DriveError(404, 'not found')
-      return { id: f.id, name: f.name, mimeType: f.mimeType, parents: [f.parentId] }
-    }),
-    getStartPageToken: vi.fn(async (_t: string) => String(journal.length)),
-    listChanges: vi.fn(async (_t: string, pageToken: string) => {
-      if (failOn === 'changes') throw new DriveError(failStatus, 'boom')
-      return {
-        changes: journal.slice(Number(pageToken)).map(changeOf),
-        newStartPageToken: String(journal.length),
-      }
-    }),
-    /** Simulate a Google-account switch for subsequent tokens. */
-    setUser(id: string) {
-      user = id
-    },
-    getAboutUser: vi.fn(async (_t: string) => ({ permissionId: user })),
-  }
-}
-
-let drive: ReturnType<typeof fakeDrive>
-
-vi.mock('./client', async () => {
-  const actual = await vi.importActual<typeof import('./client')>('./client')
-  return {
-    ...actual,
-    findFile: (...a: unknown[]) => drive.findFile(...(a as [string, never])),
-    createFolder: (...a: unknown[]) => drive.createFolder(...(a as [string, string, string])),
-    uploadFile: (...a: unknown[]) => drive.uploadFile(...(a as [string, never])),
-    listChildren: (...a: unknown[]) => drive.listChildren(...(a as [string, string])),
-    readFileText: (...a: unknown[]) => drive.readFileText(...(a as [string, string])),
-    readFileBlob: (...a: unknown[]) => drive.readFileBlob(...(a as [string, string])),
-    getFileMetadata: (...a: unknown[]) => drive.getFileMetadata(...(a as [string, string])),
-    getStartPageToken: (...a: unknown[]) => drive.getStartPageToken(...(a as [string])),
-    listChanges: (...a: unknown[]) => drive.listChanges(...(a as [string, string])),
-    getAboutUser: (...a: unknown[]) => drive.getAboutUser(...(a as [string])),
-  }
-})
+let drive: FakeDrive
 
 beforeEach(() => {
-  vi.resetModules()
-  vi.stubGlobal('indexedDB', new IDBFactory())
   drive = fakeDrive()
-})
-
-afterEach(() => {
-  vi.unstubAllGlobals()
+  setActiveFakeDrive(drive)
 })
 
 /** A remote capture event as another device would have pushed it. */

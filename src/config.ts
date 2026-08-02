@@ -1,11 +1,30 @@
 /**
  * Build-time configuration. The OAuth client ID is a public identifier for a
  * browser (public) client — safe to ship in the bundle (SPEC §9.2).
+ *
+ * There is no `APP_ORIGIN` constant: the deployed origin isn't something the
+ * app reads at runtime (GIS validates the calling origin against the
+ * Authorized JavaScript origins configured on the OAuth client in Google
+ * Cloud Console, not against a value shipped in the bundle), so a fork only
+ * needs to add its real origin there — see README's fork checklist.
  */
 export const GOOGLE_CLIENT_ID =
   '1055328792781-3qp3rdol6ebq8idump3610qhebma30f8.apps.googleusercontent.com'
 
-export const APP_ORIGIN = 'https://capture.elimelt.com'
+/**
+ * External API endpoints (issue #69), one place to diff against when moving
+ * a host: the OpenAI-compatible assistant endpoint, the native (Ollama-style)
+ * vision-captioning endpoint (same host as `assistant`, different surface —
+ * only the native API honors `think: false`), and the transcription
+ * endpoint. Consumed by `assistant/config.ts`, `vision/api.ts`, and
+ * `transcribe/api.ts`; every host here must also be whitelisted in
+ * `index.html`'s CSP `connect-src` (pinned by `config.test.ts`).
+ */
+export const ENDPOINTS = {
+  assistant: 'https://llm.elimelt.com/v1',
+  vision: 'https://llm.elimelt.com/api/chat',
+  transcribe: 'https://transcribe.elimelt.com',
+} as const
 
 /**
  * OAuth scopes the app requests together at connect (SPEC §8.1). They live

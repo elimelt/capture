@@ -1,7 +1,8 @@
-import 'fake-indexeddb/auto'
-import { IDBFactory } from 'fake-indexeddb'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AmendEvent } from '../contract/types'
+import { useFreshIndexedDb } from '../testing/freshDb'
+
+useFreshIndexedDb()
 
 const { captionPhoto } = vi.hoisted(() => ({
   captionPhoto: vi.fn<(blob: Blob, onPartial?: (text: string) => void) => Promise<string>>(),
@@ -43,14 +44,8 @@ function amendsOf(events: readonly { type: string }[]): AmendEvent[] {
 }
 
 beforeEach(() => {
-  vi.resetModules()
   captionPhoto.mockReset()
-  vi.stubGlobal('indexedDB', new IDBFactory())
   vi.stubGlobal('navigator', { onLine: true })
-})
-
-afterEach(() => {
-  vi.unstubAllGlobals()
 })
 
 describe('drainCaptions', () => {

@@ -89,6 +89,32 @@ styling flows through `src/ui/tokens.ts` (`tone`, `shape`, `type_`, `motion`,
 - Note: `tsconfig.app.json` deliberately excludes node types, so tests under
   `src/` must not import `node:*` modules (see `layering.test.ts`'s
   `import.meta.glob` approach for reading files).
+- **UI is intentionally untested** (issue #70): Vitest runs with
+  `environment: 'node'` and jsdom isn't installed, so `*.tsx` screens/components
+  have zero tests and can't have any today. This is a deliberate stance, not an
+  oversight — it's what "prefer testing the pure core" above means in practice.
+  If that ever needs to change (e.g. a component with real logic worth
+  regression-testing), install jsdom and switch environments deliberately;
+  don't treat a missing UI test as a gap to quietly work around.
+- **Shared test infrastructure**, added to stop fixtures diverging (issue #70):
+  - `src/testing/setup.ts` (wired as `test.setupFiles` in `vite.config.ts`)
+    installs `fake-indexeddb/auto` once for the whole run — most test files
+    need nothing further for a working `indexedDB` global.
+  - `src/testing/freshDb.ts`'s `useFreshIndexedDb()` gives a file's tests an
+    *empty* IndexedDB each, for suites where cross-test isolation matters
+    (module-level caches like `store/db.ts`'s `getDb()` memo, or seq/cursor
+    state that must not leak between tests): call it once at the top of the
+    file, outside any `describe`.
+  - `src/drive/testing/fakeDrive.ts`'s `fakeDrive()`/`driveClientMock()` is
+    the one in-memory fake for the Drive REST client (`drive/client.ts`) —
+    folder/file addressing, the changes-feed journal (cursors, trash,
+    appProperties), upload-order recording, and failure injection (`failNext`,
+    `failName`, `fail`) all in one place, so a client-contract change is
+    mirrored once instead of once per suite. See `bootstrap.test.ts`,
+    `queue.test.ts`, and `pull.test.ts` for the `vi.mock('./client', () =>
+    driveClientMock())` + `setActiveFakeDrive()` wiring, and the module's own
+    doc comment for why the mock factory can't just statically import
+    `../client` itself.
 
 ## Code style
 

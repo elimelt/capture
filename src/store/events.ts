@@ -239,6 +239,48 @@ export async function setLastSyncAt(stream: string, at: string): Promise<void> {
   await db.put('meta', at, LAST_SYNC_KEY(stream))
 }
 
+/** One stream's slice of a persisted sync-cycle result (issue #67). Mirrors
+ * the shape of appStore's `StreamSyncResult` but kept string-typed here so
+ * this module (store's generic layer) does not need to import `DrainOutcome`
+ * from drive/ just to describe storage — appStore owns the narrower type. */
+export interface PersistedStreamSyncResult {
+  stream: string
+  outcome: string
+  uploaded: number
+  pulled: number
+  error?: string
+}
+
+/**
+ * The last full sync-cycle attempt across every registered stream, including
+ * pull errors that no sync row ever records (a pull failure never queues a
+ * row — see appStore's `drainSync` doc). Persisted (not just held in React
+ * state) so a failure is still inspectable in Settings after the app is
+ * closed and reopened, not just for the 6 s of the error toast (issue #67).
+ */
+export interface PersistedSyncResult {
+  /** ISO local time the cycle finished (or threw). */
+  at: string
+  outcome: string
+  uploaded: number
+  pulled: number
+  error?: string
+  perStream: PersistedStreamSyncResult[]
+}
+
+const LAST_SYNC_RESULT_KEY = 'lastSyncResult'
+
+/** Last persisted sync-cycle result; unset before the first cycle ever runs. */
+export async function getLastSyncResult(): Promise<PersistedSyncResult | undefined> {
+  const db = await getDb()
+  return (await db.get('meta', LAST_SYNC_RESULT_KEY)) as PersistedSyncResult | undefined
+}
+
+export async function setLastSyncResult(result: PersistedSyncResult): Promise<void> {
+  const db = await getDb()
+  await db.put('meta', result, LAST_SYNC_RESULT_KEY)
+}
+
 export async function getEventById(id: string): Promise<LogEvent | undefined> {
   const db = await getDb()
   return db.get('events', id)

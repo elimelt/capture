@@ -9,9 +9,10 @@
  * for live UI; the resolved value is the full caption, identical to what a
  * non-streaming call would have returned.
  */
+import { ENDPOINTS } from '../config'
 import { assembleCaption, feedLines, parseChatLine } from './stream'
 
-const CHAT_URL = 'https://llm.elimelt.com/api/chat'
+const CHAT_URL = ENDPOINTS.vision
 const MODEL = 'gemma4:e4b'
 const TIMEOUT_MS = 60_000
 

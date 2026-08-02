@@ -117,6 +117,10 @@ export default defineConfig({
   ],
   test: {
     environment: 'node',
+    // Installs the fake-indexeddb polyfill once for every test file (issue
+    // #70), instead of each of the ~25 files that touch store/db.ts
+    // repeating `import 'fake-indexeddb/auto'` itself.
+    setupFiles: ['./src/testing/setup.ts'],
     // Live-API integration tests are opt-in: `npm run test:integration`.
     exclude: [
       '**/node_modules/**',

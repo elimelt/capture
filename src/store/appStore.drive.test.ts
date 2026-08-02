@@ -1,7 +1,8 @@
-import 'fake-indexeddb/auto'
-import { IDBFactory } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { allSyncStreams } from '../streams/registry'
+import { useFreshIndexedDb } from '../testing/freshDb'
+
+useFreshIndexedDb()
 
 // Mock the drive layer so these tests exercise only the store's wiring:
 // gesture → connect → per-stream pull+drain loop, and the no-token /
@@ -32,9 +33,9 @@ async function freshStore() {
 }
 
 beforeEach(() => {
-  // Fresh IndexedDB per test: per-stream lastSyncAt stamps must not leak
-  // between tests now that the loop always covers the same fixed stream set.
-  vi.stubGlobal('indexedDB', new IDBFactory())
+  // Per-stream lastSyncAt stamps must not leak between tests now that the
+  // loop always covers the same fixed stream set — `useFreshIndexedDb()`
+  // above gives each test its own empty IndexedDB.
   vi.clearAllMocks()
   connectionState.mockResolvedValue('disconnected')
   getValidAccessToken.mockResolvedValue(undefined)
@@ -45,12 +46,16 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks()
-  vi.unstubAllGlobals()
 })
 
 async function lastSyncAtOf(stream: string): Promise<string | undefined> {
   const { getLastSyncAt } = await import('./events')
   return getLastSyncAt(stream)
+}
+
+async function persistedLastSyncResult() {
+  const { getLastSyncResult } = await import('./events')
+  return getLastSyncResult()
 }
 
 describe('drainSync (multi-stream loop)', () => {
@@ -201,6 +206,36 @@ describe('drainSync (multi-stream loop)', () => {
     expect(result.outcome).toBe('error')
     expect(result.error).toBe('record parse failed')
     expect(result.uploaded).toBe(3)
+  })
+
+  it('persists a pull error in lastSyncResult (issue #67): no sync row records it, but the cycle result survives a reload', async () => {
+    getValidAccessToken.mockResolvedValue('tok')
+    pullStream.mockImplementation(async (_t: string, stream: string) =>
+      stream === 'timelog'
+        ? { outcome: 'error', pulled: 0, error: 'record parse failed' }
+        : { outcome: 'idle', pulled: 0 },
+    )
+    const store = await freshStore()
+    await store.getState().drainSync()
+
+    // In-memory state reflects the cycle immediately.
+    expect(store.getState().lastSyncResult?.outcome).toBe('error')
+    expect(store.getState().lastSyncResult?.perStream).toContainEqual(
+      expect.objectContaining({ stream: 'timelog', error: 'record parse failed' }),
+    )
+
+    // Simulate a relaunch: fresh module graph, re-read from IndexedDB only.
+    const persisted = await persistedLastSyncResult()
+    expect(persisted?.outcome).toBe('error')
+    expect(persisted?.perStream).toContainEqual(
+      expect.objectContaining({ stream: 'timelog', outcome: 'error', error: 'record parse failed' }),
+    )
+    expect(persisted?.at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+
+    // init() picks the persisted result back up on the next boot.
+    const reopened = await freshStore()
+    await reopened.getState().init()
+    expect(reopened.getState().lastSyncResult?.outcome).toBe('error')
   })
 
   it('stamps lastSyncAt only for streams whose own cycle was clean', async () => {

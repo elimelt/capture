@@ -1,116 +1,26 @@
-import 'fake-indexeddb/auto'
-import { IDBFactory } from 'fake-indexeddb'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { DriveError } from './client'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  driveClientMock,
+  fakeDrive,
+  setActiveFakeDrive,
+  type FakeDrive,
+  type FakeUploadArgs,
+} from './testing/fakeDrive'
+import { useFreshIndexedDb } from '../testing/freshDb'
 
-interface FakeUploadArgs {
-  name: string
-  parentId: string
-  mimeType?: string
-  body?: Blob | string
-  fileId?: string
-  appProperties?: Record<string, string>
-}
+useFreshIndexedDb()
 
-/** In-memory Drive that records upload order and can be told to fail. */
-function fakeDrive() {
-  const nodes: {
-    id: string
-    name: string
-    parentId: string
-    mimeType?: string
-    body?: Blob | string
-    appProperties?: Record<string, string>
-  }[] = []
-  const uploadOrder: string[] = []
-  let n = 0
-  let failWith: { status: number } | null = null
-  let failNameWith: { name: string; status: number } | null = null
-  let user = 'user-A'
+// Shared fake (issue #70) — see testing/fakeDrive.ts. This suite exercises
+// upload order, the 409-on-pregenerated-id contract, and both failure knobs
+// (`failNext` for a transient/global failure, `failName` for one
+// deterministically-poison row).
+vi.mock('./client', () => driveClientMock())
 
-  const find = (name: string, parentId: string) =>
-    nodes.find((f) => f.name === name && f.parentId === parentId)
-  return {
-    nodes,
-    uploadOrder,
-    failNext(status: number | null) {
-      failWith = status === null ? null : { status }
-    },
-    /** Fail every upload of exactly this file name, forever, regardless of
-     * `failNext` — simulates one deterministically-poison row (e.g. an
-     * oversized/malformed audio attachment) while its neighbors succeed. */
-    failName(name: string | null, status = 400) {
-      failNameWith = name === null ? null : { name, status }
-    },
-    /** Simulate a Google-account switch for subsequent tokens. */
-    setUser(id: string) {
-      user = id
-    },
-    getAboutUser: vi.fn(async (_t: string) => ({ permissionId: user })),
-    findFile: vi.fn(async (_t: string, a: { name: string; parentId: string }) =>
-      find(a.name, a.parentId)?.id ?? null,
-    ),
-    createFolder: vi.fn(
-      async (
-        _t: string,
-        name: string,
-        parentId: string,
-        appProperties?: Record<string, string>,
-      ) => {
-        const id = `folder-${n++}`
-        nodes.push({ id, name, parentId, ...(appProperties ? { appProperties } : {}) })
-        return id
-      },
-    ),
-    generateIds: vi.fn(async (_t: string, count: number) =>
-      Array.from({ length: count }, () => `gen-${n++}`),
-    ),
-    uploadFile: vi.fn(async (_t: string, a: FakeUploadArgs) => {
-      if (failNameWith && a.name === failNameWith.name) {
-        throw new DriveError(failNameWith.status, 'boom-name')
-      }
-      if (failWith) throw new DriveError(failWith.status, 'boom')
-      // Mirror the real client's contract: re-uploading a pre-generated id
-      // that already landed yields 409 upstream, which uploadFile swallows
-      // and reports as success without creating anything.
-      if (a.fileId && nodes.some((f) => f.id === a.fileId)) return a.fileId
-      const id = a.fileId ?? `file-${n++}`
-      nodes.push({
-        id,
-        name: a.name,
-        parentId: a.parentId,
-        ...(a.mimeType ? { mimeType: a.mimeType } : {}),
-        ...(a.body !== undefined ? { body: a.body } : {}),
-        ...(a.appProperties ? { appProperties: a.appProperties } : {}),
-      })
-      uploadOrder.push(a.name)
-      return id
-    }),
-  }
-}
-
-let drive: ReturnType<typeof fakeDrive>
-
-vi.mock('./client', async () => {
-  const actual = await vi.importActual<typeof import('./client')>('./client')
-  return {
-    ...actual,
-    findFile: (...a: unknown[]) => drive.findFile(...(a as [string, never])),
-    createFolder: (...a: unknown[]) => drive.createFolder(...(a as [string, string, string])),
-    generateIds: (...a: unknown[]) => drive.generateIds(...(a as [string, number])),
-    uploadFile: (...a: unknown[]) => drive.uploadFile(...(a as [string, never])),
-    getAboutUser: (...a: unknown[]) => drive.getAboutUser(...(a as [string])),
-  }
-})
+let drive: FakeDrive
 
 beforeEach(() => {
-  vi.resetModules()
-  vi.stubGlobal('indexedDB', new IDBFactory())
   drive = fakeDrive()
-})
-
-afterEach(() => {
-  vi.unstubAllGlobals()
+  setActiveFakeDrive(drive)
 })
 
 async function captureWithAudio() {
@@ -363,7 +273,7 @@ describe('drainStream', () => {
 
     // Exact SPEC §5.7 bytes, NDJSON mime, segment tag.
     const node = drive.nodes.find((f) => f.name === segment)!
-    expect(node.body).toBe(serializeSegment([e1, e2]))
+    expect(node.content).toBe(serializeSegment([e1, e2]))
     expect(node.mimeType).toBe('application/x-ndjson')
     expect(node.appProperties).toEqual({ captureKind: 'segment', captureStream: 'timelog' })
 
@@ -595,21 +505,21 @@ describe('drainStream', () => {
     // only the assigned survivor — declared range ⊇ content range.
     const wide = drive.nodes.find((f) => f.name === wideName)!
     expect(wide.id).toBe('pinned-segment-id')
-    expect(wide.body).toBe(serializeSegment([e1]))
+    expect(wide.content).toBe(serializeSegment([e1]))
     const declared = parseSegmentName(wideName)!
-    const contentSeqs = parseSegment(wide.body as string).map((e) => e.seq)
+    const contentSeqs = parseSegment(wide.content as string).map((e) => e.seq)
     expect(declared.minSeq).toBe(e1.seq)
     expect(declared.maxSeq).toBe(e3.seq)
     expect(contentSeqs).toEqual([e1.seq]) // strictly inside the declared range
 
     // The unassigned members landed separately, as their own fresh segment.
     const rest = drive.nodes.find((f) => f.name === segmentFileName([e2, e3]))!
-    expect(rest.body).toBe(serializeSegment([e2, e3]))
+    expect(rest.content).toBe(serializeSegment([e2, e3]))
 
     // No event lost, none duplicated, none as a stray per-event record.
     const carried = drive.nodes
       .filter((f) => f.name.endsWith('.ndjson'))
-      .flatMap((f) => parseSegment(f.body as string))
+      .flatMap((f) => parseSegment(f.content as string))
       .map((e) => e.id)
       .sort()
     expect(carried).toEqual([e1.id, e2.id, e3.id].sort())

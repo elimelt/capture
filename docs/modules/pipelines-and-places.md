@@ -138,7 +138,8 @@ transcript was deleted by the user is never re-transcribed (history pass).
 ### src/transcribe/api.ts
 
 Client for the transcription service (Speaches / OpenAI-compatible Whisper at
-`https://transcribe.elimelt.com`).
+`ENDPOINTS.transcribe`, `https://transcribe.elimelt.com` — sourced from `src/config.ts`,
+issue #69).
 
 Exports:
 
@@ -311,9 +312,11 @@ because audio filenames never collide with photo filenames.
 ### src/vision/api.ts
 
 Client for photo captioning: `gemma4:e4b` on the LLM host via its native
-(Ollama-style) `/api/chat` endpoint at `https://llm.elimelt.com/api/chat` — the native
-API (not the OpenAI-compat `/v1`) is used because only it honors `think: false`, which
-turns a ~20 s reasoning detour into a ~2–3 s caption. CORS is origin-gated; no API key.
+(Ollama-style) `/api/chat` endpoint at `ENDPOINTS.vision` (`https://llm.elimelt.com/api/chat`
+— sourced from `src/config.ts`, issue #69; `dayview/daySummaryClient.ts` reuses the same
+endpoint for day-prose synthesis) — the native API (not the OpenAI-compat `/v1`) is used
+because only it honors `think: false`, which turns a ~20 s reasoning detour into a ~2–3 s
+caption. CORS is origin-gated; no API key.
 
 Exports:
 

@@ -9,9 +9,10 @@
  * live UI; the resolved value is the full transcript, byte-identical to
  * what the non-streaming endpoint would have returned (see stream.ts).
  */
+import { ENDPOINTS } from '../config'
 import { assembleTranscript, feedSse } from './stream'
 
-const BASE_URL = 'https://transcribe.elimelt.com'
+const BASE_URL = ENDPOINTS.transcribe
 const MODEL = 'Systran/faster-whisper-base.en'
 const TIMEOUT_MS = 60_000
 

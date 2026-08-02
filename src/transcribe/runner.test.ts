@@ -1,8 +1,9 @@
-import 'fake-indexeddb/auto'
-import { IDBFactory } from 'fake-indexeddb'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AmendEvent } from '../contract/types'
 import { EVENT_SCHEMA } from '../contract/types'
+import { useFreshIndexedDb } from '../testing/freshDb'
+
+useFreshIndexedDb()
 
 const { transcribeAudio } = vi.hoisted(() => ({
   transcribeAudio:
@@ -70,14 +71,8 @@ function remoteTranscriptAmend(targetId: string, audioFile: string): AmendEvent 
 }
 
 beforeEach(() => {
-  vi.resetModules()
   transcribeAudio.mockReset()
-  vi.stubGlobal('indexedDB', new IDBFactory())
   vi.stubGlobal('navigator', { onLine: true })
-})
-
-afterEach(() => {
-  vi.unstubAllGlobals()
 })
 
 describe('drainTranscriptions', () => {
