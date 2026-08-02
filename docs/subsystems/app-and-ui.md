@@ -24,9 +24,10 @@ flash of empty state:
    (`virtual:pwa-register`), requests persistent storage
    (`navigator.storage.persist()` — Safari can evict IndexedDB after ~7 days of
    disuse), and renders `<App />` under `StrictMode → ErrorBoundary → BrowserRouter`.
-3. **`src/App.tsx`** calls the store's `init()` (hydrate entries, places, settings,
-   Drive connection state in parallel, then an opportunistic `drainSync()`). When the
-   store reports `ready`, App fades and removes `#splash`.
+3. **`src/App.tsx`** calls the store's `init()` (hydrate entries, sync status,
+   `lastSyncAt`, places, settings, and Drive connection state in parallel — local
+   reads only, no network). When the store reports `ready`, App fades and removes
+   `#splash`.
 
 The splash has exactly two exit paths: App on `ready`, and
 `ErrorBoundary.componentDidCatch` on a boot crash. Any new early-exit path must also
@@ -51,13 +52,14 @@ who never enable it. Navigation is flat — tabs only, no nested routers or stac
 bottom sheets, not routes. Deployment supports deep links by copying `index.html` to
 `404.html` on GitHub Pages.
 
-Beyond routing, `App.tsx` owns the app-level lifecycle: it runs a Drive sync cycle
-(pull remote events, then drain the upload queue) on `visibilitychange` (visible) and
-`online` events — the "natural gestures" the
-no-backend token model relies on — and runs background transcription/captioning
-whenever `entries` change, calling `refresh()` when work completed so the effect
-re-runs until nothing is pending. New long-running background work should hook these
-same triggers rather than invent its own scheduler.
+Beyond routing, `App.tsx` owns the app-level lifecycle: on `visibilitychange`
+(visible) it only calls `refresh()` — re-reading local state so the entry list and
+sync status are current — and it runs background transcription/captioning whenever
+`entries` change, calling `refresh()` when work completed so the effect re-runs
+until nothing is pending. Drive sync is **manual-only**: the sole trigger is the
+"Sync now" button in Settings, so Drive is contacted only on an explicit user ask.
+New long-running background work should hook the entries-changed effect rather than
+invent its own scheduler.
 
 The Day view additionally overlays **read-only Google Calendar events**: its
 `useDayEvents` hook resolves the stored Google token and the target calendar chosen
@@ -109,8 +111,9 @@ translates callbacks into `amend` calls; Settings writes via
 Write actions are wrapped in a `guard(label, fn)` helper: on failure it sets
 `lastError` to `"<label>: <message>"` and **re-throws** for awaiting callers. App
 renders `lastError` as the single global error toast (auto-cleared after 6 s).
-`drainSync` is deliberately unguarded — it runs from fire-and-forget triggers and
-reports failures via `lastError` without throwing.
+`drainSync` is deliberately unguarded — it never throws; its sole caller, the
+"Sync now" button in Settings, renders the returned `SyncResult`, and failures also
+surface via `lastError`.
 
 ## PWA behavior
 
@@ -126,9 +129,9 @@ reports failures via `lastError` without throwing.
   reverse-geocoding (`CacheFirst`, 90 days) as the second cache line behind the
   IndexedDB geocode cache, per Nominatim's usage policy.
 - **Offline expectations**: capture, day view, and settings work fully offline —
-  entries land in IndexedDB and the sync queue; the next foreground/online/manual
-  trigger runs a full pull-then-push sync cycle. There is no backend and no push
-  scheduler.
+  entries land in IndexedDB and the sync queue; the next manual "Sync now" in
+  Settings runs the full pull-then-push sync cycle. There is no backend, no push
+  scheduler, and no automatic sync.
 - **iOS specifics**: standalone display with a `black-translucent` status bar (content
   extends under it — App pads `main` with `env(safe-area-inset-top)`); persistent
   storage requested at boot because Drive is the only other copy of the log; iOS

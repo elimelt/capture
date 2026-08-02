@@ -110,6 +110,11 @@ Details in [CONTRIBUTING.md](CONTRIBUTING.md) and
 - **Single write path.** All writes go through `useAppStore` actions and
   `src/store/events.ts` — the only writer of the local log. Never write to
   IndexedDB or append events elsewhere.
+- **Manual sync only.** Drive sync (one pull-then-push cycle via `drainSync`)
+  runs only from the "Sync now" button in Settings — never on capture, init,
+  connect, foreground, or `online` events. Do not add automatic sync triggers.
+  Out-of-sync state is surfaced in Settings (pending/failed counts +
+  `lastSyncAt`, stamped only after a clean cycle).
 - **Byte-stable serialization.** `src/contract/serialize.ts` output is a
   contract shared with external Drive-reading skills (fixed key order,
   2-space indent, trailing newline, optional fields omitted). Changing it is

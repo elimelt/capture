@@ -12,15 +12,16 @@ It has two halves:
   change.
 - **UI state** (`appStore.ts`): a Zustand store that caches the folded entry list and
   settings in memory, delegates every write to the repositories, and wires Drive
-  auth/sync triggers (`src/drive`) into state the components render.
+  auth state and the manual sync action (`src/drive`) into state the components render.
 
 State flows one way: a UI action calls a store action → the action writes through a repo
 (one IndexedDB transaction) → the action re-reads (`refresh`/`loadPlaces`/`loadSettings`)
 and `set()`s the new snapshot → components re-render. The store never mutates cached
 entries in place; the entry list is always recomputed by folding the local log
-(`fold` from `src/contract`). Sync is driven by the same store: appends enqueue a
-`sync` row, and `drainSync` runs one pull-then-push cycle — `src/drive/pull` imports
-remote events first, then `src/drive/queue` drains pending rows.
+(`fold` from `src/contract`). Sync is manual-only and driven by the same store: appends
+enqueue a `sync` row, and `drainSync` — whose sole caller is the "Sync now" button in
+Settings — runs one pull-then-push cycle: `src/drive/pull` imports remote events first,
+then `src/drive/queue` drains pending rows.
 
 Per SPEC §10's layering rule, `store/` is stream-agnostic: it imports only from
 `src/contract` and `src/drive`, never from `gcal/`, `dayview/`, or `assistant/`
@@ -106,6 +107,14 @@ Key exports:
 - `listPendingSync(stream): Promise<SyncStatusRow[]>` — rows with `status !== 'uploaded'`
   sorted by seq ascending (id as tiebreak); the order `src/drive/queue` must upload in
   so the Drive log commits monotonically (SPEC §5.2, §8.4).
+- `interface SyncSummary { pending; errors; lastError? }` /
+  `summarizeSyncStatuses(rows: Iterable<SyncStatusRow>): SyncSummary` — pure rollup for
+  the Settings status line: `pending` counts rows with `status !== 'uploaded'` (errored
+  rows included), `errors` counts `status === 'error'` rows, `lastError` is the
+  highest-seq errored row's message (omitted when it has none).
+- `getLastSyncAt(stream): Promise<string | undefined>` / `setLastSyncAt(stream, at)` —
+  the moment the last full pull+push cycle completed cleanly, persisted per stream in
+  the `meta` store (key `lastSyncAt:<stream>`); unset = never synced.
 - `getEventById(id): Promise<LogEvent | undefined>` / `putSyncStatus(row)` — used
   by the drive queue to read the event being uploaded and record progress.
 - `importEvents(stream, events, blobs): Promise<void>` — the pull-side writer
@@ -157,10 +166,11 @@ path when new settings fields are added.
 
 The single Zustand store (`useAppStore = create<AppState>()(...)`) the UI reads. State:
 `ready` (boot splash gate), `currentStreamId` (initial `'timelog'`), `entries: Entry[]`,
-`syncStatuses: Map<string, SyncStatusRow>` (keyed by event id), `places: Place[]`,
-`appSettings`, `streamSettings`, `lastError: string | null` (toast channel),
-`driveConnection: DriveConnection` (`src/drive/token`; drives the reconnect pill,
-SPEC §8.2), and `syncing` (sync cycle in flight).
+`syncStatuses: Map<string, SyncStatusRow>` (keyed by event id), `lastSyncAt: string |
+null` (when the last full pull+push cycle completed cleanly; null = never synced),
+`places: Place[]`, `appSettings`, `streamSettings`, `lastError: string | null` (toast
+channel), `driveConnection: DriveConnection` (`src/drive/token`; drives the reconnect
+pill, SPEC §8.2), and `syncing` (sync cycle in flight).
 
 Also exports `interface SyncResult { outcome: DrainOutcome; uploaded; pulled: number;
 error? }` — the combined result of one pull-then-push cycle, consumed by the Settings
@@ -168,34 +178,36 @@ error? }` — the combined result of one pull-then-push cycle, consumed by the S
 
 Actions:
 
-- Loaders — `refresh(streamId?)` (re-lists entries + sync statuses, also switches
-  `currentStreamId` when given), `loadPlaces()`, `loadSettings()`,
-  `refreshConnection()`, and `init()` which runs all four in parallel, fires a
-  no-gesture `drainSync()` (relaunch within the token hour, SPEC §8.2), and sets
-  `ready: true` in a `finally` so even a failed boot lifts the splash.
+- Loaders — `refresh(streamId?)` (re-lists entries, sync statuses, and `lastSyncAt`,
+  also switches `currentStreamId` when given), `loadPlaces()`, `loadSettings()`,
+  `refreshConnection()`, and `init()` which runs all four in parallel — a local-only
+  status computation (entries, sync rows, `lastSyncAt`, stored-token expiry) that never
+  syncs — and sets `ready: true` in a `finally` so even a failed boot lifts the splash.
 - Log writes — `capture(input): Promise<CaptureEvent>`, `revoke(targets)`,
   `amend(input)`: delegate to `appendCapture`/`appendRevoke`/`appendAmend`, then
-  `refresh()`. `capture` additionally fire-and-forgets `drainSync()` (eager upload,
-  SPEC §2.3/§8.4).
+  `refresh()`. No eager upload: new events stay queued locally until a manual
+  "Sync now".
 - Drive — `connectDrive()` (user gesture → `connect()` from `src/drive/auth` →
-  refresh connection → sync), `disconnectDrive()` (revokes the stored token),
-  and `drainSync(): Promise<SyncResult>` — one full sync cycle (SPEC §8.4/§8.5):
-  no-op (`'retry-later'`) if already `syncing`; without a valid token it only
+  refresh connection; does **not** sync), `disconnectDrive()` (revokes the stored
+  token), and `drainSync(): Promise<SyncResult>` — one full sync cycle (SPEC
+  §8.4/§8.5), manual-only: the sole caller is the "Sync now" button in Settings.
+  No-op (`'retry-later'`) if already `syncing`; without a valid token it only
   refreshes connection state (so the reconnect pill can appear) and returns
   `'reconnect'`; with one it runs **pull then push** — `pullStream(token,
   currentStreamId)` from `src/drive/pull` first (so local appends land after
   everything other devices committed; a pull `'reconnect'` flips the pill and skips
   the push), then `drainStream(token, currentStreamId)` from `src/drive/queue`.
   The two outcomes merge worst-of (`idle < drained < retry-later < reconnect <
-  error`), `'error'` sets `lastError`, and entries are refreshed and `syncing`
+  error`), `'error'` sets `lastError`, a clean cycle (`idle`/`drained`) persists
+  `lastSyncAt` via `setLastSyncAt`, and entries are refreshed and `syncing`
   cleared in a `finally`.
 - Places/settings/data — `addPlace`, `removePlace`, `updateSettings`,
   `updateStreamSettings`, `wipe()` (`wipeAll()` then reload), `clearError()`.
 
 All write actions are wrapped in a local `guard(label, fn)` helper: on failure it sets
 `lastError` to `"<label>: <message>"` **and re-throws** so awaiting callers still see the
-error. `drainSync` is deliberately not guarded; it reports failures via `lastError`
-without throwing, since it runs from fire-and-forget triggers.
+error. `drainSync` is deliberately not guarded; it reports failures via `lastError` and
+in its returned `SyncResult` without throwing.
 
 ### src/store/appStore.test.ts
 
@@ -208,14 +220,19 @@ capture/amend/revoke updating folded entries, settings persistence, wipe, and th
 Mocks `src/drive/{auth,queue,pull,token}` to test only the store's Drive wiring:
 `drainSync`'s no-token, pull-then-push success (combined `SyncResult`),
 pull-reconnect (pill flipped, push skipped), pull-error-despite-push-success,
-reconnect, and error branches, plus the connect→sync and disconnect flows.
+reconnect, error, and retry-later branches, `lastSyncAt` stamping per outcome
+(stamped after a clean cycle; not on error or reconnect), plus the connect
+(no post-connect sync) and disconnect flows.
 
 ### src/store/events.test.ts
 
 Exercises the event repo end to end: per-stream monotonic seq allocation, contract
 attachment naming and blob round-trips, queued sync rows with the correct initial phase,
-fold behavior of amend/revoke, `wipeAll` (including seq-counter reset), and the
-migration to v5 (id-keyed `events`/`sync` stores replacing `[stream, seq]`-keyed ones).
+fold behavior of amend/revoke, `wipeAll` (including seq-counter and `lastSyncAt` reset),
+the migration to v5 (id-keyed `events`/`sync` stores replacing `[stream, seq]`-keyed
+ones), the `summarizeSyncStatuses` rollup (pending/error counts, highest-seq
+`lastError`, omitted when the errored row has no message), and
+`getLastSyncAt`/`setLastSyncAt` round-trips per stream.
 
 ### src/store/places.test.ts
 
@@ -250,6 +267,9 @@ per-stream independence of stream settings.
   `phase` field mirrors the attachments-first/record-last commit protocol (SPEC §5.2).
 - **Pull before push.** `drainSync` always runs `pullStream` before `drainStream`;
   pulled events arrive `uploaded`/`done` so the drainer never re-pushes them.
+- **Sync is manual-only.** `drainSync`'s sole caller is the "Sync now" button in
+  Settings — no foreground/online/capture triggers — and `lastSyncAt` is stamped only
+  when a full pull+push cycle completes cleanly (`idle`/`drained`).
 - **Blobs are keyed by contract filename**, computed at append time — the same name is
   used locally and in Drive, which is what makes re-uploads idempotent.
 - **`db.ts` caches the connection**; tests (and anything deleting the database) must

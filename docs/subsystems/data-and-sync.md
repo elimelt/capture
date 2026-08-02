@@ -74,11 +74,12 @@ sequenceDiagram
     Note over EV: one readwrite txn:<br/>seq counter + event +<br/>blobs + sync row (queued)
     EV-->>AS: CaptureEvent
     AS->>AS: refresh() — refold entries
-    AS--)P: drainSync() (fire-and-forget) — pull first
+    Note over AS: entry stays queued locally until<br/>the user taps "Sync now" (Settings)
+    AS->>P: drainSync() — manual "Sync now"; pull first
     P->>D: list log/ partitions, diff by id
     P->>D: fetch missing records + attachments
     P->>EV: importEvents(...) — atomic per partition
-    AS--)Q: then push
+    AS->>Q: then push
     Q->>EV: listPendingSync(stream) — seq order
     Q->>D: ensureTree / ensurePartition
     loop each pending row
@@ -100,8 +101,9 @@ Stage by stage:
    `sync` row in **one IndexedDB transaction**. No partial appends can exist. The
    sync row starts `queued` with `phase: 'attachments-pending'` (or
    `'record-pending'` when there are no attachments).
-3. **Sync cycle.** `drainSync` fires on capture, app init, explicit connect, and
-   manual sync. With a valid token it runs one **pull-then-push** cycle: first
+3. **Sync cycle.** `drainSync` runs only from the manual "Sync now" button in
+   Settings — sync is user-initiated, so Drive is contacted only on an explicit
+   ask. With a valid token it runs one **pull-then-push** cycle: first
    `pullStream(token, stream)` (`src/drive/pull.ts`, §3) imports remote events, then
    `drainStream(token, stream)` (`src/drive/queue.ts`) processes pending rows **in
    seq order** so the Drive log commits monotonically.
@@ -147,10 +149,16 @@ pull.
 Reads never consult Drive. The UI's entry list is always a fresh fold over the
 local log: `listEntries(stream)` = `fold(listEvents(stream))`, cached in the app
 store as `entries: Entry[]` alongside `syncStatuses` (per-event-id upload state for
-the status badges). Every write action ends in `refresh()`, which recomputes both —
-the store never mutates cached entries in place. Skills perform the mirror-image
-read on the Drive side: list `log/` partitions past their checkpoint, parse
-records, and run the same fold.
+the status badges) and `lastSyncAt` (persisted per stream in the `meta` store via
+`getLastSyncAt`/`setLastSyncAt`, stamped only after a clean pull+push cycle). Every
+write action ends in `refresh()`, which recomputes all three — the store never
+mutates cached entries in place. Settings renders a local-only rollup of these:
+`summarizeSyncStatuses` (`src/store/events.ts`) counts pending/errored sync rows
+and surfaces the latest error message, and the status line shows "Out of sync"
+whenever anything is pending or errored or no clean cycle has ever completed, plus
+"Last synced …" / "Never synced" — visibility in place of automatic background
+sync. Skills perform the mirror-image read on the Drive side: list `log/`
+partitions past their checkpoint, parse records, and run the same fold.
 
 ## 5. Auth lifecycle and failure model
 
@@ -159,7 +167,8 @@ records, and run the same fold.
 a user gesture** — requests a ~1-hour access token with the combined `GOOGLE_SCOPES`
 set from `src/config.ts` (`drive.file` + `calendar.readonly` in one consent), and
 persists it via `token.ts` to the IndexedDB `meta` store, so a relaunch within the
-hour reuses it (app `init()` fires a no-gesture `drainSync` for exactly this case).
+hour reuses the stored token when the user next taps "Sync now" — no new gesture
+needed.
 The same stored token authorizes the read-only Calendar client in `src/gcal`
 ([module doc](../modules/gcal.md)), which also mirrors the user's target-calendar
 pick into the stream's `config.json` on Drive via a skill-edit-preserving
@@ -169,8 +178,8 @@ never starts with a token that dies mid-flight.
 **Expiry and reconnect.** When the token is missing or stale, `drainSync` does not
 attempt renewal (it can't — no gesture); it just refreshes `driveConnection` so the
 passive `ReconnectPill` renders. Tapping the pill calls `connectDrive()` — the
-gesture GIS needs — then drains. Capture is never blocked by auth: entries queue
-locally regardless.
+gesture GIS needs — but connecting never auto-syncs; the user then syncs via "Sync
+now". Capture is never blocked by auth: entries queue locally regardless.
 
 **Failure classification.** Every Drive call throws `DriveError` with a status, and
 `drainStream` (and `pullStream`, identically) maps it to an outcome the store
@@ -186,9 +195,10 @@ Backoff is exponential per row: `min(30s × 4^(attempts−1), 1h)` — 30s, 2m, 
 capped at an hour; rows whose `nextRetryAt` is in the future are skipped, and auth
 errors bypass backoff entirely. `drainSync` merges the pull and push outcomes
 worst-of (`idle < drained < retry-later < reconnect < error`), and a pull
-`'reconnect'` skips the push (the token is dead either way). Offline is not a
-special case: capture works fully offline, and the cycle simply runs on the next
-trigger that finds a valid token.
+`'reconnect'` skips the push (the token is dead either way). A fully clean cycle
+(`idle`/`drained`) stamps `lastSyncAt`; reconnect/retry-later/error outcomes leave
+it untouched. Offline is not a special case: capture works fully offline, and the
+cycle simply runs on the next manual "Sync now" that finds a valid token.
 
 ## 6. Idempotency and crash safety
 

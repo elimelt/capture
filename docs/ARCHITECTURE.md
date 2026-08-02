@@ -94,7 +94,8 @@ Why, and what follows from it:
 ### Data model & sync — [docs/subsystems/data-and-sync.md](subsystems/data-and-sync.md)
 
 `contract` + `streams` + `store` + `drive`: the generic, offline-first capture
-engine. A UI action becomes an atomic IndexedDB append; each sync cycle first pulls
+engine. A UI action becomes an atomic IndexedDB append; each user-initiated sync
+cycle (sync is manual-only, via Settings' "Sync now") first pulls
 events other devices committed to Drive (id-based discovery from filenames, eager
 attachment download, atomic import), then the upload queue drains pending rows in
 seq order to the `timebox/` tree in Drive (bootstrap is idempotent and
@@ -131,9 +132,9 @@ paint is real content. Four screens (Capture, Day view, Chat, Settings) hang off
 flat route table and a bottom tab bar; drill-downs are modal sheets, not routes.
 The Day view overlays read-only Google Calendar events from a user-chosen target
 calendar via `src/gcal` (single Google token, `calendar.readonly` scope; the app
-never writes events). `App.tsx` owns app-level lifecycle: running a pull-then-push
-sync cycle on
-`visibilitychange`/`online` and re-running enrichment whenever entries change. The
+never writes events). `App.tsx` owns app-level lifecycle: re-reading local state on
+`visibilitychange` (Drive sync is manual-only, via Settings' "Sync now") and
+re-running enrichment whenever entries change. The
 design system lives entirely in `src/ui` (tokens + primitives; screens never hardcode
 palette or shape classes), and a set of iOS-specific invariants (keyboard insets,
 body scroll lock, safe areas, 44 pt tap targets, pending-delete undo) are
@@ -146,14 +147,16 @@ load-bearing. Module docs:
 
 **Error handling.** Store write actions are wrapped in `guard(label, fn)`: failures
 set `lastError` ("label: message") — rendered as the single global toast — and
-re-throw for awaiting callers. `drainSync` is deliberately unguarded (fire-and-forget
-triggers) and reports via `lastError` without throwing. Drive calls throw a typed
+re-throw for awaiting callers. `drainSync` is deliberately unguarded (its sole
+caller, Settings' "Sync now" button, renders the returned outcome) and reports via
+`lastError` without throwing. Drive calls throw a typed
 `DriveError` classified into reconnect / retry-later / error outcomes; enrichment
 runners never surface errors at all (backoff or persistent skip markers).
 
 **Offline behavior.** Capture, day view, and settings work fully offline; entries
-land in IndexedDB and the sync queue, and the next foreground/online/manual trigger
-runs a full pull-then-push cycle. Enrichment drains return immediately when
+land in IndexedDB and the sync queue, and the next manual "Sync now" in Settings
+runs the full pull-then-push cycle (a Settings status line shows "Out of sync" /
+last-synced state so nothing waits invisibly). Enrichment drains return immediately when
 `!navigator.onLine`. The service worker precaches the app shell and runtime-caches
 OSM tiles and Nominatim responses, so maps work offline too. Offline is not an error
 state anywhere in the system.
