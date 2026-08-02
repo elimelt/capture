@@ -5,3 +5,16 @@ body {
   overscroll-behavior: none;
   -webkit-tap-highlight-color: transparent;
 }
+
+/* Paint the document itself so nothing white shows beneath the app on iOS
+   (home-indicator area, overscroll bounce). Must match tone.bg in
+   src/ui/tokens.ts: slate-50 / slate-950. */
+html {
+  background-color: #f8fafc;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  html {
+    background-color: #020617;
+  }
+}
