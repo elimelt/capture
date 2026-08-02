@@ -10,7 +10,6 @@ import { getTargetCalendar, resolveTargetSelection, setTargetCalendar } from '..
 import type { CalendarSummary } from '../gcal/events'
 import { reverseGeocode } from '../places/geocode'
 import { useAppStore } from '../store/appStore'
-import { summarizeSyncStatuses } from '../store/events'
 import { formatBytes } from '../store/space'
 import {
   Button,
@@ -412,14 +411,14 @@ function lastSyncedLabel(iso: string): string {
 }
 
 /**
- * Local sync-state rollup: pending/error counts from the sync rows plus the
- * persisted lastSyncAt. "Out of sync" whenever anything is pending, anything
- * errored, or no clean cycle has ever completed. No network involved.
+ * Local sync-state rollup across *all* registered streams (capture + system):
+ * pending/error counts summed over every stream's sync rows, plus the oldest
+ * per-stream lastSyncAt. "Out of sync" whenever anything is pending, anything
+ * errored, or any stream has never completed a clean cycle. No network
+ * involved.
  */
 function SyncStatusLine() {
-  const syncStatuses = useAppStore((s) => s.syncStatuses)
-  const lastSyncAt = useAppStore((s) => s.lastSyncAt)
-  const { pending, errors, lastError } = summarizeSyncStatuses(syncStatuses.values())
+  const { pending, errors, lastError, lastSyncAt } = useAppStore((s) => s.globalSyncSummary)
   const outOfSync = pending > 0 || errors > 0 || !lastSyncAt
 
   const parts: string[] = [outOfSync ? 'Out of sync' : 'Up to date']

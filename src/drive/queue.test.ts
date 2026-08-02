@@ -276,4 +276,18 @@ describe('drainStream', () => {
     const { drainStream } = await import('./queue')
     expect(await drainStream('tok', 'timelog')).toEqual({ outcome: 'idle', uploaded: 0 })
   })
+
+  it('costs zero Drive calls for a stream with nothing queued', async () => {
+    // Regression guard for the multi-stream sync loop: an idle stream — e.g.
+    // a system stream ('settings', 'assistant-chats') with no events yet —
+    // must not bootstrap folders, mint ids, or upload anything.
+    const { drainStream } = await import('./queue')
+    for (const stream of ['settings', 'assistant-chats', 'timelog']) {
+      expect(await drainStream('tok', stream)).toEqual({ outcome: 'idle', uploaded: 0 })
+    }
+    expect(drive.findFile).not.toHaveBeenCalled()
+    expect(drive.createFolder).not.toHaveBeenCalled()
+    expect(drive.generateIds).not.toHaveBeenCalled()
+    expect(drive.uploadFile).not.toHaveBeenCalled()
+  })
 })
