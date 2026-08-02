@@ -1,7 +1,19 @@
 import { Suspense, lazy, useRef, useState } from 'react'
 import type { Entry, GeoLocation } from '../contract/types'
 import type { SyncStatus } from '../store/db'
-import { Button, Card, IconButton, cx, motion, tone, type_ } from '../ui'
+import {
+  Button,
+  Card,
+  IconButton,
+  PinIcon,
+  PlusIcon,
+  TrashIcon,
+  captureIcon,
+  cx,
+  motion,
+  tone,
+  type_,
+} from '../ui'
 import { TextSheet } from './TextSheet'
 import { AttachmentBody } from './AttachmentBody'
 import { SyncBadge } from './SyncBadge'
@@ -14,6 +26,12 @@ const MiniMap = lazy(() => import('./MiniMap'))
 const LocationSheet = lazy(() =>
   import('./LocationSheet').then((m) => ({ default: m.LocationSheet })),
 )
+
+// Entry action buttons carry the same glyphs as the main CTA (RecordPanel):
+// audio → mic, photo → camera, note → pencil, via the shared modality mapping.
+const AudioIcon = captureIcon('audio')
+const PhotoIcon = captureIcon('photo')
+const NoteIcon = captureIcon('text')
 
 export function timeLabel(iso: string): string {
   return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
@@ -186,10 +204,10 @@ export function EntryCard({
       ) : (
         <div className="mt-2 flex items-center gap-1">
           <Button variant="ghost" size="sm" onClick={() => setNoteOpen(true)}>
-            <PlusIcon /> note
+            <NoteIcon size={14} /> note
           </Button>
           <Button variant="ghost" size="sm" onClick={() => photoInputRef.current?.click()}>
-            <PlusIcon /> photo
+            <PhotoIcon size={14} /> photo
           </Button>
           {rec.state === 'error' ? (
             <Button variant="ghost" size="sm" onClick={rec.resetError}>
@@ -197,7 +215,7 @@ export function EntryCard({
             </Button>
           ) : (
             <Button variant="ghost" size="sm" onClick={() => void handleAudioTap()}>
-              <PlusIcon /> audio
+              <AudioIcon size={14} /> audio
             </Button>
           )}
           <Button variant="ghost" size="sm" onClick={() => setLocationOpen(true)}>
@@ -241,38 +259,5 @@ export function EntryCard({
         </Suspense>
       )}
     </Card>
-  )
-}
-
-/** Small plus icon for action buttons. */
-function PlusIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-      <path d="M7 2v10M2 7h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  )
-}
-
-/** Small pin/dot icon for existing location. */
-function PinIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-      <circle cx="7" cy="7" r="2.5" fill="currentColor" />
-    </svg>
-  )
-}
-
-/** Small trash icon for delete. */
-function TrashIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-      <path
-        d="M3 4h8M5.5 4V3a1 1 0 0 1 1-1h1a1 1 0 0 1 1 1v1M4.5 4v7a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1V4"
-        stroke="currentColor"
-        strokeWidth="1.3"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
   )
 }

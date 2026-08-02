@@ -48,7 +48,7 @@ Build-time constants: `GOOGLE_CLIENT_ID` (a public OAuth browser-client identifi
 
 ### src/ui/index.ts
 
-Barrel for the design system. Re-exports the tokens (`cx`, `motion`, `shape`, `tap`, `tone`, `type_`) and every primitive: `Button`, `IconButton`, `Card`, `EmptyState`, `Section`, `ErrorBoundary`, `Sheet`, `useKeyboardInset`, `Toast`, `FieldRow`, `Select`, `TextArea`, `TextInput`, `Toggle`, `ScreenHeader`. Screens import from here — never from token/palette classes directly (C15).
+Barrel for the design system. Re-exports the tokens (`cx`, `motion`, `shape`, `tap`, `tone`, `type_`), every primitive: `Button`, `IconButton`, `Card`, `EmptyState`, `Section`, `ErrorBoundary`, `Sheet`, `useKeyboardInset`, `Toast`, `FieldRow`, `Select`, `TextArea`, `TextInput`, `Toggle`, `ScreenHeader`, and the shared icon set (`MicIcon`, `CameraIcon`, `PencilIcon`, `PlusIcon`, `PinIcon`, `TrashIcon`, `captureIcon`, types `CaptureKind`/`IconProps`). Screens import from here — never from token/palette classes directly (C15).
 
 ### src/ui/tokens.ts
 
@@ -96,6 +96,10 @@ Form primitives sharing a `FIELD` base (control radius, strong border, surface b
 ### src/ui/ScreenHeader.tsx
 
 `ScreenHeader({ title, subtitle?, trailing? })` — screen title row: serif `type_.title` `<h1>`, optional muted subtitle, optional trailing element (button etc.). Sits below the iOS status bar because `App` pads `main` with `env(safe-area-inset-top)`.
+
+### src/ui/icons.tsx
+
+Shared SVG icon set — every capture glyph is drawn once here so screens stay visually consistent. Each icon takes an optional `size` prop (px). `captureIcon(kind: CaptureKind)` is the single capture-modality → icon mapping (`audio` → `MicIcon`, `photo` → `CameraIcon`, `text` → `PencilIcon`), used by both the main capture CTA (`RecordPanel`) and the entry-card action row; `PlusIcon`, `PinIcon`, and `TrashIcon` cover add/location/delete affordances. The mapping is unit-tested in `icons.test.ts`.
 
 ### src/settings/SettingsScreen.tsx
 
