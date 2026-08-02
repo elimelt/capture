@@ -96,7 +96,7 @@ export function ChatHistorySheet({
 
 function EmptyNote({ children }: { children: string }) {
   return (
-    <p className={cx('py-6 text-center font-serif text-[15px] italic', tone.textMuted)}>
+    <p className={cx('py-6 text-center italic', type_.bodySmall, tone.textMuted)}>
       {children}
     </p>
   )

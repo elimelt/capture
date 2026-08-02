@@ -55,8 +55,10 @@ export const type_ = {
   /** Primary reading content: entries, notes. */
   body: 'font-serif text-[16px] leading-normal',
   /** Main entry text — transcripts and notes. A step up from `body` so the
-   *  entry's own words lead the card over descriptive metadata. */
-  bodyStrong: 'font-serif text-[17px] font-medium leading-normal',
+   *  entry's own words lead the card over descriptive metadata. `leading-snug`
+   *  (not `leading-normal`) so a two-line-clamped preview (#78) reads as a
+   *  compact fragment of speech rather than a roomy headline (#85). */
+  bodyStrong: 'font-serif text-[17px] font-medium leading-snug',
   /** Secondary descriptive content: photo captions and similar derived text. */
   bodySmall: 'font-serif text-[14px] leading-normal',
   /** Functional secondary: subtitles, labels. */

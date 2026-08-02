@@ -166,8 +166,10 @@ export default function SettingsScreen() {
                 <li
                   key={p.id}
                   className={cx(
+                    // A settings row, not entry content (#85): sans like the
+                    // rest of this screen, not the serif entry-content scale.
                     'flex min-h-11 items-center justify-between gap-2',
-                    type_.body,
+                    type_.ui,
                     tone.textSecondary,
                   )}
                 >

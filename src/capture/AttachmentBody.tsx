@@ -153,7 +153,10 @@ function renderWithMath(text: string): React.ReactNode[] {
       parts.push(text.slice(last, match.index))
     }
     parts.push(
-      <em key={match.index} className="font-serif not-italic">
+      // Renders upright (not-italic) within whatever serif/tone the caller's
+      // NoteText/StreamingText span already applies (#85) — no separate
+      // font-family class needed here.
+      <em key={match.index} className="not-italic">
         {match[1]}
       </em>,
     )

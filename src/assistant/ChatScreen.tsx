@@ -350,7 +350,7 @@ function ChatView({
 
       {messages.length === 0 && (
         <div className="mt-6 flex flex-col items-center gap-4">
-          <p className={cx('px-6 text-center font-serif text-[16px] italic', tone.textMuted)}>
+          <p className={cx('px-6 text-center italic', type_.body, tone.textMuted)}>
             Ask about your log — it looks up your entries and places as needed.
           </p>
           <div className="flex flex-col items-stretch gap-2 self-stretch px-2">
