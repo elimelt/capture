@@ -204,13 +204,17 @@ interface CaptureEvent extends EventBase {
 
 interface AmendEvent extends EventBase {
   type: 'amend';
-  targets: string;             // id of a prior capture event
-  patch: { capturedAt?: string; addAttachments?: Attachment[] };
-}                              // timestamp stepper & post-hoc "+ note" emit these
+  targets: string[];           // ids of prior capture events
+  patch?: { capturedAt?: string; location?: GeoLocation;
+            removeAttachments?: string[] };  // files the fold hides (append-only
+                                             // removal; files stay in the log)
+  attachments?: Attachment[];  // appended to the target entry
+}                              // timestamp stepper, "+ note"/"+ photo"/"+ audio",
+                               // note edits, and attachment removal emit these
 
 interface RevokeEvent extends EventBase {
   type: 'revoke';
-  targets: string;             // id of a prior capture event
+  targets: string[];           // ids of prior capture events
   reason?: 'undo' | 'duplicate' | 'user-delete';
 }
 
@@ -238,9 +242,12 @@ Rules:
   (audio for `timelog`). Other kinds are optional add-ons, never requirements.
 - The capture-screen **Undo toast emits a `revoke`** (it does not unwind the append —
   even a 5-second-old capture is already committed locally).
-- The timestamp stepper and post-capture "+ note" emit `amend` events. Attachments
-  themselves are immutable; an amend can only *add* attachments, never alter or remove
-  one.
+- The timestamp stepper and post-capture edits ("+ note", "+ photo", "+ audio", note
+  edits, attachment removal) emit `amend` events. Attachment *files* are immutable; an
+  amend adds new attachments and/or hides prior ones via `patch.removeAttachments` —
+  hidden files and their history remain in the log, the fold just stops showing them.
+  Editing a note is one amend that removes the old text file and adds its replacement
+  (an edited transcript keeps its `derivedFrom` link, so it is never re-transcribed).
 - Spoken corrections remain first-class: "correction: I actually left at 8:40" is just a
   new `capture` event whose *interpretation* is the skill's job. `amend`/`revoke` exist
   for structured UI actions, not for meaning.

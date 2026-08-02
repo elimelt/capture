@@ -62,5 +62,6 @@ export function partitionOf(e: Pick<LogEvent, 'loggedAt'>): string {
 
 /** Parse the seq back out of any log filename ("000041_..." → 41). */
 export function seqOfFilename(name: string): number {
-  return parseInt(name.slice(0, 6), 10)
+  // Split rather than slice: seq grows past 6 digits without padding changes.
+  return parseInt(name.split('_')[0], 10)
 }

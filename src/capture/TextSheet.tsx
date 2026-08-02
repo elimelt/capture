@@ -5,13 +5,15 @@ interface TextSheetProps {
   title: string
   placeholder: string
   cta: string
+  /** Prefill for editing an existing note or transcript. */
+  initial?: string
   onSave: (text: string) => void
   onClose: () => void
 }
 
-/** Bottom-sheet text entry: used for "+ note" and the type-instead capture (A3). */
-export function TextSheet({ title, placeholder, cta, onSave, onClose }: TextSheetProps) {
-  const [text, setText] = useState('')
+/** Bottom-sheet text entry: capture, "+ note", and note/transcript edits (A3). */
+export function TextSheet({ title, placeholder, cta, initial, onSave, onClose }: TextSheetProps) {
+  const [text, setText] = useState(initial ?? '')
 
   return (
     <Sheet title={title} onClose={onClose}>

@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { GeoLocation } from '../contract/types'
 import { localDateOf, toLocalIso } from '../contract/time'
 import { useAppStore } from '../store/appStore'
-import { Button, EmptyState, ScreenHeader, Toast } from '../ui'
+import { EmptyState, ScreenHeader, Toast } from '../ui'
 import { useRecorder, type RecordingResult } from './useRecorder'
 import { snapshotLocation } from './geo'
 import { usePendingDelete } from './usePendingDelete'
@@ -26,6 +26,7 @@ export default function CaptureScreen() {
   const [textOpen, setTextOpen] = useState(false)
   const [toast, setToast] = useState<ToastState | null>(null)
   const [here, setHere] = useState<GeoLocation | null>(null)
+  const photoInputRef = useRef<HTMLInputElement>(null)
   const tapStartRef = useRef<Date>(new Date())
   const locationRef = useRef<Promise<GeoLocation | undefined>>(Promise.resolve(undefined))
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -124,6 +125,16 @@ export default function CaptureScreen() {
     showToast({ kind: 'captured', entryId: event.id })
   }
 
+  async function submitPhoto(file: File) {
+    const location = await snapshotLocation(places, appSettings.locationEnabled)
+    const event = await capture({
+      capturedAt: toLocalIso(new Date()),
+      location,
+      attachments: [{ kind: 'photo', blob: file, mimeType: file.type || 'image/jpeg' }],
+    })
+    showToast({ kind: 'captured', entryId: event.id })
+  }
+
   async function undoCapture(entryId: string) {
     clearTimeout(toastTimerRef.current)
     setToast(null)
@@ -142,7 +153,6 @@ export default function CaptureScreen() {
   const todayEntries = entries
     .filter((e) => !e.revoked && e.id !== del.pendingId && localDateOf(e.capturedAt) === today)
     .sort((a, b) => b.capturedAt.localeCompare(a.capturedAt))
-  const recording = recorder.state === 'recording'
 
   // C14: before the very first entry, in-browser visitors get nudged toward
   // the installed experience (standalone is where capture is one tap away).
@@ -172,13 +182,22 @@ export default function CaptureScreen() {
         contextLabel={contextLabel}
         onTap={() => void handleRecordTap()}
         onDiscard={handleDiscard}
+        onCamera={() => photoInputRef.current?.click()}
+        onText={() => setTextOpen(true)}
       />
 
-      {!recording && (
-        <Button variant="ghost" size="sm" onClick={() => setTextOpen(true)} className="mx-auto">
-          Type instead
-        </Button>
-      )}
+      <input
+        ref={photoInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0]
+          if (file) void submitPhoto(file)
+          e.target.value = ''
+        }}
+      />
 
       {todayEntries.length === 0 ? (
         <EmptyState title="Nothing logged yet today">

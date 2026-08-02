@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { addMinutesIso, localDateOf, toLocalIso } from './time'
+import { addMinutesIso, deviceTz, localDateOf, toLocalIso, withTimeOfDayIso } from './time'
 
 // Node's process, typed locally to keep node types out of the app tsconfig.
 declare const process: { env: Record<string, string | undefined> }
@@ -16,6 +16,10 @@ describe('toLocalIso', () => {
 
   it('formats a winter instant in the local (EST) offset', () => {
     expect(toLocalIso(new Date('2026-01-15T17:00:00Z'))).toBe('2026-01-15T12:00:00-05:00')
+  })
+
+  it('pads single-digit month, day, and time fields', () => {
+    expect(toLocalIso(new Date('2026-01-05T08:07:09Z'))).toBe('2026-01-05T03:07:09-05:00')
   })
 
   it('matches the contract shape and round-trips through new Date()', () => {
@@ -57,5 +61,23 @@ describe('addMinutesIso', () => {
     expect(new Date(out).getTime()).toBe(
       new Date('2026-08-02T09:04:11-04:00').getTime() + 90 * 60_000,
     )
+  })
+})
+
+describe('withTimeOfDayIso', () => {
+  it('sets the wall-clock time, zeroes seconds, and keeps the date', () => {
+    expect(withTimeOfDayIso('2026-08-02T09:04:11-04:00', '14:30')).toBe('2026-08-02T14:30:00-04:00')
+  })
+
+  it('re-renders a Z-suffixed instant in the device-local zone', () => {
+    expect(withTimeOfDayIso('2026-08-02T13:04:11Z', '08:05')).toBe('2026-08-02T08:05:00-04:00')
+  })
+})
+
+describe('deviceTz', () => {
+  it('returns a non-empty IANA zone string', () => {
+    const tz = deviceTz()
+    expect(typeof tz).toBe('string')
+    expect(tz.length).toBeGreaterThan(0)
   })
 })

@@ -51,6 +51,12 @@ export interface CaptureEvent extends EventBase {
 export interface AmendPatch {
   capturedAt?: string
   location?: GeoLocation
+  /**
+   * Files of prior attachments the fold hides from the entry (append-only
+   * removal — the files and their history stay in the log). Editing a note
+   * is one amend that removes the old text file and adds the new one.
+   */
+  removeAttachments?: string[]
 }
 
 export interface AmendEvent extends EventBase {

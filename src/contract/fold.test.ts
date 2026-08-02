@@ -86,6 +86,36 @@ describe('fold', () => {
     expect(fold(events)[0].attachments).toEqual([audio, note])
   })
 
+  it('hides attachments named in patch.removeAttachments', () => {
+    const note: Attachment = { kind: 'text', file: '000002_x_note.txt', mimeType: 'text/plain' }
+    const photo: Attachment = { kind: 'photo', file: '000001_x_photo.jpg', mimeType: 'image/jpeg' }
+    const events = [
+      cap(1, 'aaaaaa', '2026-08-02T09:00:00-04:00', { attachments: [photo] }),
+      amend(2, ['aaaaaa'], undefined, [note]),
+      amend(3, ['aaaaaa'], { removeAttachments: [photo.file] }),
+    ]
+    expect(fold(events)[0].attachments).toEqual([note])
+  })
+
+  it('applies removals before additions within one amend (note edit)', () => {
+    const old: Attachment = { kind: 'text', file: '000001_x_note.txt', mimeType: 'text/plain' }
+    const edited: Attachment = { kind: 'text', file: '000002_y_note.txt', mimeType: 'text/plain' }
+    const events = [
+      cap(1, 'aaaaaa', '2026-08-02T09:00:00-04:00', { attachments: [old] }),
+      amend(2, ['aaaaaa'], { removeAttachments: [old.file] }, [edited]),
+    ]
+    expect(fold(events)[0].attachments).toEqual([edited])
+  })
+
+  it('ignores removal of an unknown attachment file', () => {
+    const note: Attachment = { kind: 'text', file: '000001_x_note.txt', mimeType: 'text/plain' }
+    const events = [
+      cap(1, 'aaaaaa', '2026-08-02T09:00:00-04:00', { attachments: [note] }),
+      amend(2, ['aaaaaa'], { removeAttachments: ['no-such-file.txt'] }),
+    ]
+    expect(fold(events)[0].attachments).toEqual([note])
+  })
+
   it('drops revoked entries', () => {
     const events = [
       cap(1, 'aaaaaa', '2026-08-02T09:00:00-04:00'),
@@ -112,6 +142,14 @@ describe('fold', () => {
     const [entry] = fold(events, { includeRevoked: true })
     expect(entry.capturedAt).toBe('2026-08-02T09:00:00-04:00')
     expect(entry.lastEventSeq).toBe(2)
+  })
+
+  it('ignores a revoke targeting an unknown id', () => {
+    const events = [cap(1, 'aaaaaa', '2026-08-02T09:00:00-04:00'), revoke(2, ['zzzzzz'])]
+    const entries = fold(events)
+    expect(entries).toHaveLength(1)
+    expect(entries[0].revoked).toBe(false)
+    expect(entries[0].lastEventSeq).toBe(1)
   })
 
   it('ignores an amend targeting an unknown id', () => {
@@ -143,5 +181,47 @@ describe('fold', () => {
       amend(3, ['aaaaaa'], { capturedAt: '2026-08-02T11:00:00-04:00' }),
     ]
     expect(fold(events).map((e) => e.id)).toEqual(['bbbbbb', 'aaaaaa'])
+  })
+
+  it('breaks equal-capturedAt ties by seq', () => {
+    const t = '2026-08-02T09:00:00-04:00'
+    const events = [cap(2, 'bbbbbb', t), cap(3, 'cccccc', t), cap(1, 'aaaaaa', t)]
+    expect(fold(events).map((e) => e.id)).toEqual(['aaaaaa', 'bbbbbb', 'cccccc'])
+  })
+
+  it('applies one amend to all listed targets', () => {
+    const loc = { lat: 40.7, lng: -74, accuracyM: 10 }
+    const events = [
+      cap(1, 'aaaaaa', '2026-08-02T09:00:00-04:00'),
+      cap(2, 'bbbbbb', '2026-08-02T10:00:00-04:00'),
+      amend(3, ['aaaaaa', 'bbbbbb'], { location: loc }),
+    ]
+    const entries = fold(events)
+    expect(entries.map((e) => e.location)).toEqual([loc, loc])
+    expect(entries.map((e) => e.lastEventSeq)).toEqual([3, 3])
+  })
+
+  it('applies one revoke to all listed targets', () => {
+    const events = [
+      cap(1, 'aaaaaa', '2026-08-02T09:00:00-04:00'),
+      cap(2, 'bbbbbb', '2026-08-02T10:00:00-04:00'),
+      cap(3, 'cccccc', '2026-08-02T11:00:00-04:00'),
+      revoke(4, ['aaaaaa', 'cccccc']),
+    ]
+    expect(fold(events).map((e) => e.id)).toEqual(['bbbbbb'])
+  })
+
+  it('folds identically when events arrive out of seq order', () => {
+    const note: Attachment = { kind: 'text', file: '000003_x_note.txt', mimeType: 'text/plain' }
+    const events = [
+      cap(1, 'aaaaaa', '2026-08-02T09:00:00-04:00'),
+      cap(2, 'bbbbbb', '2026-08-02T10:00:00-04:00'),
+      amend(3, ['aaaaaa'], undefined, [note]),
+      revoke(4, ['bbbbbb']),
+    ]
+    const shuffled = [events[3], events[2], events[0], events[1]]
+    expect(fold(shuffled)).toEqual(fold(events))
+    expect(fold(shuffled).map((e) => e.id)).toEqual(['aaaaaa'])
+    expect(fold(shuffled)[0].attachments).toEqual([note])
   })
 })

@@ -56,6 +56,15 @@ describe('attachmentFileName', () => {
 
   it('ignores mime parameters after ";"', () => {
     expect(attachmentFileName(BASE, 'audio', 'audio/mp4;codecs=mp4a.40.2')).toBe(`${BASE}.m4a`)
+    expect(attachmentFileName(BASE, 'audio', 'audio/webm;codecs=opus')).toBe(`${BASE}.webm`)
+  })
+
+  it('names a primary photo', () => {
+    expect(attachmentFileName(BASE, 'photo', 'image/png')).toBe(`${BASE}_photo.png`)
+  })
+
+  it('disambiguates a second note', () => {
+    expect(attachmentFileName(BASE, 'text', 'text/plain', 1)).toBe(`${BASE}_note2.txt`)
   })
 })
 
@@ -64,6 +73,14 @@ describe('seqOfFilename', () => {
     expect(seqOfFilename(eventRecordName(E))).toBe(41)
     expect(seqOfFilename(attachmentFileName(BASE, 'audio', 'audio/mp4'))).toBe(41)
     expect(seqOfFilename(eventRecordName({ ...E, seq: 1 }))).toBe(1)
+  })
+
+  it('parses a seq past 6 digits (regression: split, not slice)', () => {
+    expect(seqOfFilename('1000000_2026-08-02T09-04-11-0400_a1b2c3.json')).toBe(1000000)
+  })
+
+  it('parses the seq out of a secondary attachment name', () => {
+    expect(seqOfFilename('000041_2026-08-02T09-04-11-0400_a1b2c3_note.txt')).toBe(41)
   })
 })
 

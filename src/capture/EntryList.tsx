@@ -15,6 +15,7 @@ interface EntryListProps {
 
 export function EntryList({ entries, onDelete }: EntryListProps) {
   const amend = useAppStore((s) => s.amend)
+  const streamSettings = useAppStore((s) => s.streamSettings)
 
   return (
     <div className="flex flex-col gap-2">
@@ -22,6 +23,7 @@ export function EntryList({ entries, onDelete }: EntryListProps) {
         <EntryCard
           key={entry.id}
           entry={entry}
+          maxClipSec={streamSettings.maxClipSec}
           onDelete={() => onDelete(entry.id)}
           onSetTime={(time) =>
             void amend({
@@ -43,6 +45,40 @@ export function EntryList({ entries, onDelete }: EntryListProps) {
               attachments: [
                 { kind: 'photo', blob: file, mimeType: file.type || 'image/jpeg' },
               ],
+            })
+          }
+          onAddAudio={(result) =>
+            void amend({
+              targets: [entry.id],
+              attachments: [
+                {
+                  kind: 'audio',
+                  blob: result.blob,
+                  mimeType: result.mimeType,
+                  durationSec: result.durationSec,
+                },
+              ],
+            })
+          }
+          onEditText={(oldFile, text, derivedFrom) =>
+            void amend({
+              targets: [entry.id],
+              patch: { removeAttachments: [oldFile] },
+              attachments: [
+                {
+                  kind: 'text',
+                  blob: new Blob([text], { type: 'text/plain' }),
+                  mimeType: 'text/plain',
+                  // Edited transcripts stay derived: never re-transcribed.
+                  ...(derivedFrom !== undefined ? { derivedFrom } : {}),
+                },
+              ],
+            })
+          }
+          onRemoveAttachment={(file) =>
+            void amend({
+              targets: [entry.id],
+              patch: { removeAttachments: [file] },
             })
           }
         />

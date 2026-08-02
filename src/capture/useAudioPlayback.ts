@@ -15,6 +15,7 @@ export function useAudioPlayback(file: string | undefined): AudioPlayback {
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const urlRef = useRef<string | null>(null)
   const rafRef = useRef(0)
+  const loadingRef = useRef(false)
 
   const stop = useCallback(() => {
     cancelAnimationFrame(rafRef.current)
@@ -33,28 +34,34 @@ export function useAudioPlayback(file: string | undefined): AudioPlayback {
       stop()
       return
     }
-    if (!file) return
-    const blob = await getBlob(file)
-    if (!blob) return
-    const url = URL.createObjectURL(blob)
-    const el = new Audio(url)
-    audioRef.current = el
-    urlRef.current = url
-    el.onended = stop
-    el.onerror = stop
-    const tick = () => {
-      if (!audioRef.current) return
-      if (Number.isFinite(el.duration) && el.duration > 0) {
-        setProgress(el.currentTime / el.duration)
-      }
-      rafRef.current = requestAnimationFrame(tick)
-    }
+    // Guard the getBlob await: a second tap here must not start a second clip.
+    if (!file || loadingRef.current) return
+    loadingRef.current = true
     try {
-      await el.play()
-      setPlaying(true)
-      rafRef.current = requestAnimationFrame(tick)
-    } catch {
-      stop()
+      const blob = await getBlob(file)
+      if (!blob) return
+      const url = URL.createObjectURL(blob)
+      const el = new Audio(url)
+      audioRef.current = el
+      urlRef.current = url
+      el.onended = stop
+      el.onerror = stop
+      const tick = () => {
+        if (!audioRef.current) return
+        if (Number.isFinite(el.duration) && el.duration > 0) {
+          setProgress(el.currentTime / el.duration)
+        }
+        rafRef.current = requestAnimationFrame(tick)
+      }
+      try {
+        await el.play()
+        setPlaying(true)
+        rafRef.current = requestAnimationFrame(tick)
+      } catch {
+        stop()
+      }
+    } finally {
+      loadingRef.current = false
     }
   }, [file, stop])
 

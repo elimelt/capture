@@ -1,10 +1,12 @@
 /**
  * Pure planning for transcription: which audio attachments still need a
- * transcript. Derived entirely from the folded entries — a transcript is a
- * text attachment whose derivedFrom points at its source audio file — so
- * there is no separate job table to keep consistent.
+ * transcript. Works over the raw event history, not just the folded view:
+ * audio counts as transcribed if *any* text attachment was ever derived from
+ * it — even one the user later edited or removed — so user changes to a
+ * transcript are never clobbered by re-transcription.
  */
-import type { Attachment, Entry } from '../contract/types'
+import { fold } from '../contract/fold'
+import type { Attachment, LogEvent } from '../contract/types'
 
 export interface PendingTranscription {
   entryId: string
@@ -17,15 +19,18 @@ export function isTranscript(a: Attachment): boolean {
   return a.kind === 'text' && a.derivedFrom !== undefined
 }
 
-export function pendingTranscriptions(entries: readonly Entry[]): PendingTranscription[] {
+export function pendingTranscriptions(events: readonly LogEvent[]): PendingTranscription[] {
+  const everDerived = new Set<string>()
+  for (const e of events) {
+    if (e.type === 'revoke') continue
+    for (const a of e.attachments ?? []) {
+      if (a.kind === 'text' && a.derivedFrom !== undefined) everDerived.add(a.derivedFrom)
+    }
+  }
   const pending: PendingTranscription[] = []
-  for (const entry of entries) {
-    if (entry.revoked) continue
-    const transcribed = new Set(
-      entry.attachments.filter(isTranscript).map((a) => a.derivedFrom),
-    )
+  for (const entry of fold(events)) {
     for (const a of entry.attachments) {
-      if (a.kind === 'audio' && !transcribed.has(a.file)) {
+      if (a.kind === 'audio' && !everDerived.has(a.file)) {
         pending.push({ entryId: entry.id, stream: entry.stream, audio: a })
       }
     }

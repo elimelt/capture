@@ -28,6 +28,7 @@ export default function DayScreen() {
   const navigate = useNavigate()
   const entries = useAppStore((s) => s.entries)
   const revoke = useAppStore((s) => s.revoke)
+  const amend = useAppStore((s) => s.amend)
   const del = usePendingDelete(revoke)
 
   const today = localDateOf(toLocalIso(new Date()))
@@ -106,7 +107,29 @@ export default function DayScreen() {
                       Delete
                     </Button>
                   </div>
-                  <AttachmentBody attachments={entry.attachments} />
+                  <AttachmentBody
+                    attachments={entry.attachments}
+                    onEditText={(oldFile, text, derivedFrom) =>
+                      void amend({
+                        targets: [entry.id],
+                        patch: { removeAttachments: [oldFile] },
+                        attachments: [
+                          {
+                            kind: 'text',
+                            blob: new Blob([text], { type: 'text/plain' }),
+                            mimeType: 'text/plain',
+                            ...(derivedFrom !== undefined ? { derivedFrom } : {}),
+                          },
+                        ],
+                      })
+                    }
+                    onRemoveAttachment={(file) =>
+                      void amend({
+                        targets: [entry.id],
+                        patch: { removeAttachments: [file] },
+                      })
+                    }
+                  />
                 </Card>
               </li>
             )

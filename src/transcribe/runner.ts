@@ -9,9 +9,8 @@
  * relaunch); permanently untranscribable clips (empty transcript, missing
  * blob) get a local skip marker in the meta store so they are never retried.
  */
-import type { Entry } from '../contract/types'
 import { getDb } from '../store/db'
-import { appendAmend, getBlob } from '../store/events'
+import { appendAmend, getBlob, listEvents } from '../store/events'
 import { transcribeAudio } from './api'
 import { pendingTranscriptions } from './plan'
 
@@ -54,17 +53,18 @@ function recordFailure(file: string): void {
  * amend events were appended (caller refreshes the store if > 0).
  * Re-entrant calls coalesce onto the in-flight drain.
  */
-export function drainTranscriptions(entries: readonly Entry[]): Promise<number> {
-  draining ??= drain(entries).finally(() => {
+export function drainTranscriptions(streamId: string): Promise<number> {
+  draining ??= drain(streamId).finally(() => {
     draining = null
   })
   return draining
 }
 
-async function drain(entries: readonly Entry[]): Promise<number> {
+async function drain(streamId: string): Promise<number> {
   if (!navigator.onLine) return 0
+  const events = await listEvents(streamId)
   let appended = 0
-  for (const { entryId, stream, audio } of pendingTranscriptions(entries)) {
+  for (const { entryId, stream, audio } of pendingTranscriptions(events)) {
     if (!eligible(audio.file) || (await isSkipped(audio.file))) continue
     try {
       const blob = await getBlob(audio.file)

@@ -26,6 +26,7 @@ function orderedPatch(p: AmendPatch): Json {
   const out: Json = {}
   if (p.capturedAt !== undefined) out.capturedAt = p.capturedAt
   if (p.location !== undefined) out.location = orderedLocation(p.location)
+  if (p.removeAttachments !== undefined) out.removeAttachments = p.removeAttachments
   return out
 }
 

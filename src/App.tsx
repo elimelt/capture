@@ -34,11 +34,15 @@ export default function App() {
   // Background transcription: whenever entries change (capture, foreground
   // refresh), transcribe any audio still missing a transcript. Appending the
   // amend refreshes entries, which re-runs this and finds nothing pending.
+  const currentStreamId = useAppStore((s) => s.currentStreamId)
   useEffect(() => {
-    void drainTranscriptions(entries).then((appended) => {
-      if (appended > 0) void refresh()
-    })
-  }, [entries, refresh])
+    if (entries.length === 0) return
+    drainTranscriptions(currentStreamId)
+      .then((appended) => {
+        if (appended > 0) void refresh()
+      })
+      .catch(() => {}) // per-file errors back off in the runner; a drain-level failure just waits for the next trigger
+  }, [entries, currentStreamId, refresh])
 
   useEffect(() => {
     if (!lastError) return
