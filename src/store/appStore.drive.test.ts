@@ -79,8 +79,9 @@ describe('drainSync (multi-stream loop)', () => {
     const store = await freshStore()
     await store.getState().drainSync()
 
-    expect(pullStream.mock.calls).toEqual(STREAMS.map((s) => ['tok', s]))
-    expect(drainStream.mock.calls).toEqual(STREAMS.map((s) => ['tok', s]))
+    // Third arg is the store's progress-emitting callback (src/store/syncProgress).
+    expect(pullStream.mock.calls).toEqual(STREAMS.map((s) => ['tok', s, expect.any(Function)]))
+    expect(drainStream.mock.calls).toEqual(STREAMS.map((s) => ['tok', s, expect.any(Function)]))
     // Per stream, its pull always precedes its push.
     STREAMS.forEach((_, i) => {
       expect(pullStream.mock.invocationCallOrder[i]).toBeLessThan(
@@ -120,7 +121,7 @@ describe('drainSync (multi-stream loop)', () => {
 
     // The first stream's pull died with an auth error: nothing else is tried.
     expect(pullStream).toHaveBeenCalledTimes(1)
-    expect(pullStream).toHaveBeenCalledWith('tok', STREAMS[0])
+    expect(pullStream).toHaveBeenCalledWith('tok', STREAMS[0], expect.any(Function))
     expect(drainStream).not.toHaveBeenCalled()
     expect(store.getState().driveConnection).toBe('expired')
     expect(result.outcome).toBe('reconnect')
@@ -236,6 +237,89 @@ describe('drainSync (multi-stream loop)', () => {
     for (const stream of STREAMS) {
       expect(await lastSyncAtOf(stream)).toBeUndefined()
     }
+  })
+})
+
+describe('syncProgress (live detail during drainSync)', () => {
+  it('is null before and after a cycle, including the no-token/re-entrant early returns', async () => {
+    const store = await freshStore()
+    expect(store.getState().syncProgress).toBeNull()
+    await store.getState().drainSync() // no token -> reconnect, early return
+    expect(store.getState().syncProgress).toBeNull()
+
+    getValidAccessToken.mockResolvedValue('tok')
+    await store.getState().drainSync()
+    expect(store.getState().syncProgress).toBeNull()
+  })
+
+  it('is live while a cycle is in flight and reflects emitted events', async () => {
+    getValidAccessToken.mockResolvedValue('tok')
+    let releasePull: (() => void) | undefined
+    pullStream.mockImplementation(
+      async (
+        _t: string,
+        stream: string,
+        onProgress: (e: { kind: string; stream: string; delta: number }) => void,
+      ) => {
+        if (stream === STREAMS[0]) {
+          onProgress({ kind: 'pull-progress', stream, delta: 4 })
+          await new Promise<void>((resolve) => (releasePull = resolve))
+        }
+        return { outcome: 'idle', pulled: stream === STREAMS[0] ? 4 : 0 }
+      },
+    )
+    const store = await freshStore()
+    const cyclePromise = store.getState().drainSync()
+
+    // Yield a couple of microtask turns so the loop reaches the first pull.
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(store.getState().syncing).toBe(true)
+    const mid = store.getState().syncProgress
+    expect(mid).toMatchObject({
+      phase: 'pulling',
+      stream: STREAMS[0],
+      streamsTotal: STREAMS.length,
+      pulled: 4,
+    })
+
+    releasePull?.()
+    await cyclePromise
+    expect(store.getState().syncing).toBe(false)
+    expect(store.getState().syncProgress).toBeNull()
+  })
+
+  it('reaches uploading with a determinate total once drainStream reports upload-start', async () => {
+    getValidAccessToken.mockResolvedValue('tok')
+    let releaseDrain: (() => void) | undefined
+    drainStream.mockImplementation(
+      async (
+        _t: string,
+        stream: string,
+        onProgress: (e: { kind: string; stream: string; itemsTotal?: number }) => void,
+      ) => {
+        if (stream === STREAMS[0]) {
+          onProgress({ kind: 'upload-start', stream, itemsTotal: 7 })
+          await new Promise<void>((resolve) => (releaseDrain = resolve))
+        }
+        return { outcome: 'drained', uploaded: stream === STREAMS[0] ? 7 : 0 }
+      },
+    )
+    const store = await freshStore()
+    const cyclePromise = store.getState().drainSync()
+
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(store.getState().syncProgress).toMatchObject({
+      phase: 'uploading',
+      stream: STREAMS[0],
+      itemsTotal: 7,
+      itemsDone: 0,
+    })
+
+    releaseDrain?.()
+    await cyclePromise
+    expect(store.getState().syncProgress).toBeNull()
   })
 })
 
