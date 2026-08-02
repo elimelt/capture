@@ -133,10 +133,20 @@ async function assignFileIds(
  * A row from an older app version that already attempted an upload may have
  * files on Drive we hold no ids for; only those rows keep the legacy
  * find-before-upload probe (and stay on the per-event path) so a retry never
- * duplicates them.
+ * duplicates them. The signals: attempts were recorded, or the phase moved to
+ * 'record-pending' — but the latter only implies an attempt when the event
+ * *has* attachments, because a no-attachment row *starts* at
+ * 'record-pending' (store/events append). Without that refinement every
+ * revoke/amend/no-attachment event would read as legacy and never batch.
+ * (Residual window: an old-version no-attachment row whose record landed in
+ * the instant before a process crash re-uploads without a probe — at worst a
+ * duplicate carrier, which readers dedupe by id per SPEC §5.8.)
  */
-function isLegacyRetry(row: SyncStatusRow): boolean {
-  return !row.fileIds && (row.attempts > 0 || row.phase === 'record-pending')
+function isLegacyRetry(row: SyncStatusRow, event: LogEvent): boolean {
+  if (row.fileIds) return false
+  return (
+    row.attempts > 0 || (row.phase === 'record-pending' && attachmentsOf(event).length > 0)
+  )
 }
 
 /** Upload all of one event's parts then commit its record. Throws on failure. */
@@ -148,7 +158,7 @@ async function uploadEvent(
 ): Promise<void> {
   const parentId = await ensurePartition(token, tree, event.stream, partitionOf(event))
 
-  const legacyRetry = isLegacyRetry(row)
+  const legacyRetry = isLegacyRetry(row, event)
 
   const atts = attachmentsOf(event)
   const recordName = eventRecordName(event)
@@ -226,7 +236,7 @@ function planBatches(items: PendingItem[]): Batch[] {
       run = null
       continue
     }
-    if (isLegacyRetry(item.row)) {
+    if (isLegacyRetry(item.row, item.event)) {
       fresh.push({ items: [item], assigned: null })
       run = null
       continue

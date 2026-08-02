@@ -556,6 +556,59 @@ describe('drainStream', () => {
     expect(drive.uploadOrder.length).toBe(landedBefore + 2)
   })
 
+  it('recovers a crash mid-assignment: the pinned segment keeps its wider name, holding only assigned survivors', async () => {
+    // Plan a [e1, e2, e3] segment, but crash after the assignment persisted
+    // on e1 only (SPEC §5.7 commit protocol, step 1). The next drain must
+    // upload the pinned segment — SAME name (declared range 1–3) and SAME
+    // pre-generated id — containing exactly the assigned survivor [e1],
+    // while e2/e3 land separately. No event lost, none duplicated; the
+    // declared range strictly contains the content's range, which readers
+    // must never trust for completeness (id dedupe is authoritative).
+    const { appendCapture, getSyncStatuses, putSyncStatus } = await import('../store/events')
+    const capture = () =>
+      appendCapture({ stream: 'timelog', capturedAt: '2026-08-02T09:00:00-04:00', attachments: [] })
+    const e1 = await capture()
+    const e2 = await capture()
+    const e3 = await capture()
+
+    const { segmentFileName, parseSegmentName } = await import('../contract/filenames')
+    const { serializeSegment, parseSegment } = await import('../contract/segments')
+    const wideName = segmentFileName([e1, e2, e3])
+    const row1 = (await getSyncStatuses('timelog')).get(e1.id)!
+    await putSyncStatus({ ...row1, fileIds: { [wideName]: 'pinned-segment-id' } })
+
+    const { drainStream } = await import('./queue')
+    const res = await drainStream('tok', 'timelog')
+    expect(res).toEqual({ outcome: 'drained', uploaded: 3 })
+
+    // The interrupted segment landed under its pinned name AND id, holding
+    // only the assigned survivor — declared range ⊇ content range.
+    const wide = drive.nodes.find((f) => f.name === wideName)!
+    expect(wide.id).toBe('pinned-segment-id')
+    expect(wide.body).toBe(serializeSegment([e1]))
+    const declared = parseSegmentName(wideName)!
+    const contentSeqs = parseSegment(wide.body as string).map((e) => e.seq)
+    expect(declared.minSeq).toBe(e1.seq)
+    expect(declared.maxSeq).toBe(e3.seq)
+    expect(contentSeqs).toEqual([e1.seq]) // strictly inside the declared range
+
+    // The unassigned members landed separately, as their own fresh segment.
+    const rest = drive.nodes.find((f) => f.name === segmentFileName([e2, e3]))!
+    expect(rest.body).toBe(serializeSegment([e2, e3]))
+
+    // No event lost, none duplicated, none as a stray per-event record.
+    const carried = drive.nodes
+      .filter((f) => f.name.endsWith('.ndjson'))
+      .flatMap((f) => parseSegment(f.body as string))
+      .map((e) => e.id)
+      .sort()
+    expect(carried).toEqual([e1.id, e2.id, e3.id].sort())
+    expect(drive.nodes.some((f) => /^\d+_.*\.json$/.test(f.name))).toBe(false)
+    for (const row of (await getSyncStatuses('timelog')).values()) {
+      expect(row.status).toBe('uploaded')
+    }
+  })
+
   it('never reuses an old-account segment assignment after an account switch (#32 × §5.7)', async () => {
     // A segment batch whose assignment (one shared id on every member row)
     // persisted on account A but whose upload never landed.

@@ -714,11 +714,15 @@ it holds, then the `loggedAt` timestamp and id of the segment's **first** event
 000044-000046_2026-08-02T18-02-33-0400_f1a2b3.ndjson
 ```
 
-- `minSeq`/`maxSeq` are the smallest and largest seq among the contained events,
-  zero-padded to six digits exactly like a record name's seq. The contained seqs
-  need **not** be contiguous: a device may batch around an event that takes a
-  different upload path (or was erased out-of-band, §11), and consumers already
-  tolerate seq gaps.
+- `minSeq`/`maxSeq` are the smallest and largest seq among the batch's events,
+  fixed when the batch is planned and zero-padded to six digits exactly like a
+  record name's seq. The contained seqs need **not** be contiguous: a device may
+  batch around an event that takes a different upload path (or was erased
+  out-of-band, §11), and consumers already tolerate seq gaps. After a
+  mid-assignment crash (see the commit protocol below) the declared range may
+  even **strictly contain** the content's range — readers must never treat the
+  declared range as a completeness claim; id-based dedupe (§5.8) is
+  authoritative.
 - The first event's id gives the name the same device/event entropy as a record
   name (ids are crypto-random — §3.3), so two devices offline-minting the same seq
   range can never collide on a name.
