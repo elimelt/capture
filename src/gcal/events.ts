@@ -28,6 +28,10 @@ export interface CalEvent {
   endMs: number
   /** True for all-day events (carried as `date`, not `dateTime`). */
   allDay: boolean
+  /** Last-modification RFC-3339 stamp; overlay dirty-check fast path (§3.6). */
+  updated?: string
+  /** Parent series id for expanded recurring instances (§3.6 overlays). */
+  recurringEventId?: string
 }
 
 /** The Calendar API `start`/`end` shape: exactly one of dateTime | date. */
@@ -44,6 +48,8 @@ export interface RawEvent {
   status?: string
   start?: RawEventTime
   end?: RawEventTime
+  updated?: string
+  recurringEventId?: string
 }
 
 function timeMs(t: RawEventTime | undefined, allDay: boolean): number | null {
@@ -71,6 +77,8 @@ export function parseEvent(raw: RawEvent): CalEvent | null {
     startMs,
     endMs,
     allDay,
+    ...(raw.updated ? { updated: raw.updated } : {}),
+    ...(raw.recurringEventId ? { recurringEventId: raw.recurringEventId } : {}),
   }
 }
 
