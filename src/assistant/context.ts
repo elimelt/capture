@@ -1,17 +1,12 @@
 /**
- * Context digestion: folds the recent log into a compact plain-text digest
- * the model can reason over. Pure formatting (formatDigest, recentEntries)
- * is separated from blob I/O (buildInstructions) so it tests without
- * IndexedDB. capturedAt is local ISO with offset — sliced for date/time,
- * never round-tripped through Date, so the digest shows wall-clock time.
+ * Assistant prompt + shared log rendering. The model reads the log on demand
+ * through read-only tools (see tools.ts), so the system prompt stays compact:
+ * role, data model, tool usage, current local time. Everything here is pure
+ * formatting — blob I/O lives in tools.ts — so it tests without IndexedDB.
+ * capturedAt is local ISO with offset — sliced for date/time, never
+ * round-tripped through Date, so renderings show wall-clock time.
  */
-import type { Entry } from '../contract/types'
 import { deviceTz, toLocalIso } from '../contract/time'
-import { getBlob } from '../store/events'
-
-/** How much history the assistant sees. */
-export const DIGEST_DAYS = 7
-export const DIGEST_MAX_ENTRIES = 200
 
 export interface DigestItem {
   /** Local ISO with offset (entry.capturedAt). */
@@ -21,14 +16,6 @@ export interface DigestItem {
   texts: string[]
   audioCount: number
   photoCount: number
-}
-
-/** Non-revoked entries captured within the digest window, newest-capped. */
-export function recentEntries(entries: readonly Entry[], now: Date = new Date()): Entry[] {
-  const cutoff = now.getTime() - DIGEST_DAYS * 86_400_000
-  return entries
-    .filter((e) => !e.revoked && new Date(e.capturedAt).getTime() >= cutoff)
-    .slice(-DIGEST_MAX_ENTRIES)
 }
 
 export function formatDigest(items: readonly DigestItem[]): string {
@@ -57,39 +44,17 @@ export function formatDigest(items: readonly DigestItem[]): string {
   return lines.join('\n')
 }
 
-async function toDigestItem(entry: Entry): Promise<DigestItem> {
-  const texts: string[] = []
-  for (const a of entry.attachments) {
-    if (a.kind !== 'text') continue
-    const blob = await getBlob(a.file)
-    const text = (await blob?.text())?.trim()
-    if (text) texts.push(text)
-  }
-  return {
-    capturedAt: entry.capturedAt,
-    place: entry.location?.placeLabel,
-    texts,
-    audioCount: entry.attachments.filter((a) => a.kind === 'audio').length,
-    photoCount: entry.attachments.filter((a) => a.kind === 'photo').length,
-  }
-}
-
-/** The system prompt: role + current time + digest of the recent log. */
-export async function buildInstructions(
-  entries: readonly Entry[],
-  now: Date = new Date(),
-): Promise<string> {
-  const items = await Promise.all(recentEntries(entries, now).map(toDigestItem))
+/** The system prompt: role + data model + tool usage + current time. */
+export function buildInstructions(now: Date = new Date()): string {
   return [
     'You are the assistant inside Timebox, a personal time and location log.',
-    'The user records entries through the day: voice notes (transcribed), typed notes, and photos.',
+    'The user records entries through the day: voice notes (transcribed), typed notes, and photos; each entry carries a local capture time and sometimes a place label.',
     'Answer questions about their log: what they did, when, where, patterns and summaries.',
-    'Be concise and concrete. Use the digest below as ground truth; if it does not contain the answer, say so instead of guessing.',
-    'Times in the digest are the user\u2019s local wall-clock time. Format: "- HH:MM [@ place] \u2014 entry text [media]".',
+    'You have read-only tools over the log. Use list_entries for date ranges ("today", "this week", summaries), search_entries for keyword lookups across the whole log, and get_places for the user\u2019s saved places.',
+    'Ground answers in tool results; if the log does not contain the answer, say so instead of guessing.',
+    'Tool results use the user\u2019s local wall-clock time, grouped by day: "- HH:MM [@ place] \u2014 entry text [media]".',
+    'Be concise and concrete.',
     '',
     `Current local time: ${toLocalIso(now)} (${deviceTz()}).`,
-    '',
-    `Log entries from the last ${DIGEST_DAYS} days:`,
-    formatDigest(items),
   ].join('\n')
 }

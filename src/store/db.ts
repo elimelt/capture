@@ -34,6 +34,20 @@ export interface Place {
   radiusM: number
 }
 
+/**
+ * A persisted assistant conversation. Message shape belongs to assistant/
+ * (store/ must stay app-agnostic), so messages are stored opaquely here;
+ * assistant/history.ts owns the strong typing.
+ */
+export interface StoredChatRow {
+  id: string
+  /** ISO local time. */
+  createdAt: string
+  /** ISO local time; bumped on every save. */
+  updatedAt: string
+  messages: unknown[]
+}
+
 interface TimeboxDB extends DBSchema {
   /** The local replica of the append-only log. Key: [stream, seq]. */
   events: {
@@ -60,6 +74,11 @@ interface TimeboxDB extends DBSchema {
     key: string
     value: unknown
   }
+  /** Assistant conversations, one row per chat. */
+  chats: {
+    key: string
+    value: StoredChatRow
+  }
 }
 
 export type TimeboxDatabase = IDBPDatabase<TimeboxDB>
@@ -67,7 +86,7 @@ export type TimeboxDatabase = IDBPDatabase<TimeboxDB>
 let dbPromise: Promise<TimeboxDatabase> | undefined
 
 export function getDb(): Promise<TimeboxDatabase> {
-  dbPromise ??= openDB<TimeboxDB>('timebox', 2, {
+  dbPromise ??= openDB<TimeboxDB>('timebox', 3, {
     async upgrade(db, oldVersion, _newVersion, tx) {
       if (oldVersion < 1) {
         const events = db.createObjectStore('events', { keyPath: ['stream', 'seq'] })
@@ -90,6 +109,24 @@ export function getDb(): Promise<TimeboxDatabase> {
           })
           cursor = await cursor.continue()
         }
+      }
+      if (oldVersion < 3) {
+        // v3: assistant chats get their own store (one row per conversation).
+        // The old single conversation lived under meta 'assistant:chat';
+        // migrate it into a chats row so it becomes the most recent chat.
+        db.createObjectStore('chats', { keyPath: 'id' })
+        const meta = tx.objectStore('meta')
+        const legacy = (await meta.get('assistant:chat')) as unknown[] | undefined
+        if (Array.isArray(legacy) && legacy.length > 0) {
+          const now = new Date().toISOString()
+          await tx.objectStore('chats').put({
+            id: crypto.randomUUID(),
+            createdAt: now,
+            updatedAt: now,
+            messages: legacy,
+          })
+        }
+        if (legacy !== undefined) await meta.delete('assistant:chat')
       }
     },
   })

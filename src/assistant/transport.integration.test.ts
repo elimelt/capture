@@ -8,10 +8,11 @@
  * `npm run test:integration`.
  */
 import { describe, expect, it } from 'vitest'
-import type { UIMessage } from 'ai'
+import { jsonSchema, tool, type UIMessage } from 'ai'
 import { createAssistantTransport } from './transport'
 
 const TIMEOUT_MS = 90_000
+const TOOL_TIMEOUT_MS = 120_000
 
 function userMessage(text: string): UIMessage {
   return { id: 'u1', role: 'user', parts: [{ type: 'text', text }] }
@@ -68,6 +69,62 @@ describe('assistant transport (live API)', () => {
       expect(deltaTimes.length).toBeGreaterThanOrEqual(5)
       const spread = deltaTimes.at(-1)! - deltaTimes[0]
       expect(spread).toBeGreaterThan(50)
+    },
+  )
+
+  it(
+    'runs client-side tools through the tool loop (gpt-oss:20b)',
+    { timeout: TOOL_TIMEOUT_MS },
+    async () => {
+      const tools = {
+        get_test_number: tool({
+          description: 'Returns the secret test number.',
+          inputSchema: jsonSchema<Record<string, never>>({
+            type: 'object',
+            properties: {},
+            additionalProperties: false,
+          }),
+          execute: async () => 'The secret test number is 42.',
+        }),
+      }
+      const transport = createAssistantTransport(
+        'gpt-oss:20b',
+        () =>
+          Promise.resolve(
+            'You are a test assistant. Answer questions about the secret test number by calling the get_test_number tool.',
+          ),
+        tools,
+      )
+
+      const stream = await transport.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'integration-test-tools',
+        messageId: undefined,
+        abortSignal: undefined,
+        messages: [userMessage('What is the secret test number? Use your tool to find out.')],
+      })
+
+      const types: string[] = []
+      let text = ''
+      const reader = stream.getReader()
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        types.push(value.type)
+        if (value.type === 'error') {
+          throw new Error(`stream error chunk: ${JSON.stringify(value)}`)
+        }
+        if (value.type === 'text-delta') text += value.delta
+      }
+
+      // The tool call flowed through the UI stream: input announced,
+      // parsed, and the client-side execute result surfaced.
+      expect(types).toContain('tool-input-start')
+      expect(types).toContain('tool-input-available')
+      expect(types).toContain('tool-output-available')
+
+      // The model grounded its answer in the tool output.
+      expect(text).toContain('42')
     },
   )
 })

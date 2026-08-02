@@ -1,13 +1,12 @@
 /** Screen 3 — Settings (SPEC §4.3, M1 subset). */
 import { useEffect, useState } from 'react'
-import { ASSISTANT_MODELS } from '../assistant/config'
+import { modelLabel } from '../assistant/config'
 import { useAppStore } from '../store/appStore'
 import {
   Button,
   FieldRow,
   ScreenHeader,
   Section,
-  Select,
   TextInput,
   Toggle,
   cx,
@@ -226,22 +225,13 @@ export default function SettingsScreen() {
           {appSettings.assistantEnabled && (
             <>
               <FieldRow label="Model">
-                <Select
-                  value={appSettings.assistantModel}
-                  onChange={(e) =>
-                    void updateSettings({ ...appSettings, assistantModel: e.target.value })
-                  }
-                >
-                  {ASSISTANT_MODELS.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.label}
-                    </option>
-                  ))}
-                </Select>
+                <span className={cx(type_.sub, tone.textMuted)}>
+                  {modelLabel(appSettings.assistantModel)}
+                </span>
               </FieldRow>
               <p className={cx(type_.sub, tone.textMuted)}>
-                Chat runs against llm.elimelt.com and sends a digest of your last seven days of
-                entries as context. Nothing is stored server-side.
+                Chat runs against llm.elimelt.com and reads your log on demand through read-only
+                tools. Nothing is stored server-side.
               </p>
             </>
           )}

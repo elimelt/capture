@@ -7,12 +7,10 @@
 
 export const ASSISTANT_BASE_URL = 'https://llm.elimelt.com/v1'
 
-/** Curated models known to exist on the endpoint. First entry is the default. */
-export const ASSISTANT_MODELS = [
-  { id: 'gpt-oss:20b', label: 'GPT-OSS 20B' },
-  { id: 'gemma3:27b', label: 'Gemma 3 27B' },
-  { id: 'llama3.2:3b', label: 'Llama 3.2 3B (fastest)' },
-] as const
+/** Curated models known to exist on the endpoint. First entry is the default.
+ * gpt-oss:20b is the only hosted model that emits well-formed tool_calls,
+ * which the assistant now relies on to read the log. */
+export const ASSISTANT_MODELS = [{ id: 'gpt-oss:20b', label: 'GPT-OSS 20B' }] as const
 
 /** Must match APP_DEFAULTS.assistantModel in store/settings.ts (store must
  * not import assistant/; the pairing is pinned by tests on both sides). */

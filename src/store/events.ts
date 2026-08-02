@@ -167,13 +167,14 @@ export async function getSyncStatuses(stream: string): Promise<Map<number, SyncS
 
 export async function wipeAll(): Promise<void> {
   const db = await getDb()
-  const tx = db.transaction(['events', 'blobs', 'sync', 'places', 'meta'], 'readwrite')
+  const tx = db.transaction(['events', 'blobs', 'sync', 'places', 'meta', 'chats'], 'readwrite')
   await Promise.all([
     tx.objectStore('events').clear(),
     tx.objectStore('blobs').clear(),
     tx.objectStore('sync').clear(),
     tx.objectStore('places').clear(),
     tx.objectStore('meta').clear(),
+    tx.objectStore('chats').clear(),
   ])
   await tx.done
 }

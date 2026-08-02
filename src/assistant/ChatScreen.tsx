@@ -1,6 +1,6 @@
 /**
  * Assistant chat (opt-in). Client-only: useChat over a DirectChatTransport
- * against llm.elimelt.com, system prompt digested from the recent log.
+ * against llm.elimelt.com; the agent reads the log through read-only tools.
  * Editorial voice: assistant replies are serif markdown on the page itself;
  * user turns are quiet spruce-washed bubbles.
  */
@@ -11,7 +11,6 @@ import { useAppStore } from '../store/appStore'
 import {
   Button,
   ScreenHeader,
-  Select,
   TextInput,
   cx,
   motion,
@@ -19,28 +18,51 @@ import {
   type_,
   useKeyboardInset,
 } from '../ui'
-import { ASSISTANT_MODELS } from './config'
+import { ChatHistorySheet } from './ChatHistorySheet'
+import { modelLabel } from './config'
 import { buildInstructions } from './context'
-import { clearChatHistory, loadChatHistory, saveChatHistory } from './history'
+import { loadMostRecentChat, saveChat, type StoredChat } from './history'
 import { Markdown } from './Markdown'
+import { createAssistantTools } from './tools'
 import { createAssistantTransport } from './transport'
 
-// The conversation survives tab switches (module-scope Chat) and app
-// restarts (IndexedDB, hydrated on first mount). Only "New chat" discards
-// it; a model change re-creates the transport but keeps the messages.
-let cache: { model: string; chat: Chat<UIMessage> } | null = null
+// The active conversation survives tab switches (module-scope Chat) and app
+// restarts (IndexedDB, hydrated on first mount). "New chat" starts a fresh
+// conversation — the old one stays in history; a model change re-creates the
+// transport but keeps the messages.
+type ChatSeed = Pick<StoredChat, 'id' | 'createdAt' | 'messages'>
 
-function getChat(model: string, initialMessages: UIMessage[]): Chat<UIMessage> {
-  if (cache?.model !== model) {
-    cache = {
-      model,
-      chat: new Chat({
-        messages: cache?.chat.messages ?? initialMessages,
-        transport: createAssistantTransport(model, () =>
-          buildInstructions(useAppStore.getState().entries),
+let cache: {
+  model: string
+  chatId: string
+  createdAt: string
+  chat: Chat<UIMessage>
+} | null = null
+
+function freshSeed(): ChatSeed {
+  return { id: crypto.randomUUID(), createdAt: new Date().toISOString(), messages: [] }
+}
+
+function getChat(model: string, seed: ChatSeed): Chat<UIMessage> {
+  if (cache && cache.model === model && cache.chatId === seed.id) return cache.chat
+  // Same conversation, different model: keep the live messages. Otherwise
+  // start from the seed's stored messages.
+  const carried = cache?.chatId === seed.id ? cache : null
+  cache = {
+    model,
+    chatId: seed.id,
+    createdAt: carried?.createdAt ?? seed.createdAt,
+    chat: new Chat({
+      messages: carried?.chat.messages ?? seed.messages,
+      transport: createAssistantTransport(
+        model,
+        () => buildInstructions(),
+        createAssistantTools(
+          () => useAppStore.getState().entries,
+          () => useAppStore.getState().places,
         ),
-      }),
-    }
+      ),
+    }),
   }
   return cache.chat
 }
@@ -57,21 +79,63 @@ function messageText(m: UIMessage): string {
     .join('')
 }
 
+function hasVisibleText(m: UIMessage): boolean {
+  return m.parts.some((p) => p.type === 'text' && p.text.trim() !== '')
+}
+
+/** A response is in flight but nothing readable has arrived yet (tool calls
+ * and reasoning can run for seconds before the first visible text). */
+function awaitingResponse(status: string, messages: UIMessage[]): boolean {
+  if (status === 'submitted') return true
+  if (status !== 'streaming') return false
+  const last = messages.at(-1)
+  return !(last?.role === 'assistant' && hasVisibleText(last))
+}
+
+/** One-line caption for a tool invocation part; null for other parts or
+ * shapes we don't recognize. */
+function toolActivityLabel(part: UIMessage['parts'][number]): string | null {
+  let toolName: string
+  let input: unknown
+  if (part.type === 'dynamic-tool') {
+    toolName = part.toolName
+    input = part.input
+  } else if (part.type.startsWith('tool-')) {
+    toolName = part.type.slice('tool-'.length)
+    input = 'input' in part ? part.input : undefined
+  } else {
+    return null
+  }
+  const args = (typeof input === 'object' && input !== null ? input : {}) as Record<
+    string,
+    unknown
+  >
+  if (toolName === 'list_entries' && typeof args.from === 'string' && typeof args.to === 'string') {
+    return `Read log ${args.from} – ${args.to}`
+  }
+  if (toolName === 'search_entries' && typeof args.query === 'string') {
+    return `Searched the log for \u201c${args.query}\u201d`
+  }
+  if (toolName === 'get_places') return 'Looked up saved places'
+  return `Consulted the log (${toolName})`
+}
+
 export default function ChatScreen() {
   const model = useAppStore((s) => s.appSettings.assistantModel)
   const [chat, setChat] = useState<Chat<UIMessage> | null>(() =>
-    cache ? getChat(model, []) : null,
+    cache ? getChat(model, { id: cache.chatId, createdAt: cache.createdAt, messages: [] }) : null,
   )
 
-  // First mount in this JS lifetime: hydrate the conversation from IndexedDB.
+  // First mount in this JS lifetime: hydrate the most recent conversation
+  // from IndexedDB; nothing stored yet → start a fresh one.
   useEffect(() => {
     if (cache) {
-      setChat(getChat(model, []))
+      setChat(getChat(model, { id: cache.chatId, createdAt: cache.createdAt, messages: [] }))
       return
     }
     let cancelled = false
-    void loadChatHistory().then((messages) => {
-      if (!cancelled) setChat(getChat(model, messages))
+    void loadMostRecentChat().then((stored) => {
+      if (!cancelled) setChat(getChat(model, stored ?? freshSeed()))
     })
     return () => {
       cancelled = true
@@ -84,10 +148,8 @@ export default function ChatScreen() {
     <ChatView
       chat={chat}
       model={model}
-      onReset={() => {
-        cache = null
-        setChat(getChat(model, []))
-      }}
+      onReset={() => setChat(getChat(model, freshSeed()))}
+      onLoadChat={(stored) => setChat(getChat(model, stored))}
     />
   )
 }
@@ -96,28 +158,54 @@ function ChatView({
   chat,
   model,
   onReset,
+  onLoadChat,
 }: {
   chat: Chat<UIMessage>
   model: string
   onReset: () => void
+  onLoadChat: (stored: StoredChat) => void
 }) {
   const { messages, sendMessage, stop, status, error, clearError } = useChat({ chat })
-  const appSettings = useAppStore((s) => s.appSettings)
-  const updateSettings = useAppStore((s) => s.updateSettings)
   const [input, setInput] = useState('')
+  const [historyOpen, setHistoryOpen] = useState(false)
   const keyboardInset = useKeyboardInset()
-  const bottomRef = useRef<HTMLDivElement>(null)
+  // Stick-to-bottom: auto-follow the stream only while the user is pinned
+  // near the bottom. Scrolling up detaches; scrolling back down re-attaches.
+  const pinnedRef = useRef(true)
 
   const busy = status === 'submitted' || status === 'streaming'
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ block: 'end' })
+    const onScroll = () => {
+      const doc = document.documentElement
+      pinnedRef.current = doc.scrollHeight - window.innerHeight - window.scrollY < 80
+    }
+    window.addEventListener('scroll', onScroll, { passive: true })
+    return () => window.removeEventListener('scroll', onScroll)
+  }, [])
+
+  // Switching conversations always lands at the latest turn.
+  useEffect(() => {
+    pinnedRef.current = true
+  }, [chat])
+
+  useEffect(() => {
+    if (pinnedRef.current) {
+      // True document bottom, so the trailing padding clears the fixed
+      // composer and the last message stays fully visible.
+      window.scrollTo({ top: document.documentElement.scrollHeight })
+    }
   }, [messages, status])
 
   // Persist each settled turn (not per-delta; streaming would hammer idb).
   useEffect(() => {
-    if ((status === 'ready' || status === 'error') && messages.length > 0) {
-      void saveChatHistory(messages)
+    if ((status === 'ready' || status === 'error') && messages.length > 0 && cache) {
+      void saveChat({
+        id: cache.chatId,
+        createdAt: cache.createdAt,
+        updatedAt: new Date().toISOString(),
+        messages,
+      })
     }
   }, [status, messages])
 
@@ -125,52 +213,49 @@ function ChatView({
     const trimmed = text.trim()
     if (!trimmed || busy) return
     setInput('')
+    pinnedRef.current = true
     void sendMessage({ text: trimmed })
   }
 
+  // The old conversation stays in history; just start a fresh one.
   function newChat() {
     stop()
-    void clearChatHistory()
     onReset()
   }
 
   return (
     <div className={cx('flex flex-col gap-4 p-4 pb-20', motion.fadeIn)}>
-      <ScreenHeader
-        title="Assistant"
-        subtitle={
-          <Select
-            aria-label="Chat model"
-            value={model}
-            disabled={busy}
-            onChange={(event) =>
-              void updateSettings({
-                ...appSettings,
-                assistantModel: event.target.value,
-              })
-            }
-            className="max-w-full py-0 text-[13px]"
-          >
-            {ASSISTANT_MODELS.map((assistantModel) => (
-              <option key={assistantModel.id} value={assistantModel.id}>
-                {assistantModel.label}
-              </option>
-            ))}
-          </Select>
-        }
-        trailing={
-          messages.length > 0 && (
-            <Button variant="ghost" size="sm" onClick={newChat}>
-              New chat
-            </Button>
-          )
-        }
-      />
+      {/* Sticky header: pulls up over main's safe-area pad so, when stuck,
+          its blurred surface extends under the iOS status bar. */}
+      <div
+        className={cx(
+          'sticky top-0 z-30 -mx-4 -mt-[calc(env(safe-area-inset-top)_+_1rem)] border-b px-4 pb-3 pt-[calc(env(safe-area-inset-top)_+_1rem)] backdrop-blur-xl',
+          tone.border,
+          'bg-paper/85 dark:bg-paper-dark/85',
+        )}
+      >
+        <ScreenHeader
+          title="Assistant"
+          subtitle={modelLabel(model)}
+          trailing={
+            <div className="flex items-center">
+              <Button variant="ghost" size="sm" onClick={() => setHistoryOpen(true)}>
+                History
+              </Button>
+              {messages.length > 0 && (
+                <Button variant="ghost" size="sm" onClick={newChat}>
+                  New chat
+                </Button>
+              )}
+            </div>
+          }
+        />
+      </div>
 
       {messages.length === 0 && (
         <div className="mt-6 flex flex-col items-center gap-4">
           <p className={cx('px-6 text-center font-serif text-[16px] italic', tone.textMuted)}>
-            Ask about your log — it reads your last seven days.
+            Ask about your log — it looks up your entries and places as needed.
           </p>
           <div className="flex flex-col items-stretch gap-2 self-stretch px-2">
             {SUGGESTIONS.map((s) => (
@@ -202,11 +287,19 @@ function ChatView({
             </div>
           ) : (
             <div key={m.id} className={cx('min-w-0 self-stretch', motion.fadeIn)}>
+              {m.parts.map((p, i) => {
+                const activity = toolActivityLabel(p)
+                return activity ? (
+                  <p key={i} className={cx('mb-1 italic', type_.caption, tone.textMuted)}>
+                    {activity}
+                  </p>
+                ) : null
+              })}
               <Markdown>{messageText(m)}</Markdown>
             </div>
           ),
         )}
-        {status === 'submitted' && <ThinkingDots />}
+        {awaitingResponse(status, messages) && <ThinkingDots />}
         {error && (
           <p className={cx(type_.sub, tone.danger)}>
             {'Something went wrong reaching the assistant. '}
@@ -215,7 +308,6 @@ function ChatView({
             </button>
           </p>
         )}
-        <div ref={bottomRef} />
       </div>
 
       {/* Composer: fixed above the tab bar; lifts above the iOS keyboard
@@ -258,6 +350,22 @@ function ChatView({
           )}
         </form>
       </div>
+
+      {historyOpen && (
+        <ChatHistorySheet
+          activeChatId={cache?.chatId}
+          onClose={() => setHistoryOpen(false)}
+          onSelect={(stored) => {
+            stop()
+            onLoadChat(stored)
+            setHistoryOpen(false)
+          }}
+          onDeleteActive={() => {
+            stop()
+            onReset()
+          }}
+        />
+      )}
     </div>
   )
 }
