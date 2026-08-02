@@ -31,6 +31,7 @@ type PendingPlace = { entryId: string; location: GeoLocation }
  * labelled buttons, never a second `capture` event.
  */
 type AddOnTarget = { entryId: string; kind: 'photo' | 'text' }
+type PreparedCopy = { lastEventSeq: number; text: string }
 
 export default function CaptureScreen() {
   const entries = useAppStore((s) => s.entries)
@@ -64,6 +65,7 @@ export default function CaptureScreen() {
   const tapStartRef = useRef<Date>(new Date())
   const locationRef = useRef<Promise<GeoLocation | undefined>>(Promise.resolve(undefined))
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const preparedCopiesRef = useRef(new Map<string, PreparedCopy>())
 
   useEffect(() => () => clearTimeout(toastTimerRef.current), [])
 
@@ -73,12 +75,26 @@ export default function CaptureScreen() {
     return () => clearTimeout(timer)
   }, [copyFeedback])
 
-  async function copyEntry(entry: Entry) {
-    try {
-      await copyPlainText(await formatEntryPlainText(entry, getBlob))
-      setCopyFeedback('copied')
-    } catch {
+  function copyEntry(entry: Entry) {
+    const prepared = preparedCopiesRef.current.get(entry.id)
+    if (!prepared || prepared.lastEventSeq !== entry.lastEventSeq) {
       setCopyFeedback('error')
+      return
+    }
+    // Keep this call synchronous with the button's click. Safari's clipboard
+    // APIs require the transient user activation and reject work that first
+    // awaits an IndexedDB read.
+    void copyPlainText(prepared.text)
+      .then(() => setCopyFeedback('copied'))
+      .catch(() => setCopyFeedback('error'))
+  }
+
+  async function prepareCopy(entry: Entry) {
+    try {
+      const text = await formatEntryPlainText(entry, getBlob)
+      preparedCopiesRef.current.set(entry.id, { lastEventSeq: entry.lastEventSeq, text })
+    } catch {
+      preparedCopiesRef.current.delete(entry.id)
     }
   }
 
@@ -257,6 +273,14 @@ export default function CaptureScreen() {
   const todayEntries = entries
     .filter((e) => !e.revoked && e.id !== del.pendingId && localDateOf(e.capturedAt) === today)
     .sort((a, b) => b.capturedAt.localeCompare(a.capturedAt))
+
+  // Prepare copy text before the user taps the button. Safari (including
+  // standalone iOS PWAs) may reject clipboard writes after an async IndexedDB
+  // read has consumed the click's transient user activation.
+  useEffect(() => {
+    const entry = todayEntries[0]
+    if (entry) void prepareCopy(entry)
+  }, [todayEntries])
 
   // Contextual idle prompt (#76): pure function of hour, today's count, and
   // the gap since the most recent capture (todayEntries is newest-first).
