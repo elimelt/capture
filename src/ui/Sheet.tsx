@@ -38,20 +38,13 @@ export function useKeyboardInset(): number {
   return inset
 }
 
-interface SheetProps {
-  title: string
-  onClose: () => void
-  children: ReactNode
-}
-
-/** Bottom sheet: backdrop tap closes, content lifts above the keyboard. */
-export function Sheet({ title, onClose, children }: SheetProps) {
-  const keyboardInset = useKeyboardInset()
-
-  // Freeze the page behind the sheet: iOS scrolls the body through fixed
-  // overlays, so touches on the sheet would move the screen underneath.
-  // position:fixed (not overflow:hidden, which iOS ignores) keeps the page
-  // pinned; restore the scroll position on close.
+/**
+ * Freeze the page behind a fullscreen overlay while mounted: iOS scrolls
+ * the body through fixed overlays, so touches on the overlay would move
+ * the screen underneath. position:fixed (not overflow:hidden, which iOS
+ * ignores) keeps the page pinned; restores the scroll position on unmount.
+ */
+export function useBodyScrollLock(): void {
   useEffect(() => {
     const { scrollY } = window
     const body = document.body
@@ -65,6 +58,18 @@ export function Sheet({ title, onClose, children }: SheetProps) {
       window.scrollTo(0, scrollY)
     }
   }, [])
+}
+
+interface SheetProps {
+  title: string
+  onClose: () => void
+  children: ReactNode
+}
+
+/** Bottom sheet: backdrop tap closes, content lifts above the keyboard. */
+export function Sheet({ title, onClose, children }: SheetProps) {
+  const keyboardInset = useKeyboardInset()
+  useBodyScrollLock()
 
   // Portaled so the backdrop provably covers (and blocks taps on) the tab
   // bar: rendered in place, a screen/card stacking context would trap the
