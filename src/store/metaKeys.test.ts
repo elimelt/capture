@@ -21,7 +21,6 @@
 import { describe, expect, it } from 'vitest'
 import {
   CHATS_MIGRATION_MARKER,
-  daySynthesisKey,
   driveChangesKey,
   DRIVE_ACCOUNT_KEY,
   DRIVE_CHANGES_PREFIX,
@@ -54,7 +53,6 @@ describe('metaKeys golden literals (byte-stable — issue #57)', () => {
     expect(GCAL_TARGET_CALENDAR_KEY).toBe('gcal:targetCalendar')
     expect(skipKeyPrefix('transcribe')).toBe('transcribe:skip:')
     expect(skipKeyPrefix('caption')).toBe('caption:skip:')
-    expect(daySynthesisKey('2026-08-02')).toBe('daySynthesis:2026-08-02')
     expect(SETTINGS_MIGRATION_MARKER).toBe('migrated:settings-stream-v1')
     expect(CHATS_MIGRATION_MARKER).toBe('migrated:chats:v1')
     expect(LEGACY_SETTINGS_APP_KEY).toBe('settings:app')

@@ -9,8 +9,6 @@ ever compromising the offline-first capture path. Five features share this subsy
   below.
 - **Place matching & reverse geocoding** (`src/places`) — coordinates → labels/addresses.
 - **Chat assistant** (`src/assistant`) — an opt-in, client-side agent over the local log.
-- **Day synthesis prose** (`src/dayview`) — an opt-in, explicit-tap daily recap (#82);
-  the always-on deterministic stat line beside it needs none of this subsystem.
 
 File-level detail lives in the module docs:
 [Media pipelines & places](../modules/pipelines-and-places.md),
@@ -212,37 +210,6 @@ so non-users never download the bundle.
   searches (pure in-memory filter), and deletes past conversations. Settings → wipe
   clears them with everything else. Nothing is stored server-side.
 
-## Day synthesis (#82)
-
-Screen 2's "reward loop" artifact (`src/dayview/DaySynthesisCard.tsx`,
-`useDaySynthesis.ts`) splits the same authored/local vs. machine/network line the
-rest of this subsystem draws, but pushes the network half further behind consent
-than transcription/captioning/the assistant do:
-
-- **Deterministic half (`synthesis.ts`) is always on.** The "N moments · M places"
-  stat line is a pure fold over the day's folded entries — no network, no opt-in
-  check, computed fresh on every render. It renders even with the AI opt-in off.
-- **Prose half is opt-in AND explicit-tap — never auto-fires.** Unlike
-  transcription/captioning (drain automatically on relevant store changes) or even
-  the assistant (any opt-in visit opens the chat), the daily-prose LLM call never
-  runs on screen open, store refresh, or day navigation. It requires
-  `AppSettings.assistantEnabled` **and** a user tapping "Generate summary" —
-  reusing the assistant's endpoint but with strictly more consent friction, per the
-  product decision recorded on #89: "#82 daily prose: requires an explicit tap to
-  generate even when AI is enabled."
-- **No AI SDK in the Day bundle.** The prose call is a bare `fetch` to the
-  chat-completions endpoint (`dayview/daySummaryClient.ts`) built from
-  `assistant/config.ts` constants — not `assistant/transport.ts`'s
-  `DirectChatTransport`/`ToolLoopAgent`, which would drag `ai` +
-  `@ai-sdk/openai-compatible` (ChatScreen's own lazy chunk, excluded from the SW
-  precache) into the main bundle that ships to every visitor, opted in or not.
-- **Cache, not log.** The generated prose is derived, rebuildable data (SPEC §3.2
-  #5) cached in IndexedDB `meta` (`dayview/synthesisCache.ts`), keyed by
-  `daySynthesis:<date>` plus a content hash (`synthesisInputHash` — entry ids +
-  folded text lengths) so a later amend/revoke of the day silently invalidates the
-  cached prose without a special event type, a `derivedFrom` link, or any change to
-  the append-only contract. It never syncs and is never read by `fold`.
-
 ## External services & privacy posture
 
 | Service | Endpoint / model | What leaves the device |
@@ -250,7 +217,6 @@ than transcription/captioning/the assistant do:
 | Transcription | `transcribe.elimelt.com` `/v1/audio/transcriptions`, `Systran/faster-whisper-base.en` | the audio blob |
 | Captioning | `llm.elimelt.com/api/chat` (native Ollama API), `gemma4:e4b`, `think: false` | a downscaled (≤1024 px, ~100 KB) JPEG |
 | Assistant | `llm.elimelt.com/v1` (OpenAI-compatible), default `gpt-oss:20b` | chat messages + tool-result text digests (text, place labels, media counts — never raw audio/photos) |
-| Day synthesis prose | `llm.elimelt.com/api/chat` (native endpoint, `think: false`), fixed non-reasoning `gemma4:e4b` — the /v1 chat default is a reasoning model whose small-budget completions come back with empty `content` | a one-day text digest (same shape as the assistant's), sent only on an explicit "Generate summary" tap while the AI opt-in is on |
 | Geocoding | `nominatim.openstreetmap.org/reverse` | rounded coordinates |
 
 None of these require an API key: the LLM/transcription hosts are CORS origin-gated,
@@ -260,8 +226,7 @@ request. There is no Capture server;
 beyond these calls, data goes only to the user's own Google Drive (SPEC §9.3). Every
 AI/LLM feature here is opt-in and off by default (owner policy, issue #89): the
 assistant makes no request at all until the user both enables it *and* sends a
-message; day-synthesis prose makes no request at all until the user taps "Generate
-summary" with the opt-in on; transcription and captioning make no request until the
+message; transcription and captioning make no request until the
 user enables `enrichmentEnabled` in Settings, after which they run automatically once
 entries exist, sending only the specific attachment being processed. All results land
 back in local IndexedDB (log events, geocache, chats, `meta`).

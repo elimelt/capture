@@ -41,11 +41,7 @@ photos and their captions share a row, and notes/orphaned descriptions occupy th
 own rows. The compact place card follows — nothing attachment-shaped is ever hidden. The only things that
 collapse are chrome: a single "+" affordance expands into a compact icon-only action
 menu (add note / add photo / add audio / location / edit / delete — each icon still
-carries an `aria-label`), and up to two **related memories** (#83 v1) stay behind their
-own small "Related" reveal, since scoring them is a full-log scan (`related.ts`/
-`useRelated.ts` — shared place, lexical overlap, and a recency factor; no embeddings, no
-LLM calls, gated by a minimum-score threshold so nothing shows unless it genuinely
-relates). Both toggles are view-local `useState`, never persisted, never an event.
+carries an `aria-label`), Both toggles are view-local `useState`, never persisted, never an event.
 
 ### `src/dayview`
 
@@ -544,48 +540,6 @@ derived; exhaustive over attachment shapes with/without `derivedFrom` across all
 `derivedFrom`; and that an orphan caption (source photo removed) still classifies as
 `derived` — classification never depends on sibling-attachment presence.
 
-### src/capture/cardView.ts
-
-**Purpose:** Pure view-model for the entry card (#78, revised by #102) — no I/O, no
-React; tested directly (`cardView.test.ts`). Builds on `groupAttachments`; never
-re-derives grouping semantics, only picks/orders among them. #102's core inversion:
-the card no longer has a content-hiding collapsed state, so this module's job changed
-from "what does the collapsed card show" to "what leads, and what do the photo rows
-render" — every attachment surfaces somewhere in `EntryCard`, and `extraCount` (the old
-"+N hidden" hint) is gone along with the content it used to count as hidden.
-
-**Exports:**
-
-- `CardViewModel` — `{ primaryText?: { file: string; authorship: Authorship };
-  primaryAudio?: Attachment; collapsedShowsLocation: boolean; photoGroups: PhotoGroup[] }`.
-  `primaryText.authorship` is always `'authored'` or `'spoken'` in practice (a photo
-  caption is never chosen as primary text below) but typed as the full `Authorship`
-  union so callers compose against the one classification (#80) rather than
-  re-deriving it from a raw `derivedFrom` string. `primaryText`/`primaryAudio` are now
-  purely *layout* signals (which text leads; whether the header's compact waveform or
-  the full-width audio-only one applies) — they no longer gate visibility, since any
-  additional transcripts/notes/clips render too, via `EntryCard`'s timestamp-ordered
-  `AttachmentTimeline`.
-- `cardViewModel(entry, groups): CardViewModel` — `primaryText` is the first transcript,
-  else the first user note (undefined for an audio-only or photo-only entry), with its
-  `authorship()` (`authorship.ts`) precomputed; `primaryAudio` remains a related-memory
-  classification hint; `collapsedShowsLocation` mirrors
-  the header's place-label/address condition; `photoGroups` is a pass-through of
-  `groups.photoGroups` (every photo, paired with its captions, in capture order) — the
-  source for the card's always-visible photo rows (`PhotoGrid`).
-
-### src/capture/cardView.test.ts
-
-Vitest unit tests for `cardViewModel`: all-empty model for an attachment-and-location-
-free entry, transcript-over-note primacy (asserting `authorship: 'spoken'` and
-`'authored'` respectively), audio-only entries (`primaryText` undefined, audio as
-primary), `collapsedShowsLocation` for place label / address / bare-coordinate /
-no-location cases, and (#102) that `photoGroups` exposes every photo for the
-always-visible grid — including alongside a primary text/audio (nothing is hidden any
-more), deterministic capture-order ordering across multiple photos regardless of
-caption-attachment insertion order, a captionless photo pairing with an empty
-`captions` array rather than being omitted, and an empty array for a photo-free entry.
-
 ### src/capture/EntryCard.tsx
 
 **Purpose:** One entry's card (#78, inverted by #102: **content is always visible;
@@ -593,7 +547,7 @@ actions are what collapse**), rendered as a node on the timeline rail (`Timeline
 the captured time + rail dot in the gutter, then the content column with a header (place
 label and lifecycle badge), an attachment sub-timeline ordered by each attachment's
 append timestamp, and the place card,
-then a footer holding a "Related" reveal and the single "+" action menu, plus the
+then a footer holding the single "+" action menu, plus the
 sheets/inputs those actions open.
 
 **Exports:** `EntryCard(props: EntryCardProps)` and `timeLabel(iso: string): string`
@@ -608,11 +562,9 @@ The card computes its own `EntryLifecycle` from `sync` + `hasPendingEnrichment(e
 **Key behaviors:**
 
 - **Content is always visible (#102):** there is no more content-hiding "collapsed"
-  state or `expanded` toggle. `menuOpen` (the "+" action menu) and `relatedOpen` (the
-  one thing still allowed to stay behind a reveal) are separate, unrelated, view-local
-  `useState`s — never persisted, never an event — so opening one never implies the
-  other. `AttachmentTimeline` owns the visible attachment ordering and media/text
-  pairing; `cardViewModel` remains a pure helper for related-memory classification.
+  state or `expanded` toggle. `menuOpen` is view-local and never persisted or emitted
+  as an event. `AttachmentTimeline` owns visible attachment ordering and media/text
+  pairing.
 - **Rail gutter + header:** the editable time moved out of the header into the
   `TimelineRow` `time` slot (`timeControl` — the same tap-to-edit button, now in the
   gutter beside the rail dot). The header is one flex row holding the place label and
@@ -639,7 +591,7 @@ The card computes its own `EntryLifecycle` from `sync` + `hasPendingEnrichment(e
   the lazy `MiniMap` full-screen dialog. Leaflet's chunk loads only on that explicit tap.
 - **Per-card recorder:** "Add audio" (in the "+" menu) uses its own `useRecorder()`
   instance so entries can hold multiple clips; while recording, the footer (the
-  "Related" reveal and "+" menu) is replaced by a compact timer bar with Discard/Done.
+  "+" menu) is replaced by a compact timer bar with Discard/Done.
   If that recorder errors, the menu's audio icon becomes a "mic unavailable, tap to
   retry" button that just calls `rec.resetError`.
 - **Lazy Leaflet:** `MiniMap` and `LocationSheet` are `lazy()` imports wrapped in
@@ -662,23 +614,6 @@ The card computes its own `EntryLifecycle` from `sync` + `hasPendingEnrichment(e
   type level, so an unlabelled action icon can't compile. Selecting any action closes
   the menu (`setMenuOpen(false)`) before opening its sheet/input. Menu state is plain
   `useState` — never touches the store, never logged.
-- **"Related" reveal, its own toggle (#83 v1):** a quiet text button
-  (`type_.caption`/`tone.textFaint`, `ChevronDownIcon` rotating 180°) at the footer's
-  left, independent of the "+" menu — #102 explicitly allows related memories to stay
-  behind their own reveal, since scoring them is a full-log scan (#83 req. 5's cost
-  bound). `useRelated(entry, allEntries, relatedOpen)` — `allEntries` is
-  `useAppStore((s) => s.entries)`, the whole folded log, not the screen's filtered
-  subset, since relatedness can span any date. Renders nothing (no heading, no section)
-  when the hook returns zero rows — the minimum-score threshold in `relatedEntries`
-  already decided nothing genuinely relates, so the reveal can be tapped open onto
-  nothing without that being a bug. Otherwise a quiet `RelatedRows` block (private)
-  below the footer: a "Related" overline, then up to `RELATED_MAX_RESULTS` rows of
-  `relativeDayLabel · reasonLabel` (meta line, `type_.caption`/`tone.textFaint`) plus a
-  one-line snippet (`type_.derived`/`tone.textDerived`, #80 — this is the app's
-  inference that another memory relates, not the user's own words in this position, so
-  it gets the same quiet treatment as a photo caption or generated prose). Tapping a row
-  navigates to `/day/<date>` of the related entry via `useNavigate` (react-router-dom) —
-  no import of `dayview/` itself, so the layering rule holds.
 
 ### src/capture/editPlan.ts
 
@@ -739,100 +674,6 @@ Vitest unit tests for `groupAttachments`: empty input, transcript/note/caption
 classification, photo↔caption pairing (only its own captions, attachment order
 preserved), captionless photos, orphan captions when the photo was removed, and audio
 clip ordering.
-
-### src/capture/related.ts
-
-**Purpose:** Pure local relatedness scorer (#83) — ranks candidate entries against
-a target entry using only signals computable from data already on the device: no
-I/O, no `Date.now()`/`Math.random()`, no embeddings, no LLM calls. Unit-tested
-directly (`related.test.ts`).
-
-**Exports:**
-
-- `tokenizeEntryText(texts: string[]): Set<string>` — case-folds, strips
-  punctuation (`/[^a-z0-9]+/` splitter), and drops stopwords and tokens under
-  3 characters.
-- `relatedEntries(target, candidates, opts?): RelatedResult[]` where
-  `RelatedResult = { entryId; score; reasons: ('place' | 'words')[];
-  sharedTerms?: string[] }`. Always excludes the target itself and any
-  `revoked` candidate; gates on `opts.minScore` (default `RELATED_MIN_SCORE`
-  = 0.3) and caps at `opts.maxResults` (default `RELATED_MAX_RESULTS` = 2).
-  Deterministic ordering: score descending, ties broken by smaller day-gap
-  then by entry id.
-- `RELATED_MIN_SCORE`, `RELATED_MAX_RESULTS` — the display-gating constants.
-- `firstLine(text, maxLen = 80): string` and `relativeDayLabel(iso, today):
-  string` (pure day-label formatter — "Today"/"Yesterday"/"N days/weeks/months
-  ago"/"N years ago[ today]" for a same-civil-day anniversary; `today` is
-  supplied by the caller, never computed internally) and `reasonLabel(reasons,
-  { placeLabel?, sharedTerms? }): string` (e.g. "Also at Office", `You've
-  mentioned "ci flow" before`, or both joined with " · ") — the human-readable
-  glue the related rows render.
-
-**Scoring model:** two independently-weighted signals combine, then a
-recency factor damps the sum:
-
-- **Place** (`PLACE_SCORE` = 0.6): both entries have the same non-empty
-  `placeLabel`.
-- **Words** (`WORDS_MAX` = 0.5, scaled by the overlap coefficient
-  `|shared| / min(|A|, |B|)` of the two entries' tokenized text):
-  `WORDS_MAX` is kept below `PLACE_SCORE` so an exact place match always
-  outranks a lexical-only match, however strong the overlap (pinned
-  invariant).
-- **Recency damping:** a day-gap between the two entries' own `capturedAt`
-  fields (never wall-clock "now" — the module takes no `now` argument and
-  stays pure without one) feeds a gentle decay (`RECENCY_HALFLIFE_DAYS` =
-  90, floor `RECENCY_FLOOR` = 0.6) so a six-month-old strong match still
-  clears the threshold, per the design review's explicit "six months ago"
-  ask, while a much older or weaker match fades further.
-
-**Future seam (documented, not built):** an entity/topic enrichment runner
-(#51/#62's plan/api/runner pattern) could append per-entry derived
-`text/json` attachments (`derivedFrom` the source audio/photo) whose terms
-feed `tokenizeEntryText`/`relatedEntries` unchanged — the scorer doesn't care
-whether a token came from a transcript or a future derived-topic attachment.
-
-### src/capture/related.test.ts
-
-Vitest unit tests (27 cases, no jsdom): tokenizer case-folding/punctuation/
-stopword/short-token behavior; shared-place scores above lexical-only;
-disjoint entries score 0 and are excluded even with the gate open; the
-target itself and revoked candidates are never returned; `RELATED_MAX_RESULTS`
-is respected; determinism (reversed candidate order produces the same
-ordered output); `reasons`/`sharedTerms` accurately reflect the scoring path;
-an empty-string `placeLabel` on both sides is never treated as a place
-match; the pinned 180-day-old-strong-match invariant clears
-`RELATED_MIN_SCORE`; a far-away weak-by-distance match scores below an
-otherwise-identical close match; plus `firstLine`, `relativeDayLabel`, and
-`reasonLabel` formatting cases.
-
-### src/capture/useRelated.ts
-
-**Purpose:** Async glue between the pure scorer and the UI (#83) — loads
-each candidate's text attachments from IndexedDB (`getBlob`), tokenizes
-them, and calls `relatedEntries`. Kept out of `related.ts` on purpose so
-that module stays I/O-free.
-
-**Export:** `useRelated(target: Entry, candidates: readonly Entry[], enabled:
-boolean): RelatedRow[]` where `RelatedRow` extends `RelatedResult` with
-`entry: Entry` and `snippet: string` (the candidate's `cardViewModel`
-primary-text first line, else "Voice note"/"Photo", else empty).
-
-**Behavior:**
-
-- **Cost bound (#83 req. 5):** `enabled` gates all work behind card
-  expansion — an unexpanded card computes nothing, so relatedness never
-  runs for a whole feed, matching the same full-scan cost class as
-  `search_entries` (`src/assistant/tools.ts`), acceptable at personal-log
-  scale.
-- **Session memoization:** a module-scope `tokenCache` (entry id → token
-  set) means re-expanding a card, or an entry that appears as both a target
-  and a candidate elsewhere, never re-reads or re-tokenizes the same blobs
-  in one session; the cache is not persisted.
-- Filters `candidates` to non-target, non-revoked entries before scoring —
-  belt-and-suspenders alongside `relatedEntries`'s own exclusion.
-- A stale-guard (`stale` flag set in the effect cleanup) discards results
-  from a superseded run, matching the pattern used throughout this module
-  for async blob loads.
 
 ### src/capture/AttachmentTimeline.tsx
 
@@ -1277,145 +1118,6 @@ enabled, unlabelled locations).
   onDeleteEntry emptyTitle>` — the merged local + calendar timeline (below). The
   screen passes only the day's filtered real entries; the calendar fetch, overlays,
   and empty state live inside the timeline.
-- **Day-as-reward-loop artifact (#82):** between `ScreenHeader` and `DayTimeline`,
-  `<DaySynthesisCard synthesis assistantEnabled>` renders the deterministic stat
-  line plus, when `appSettings.assistantEnabled` is true, the opt-in daily prose
-  affordance. `useDaySynthesis(date, dayEntries, title, appSettings.assistantEnabled,
-  appSettings.assistantModel)` supplies both; see below.
-
-### src/dayview/synthesis.ts
-
-**Purpose:** Pure deterministic day synthesis (#82) — the always-on stat line, no
-I/O, tested directly (`synthesis.test.ts`, no jsdom).
-
-**Exports:**
-
-- `interface DaySynthesis { moments: number; places: number; statLine: string }`.
-- `daySynthesis(entries: readonly Entry[]): DaySynthesis` — `moments` is
-  `entries.length`; `places` is the count of distinct `location.placeLabel`s
-  (entries without a label, or with only a bare coordinate, don't count);
-  `statLine` is `"N moments · M places"` with the places segment omitted when
-  zero, and the empty string for an empty day (`DaySynthesisCard` renders nothing
-  in that case). Singular/plural nouns per count.
-- `interface EntryTextSignal { id: string; textLength: number }` and
-  `synthesisInputHash(entries, texts: readonly EntryTextSignal[]): string` — an
-  FNV-1a hash over each entry's id + folded text length (entries missing a
-  `texts` row count as length 0), sorted by id before hashing so it is stable
-  under reordering. Used as the derived-prose cache key (`synthesisCache.ts`):
-  it changes when an entry is added, removed/revoked, or amended in a way that
-  changes its folded text — never on envelope metadata (location, seq) alone.
-
-### src/dayview/prosePrompt.ts
-
-**Purpose:** Pure prompt assembly for the opt-in daily prose — no I/O, no SDK,
-tested directly (`prosePrompt.test.ts`).
-
-**Export:** `buildDaySummaryPrompt(dateLabel: string, digestText: string):
-{ system: string; user: string }` — the two chat messages sent to the LLM.
-Byte-stable for a fixed `(dateLabel, digestText)` pair (cache-key sanity: the
-same digest always produces the same request). Takes only rendered digest text
-(the same `formatDigest` output the assistant tools already send — transcripts,
-notes, place labels, media counts) and never touches blob/binary fields.
-
-### src/dayview/dayDigest.ts
-
-**Purpose:** Builds the digest text the daily prose is generated from. Not pure
-(reads text-attachment blobs via `getBlob`); untested directly (I/O), kept
-deliberately tiny.
-
-**Export:** `buildDayDigest(entries): Promise<{ items: DigestItem[]; text: string
-}>` — `items` mirrors `entries` positionally (so callers can zip it with
-`entries` for `synthesisInputHash`'s per-entry text lengths without a second
-pass); `text` is `formatDigest` on the chronologically sorted items. Re-implements
-`assistant/tools.ts`'s `toDigestItem` locally rather than importing it:
-`tools.ts` imports the `ai` package (for `tool`/`jsonSchema`), and importing it
-from `dayview/` would pull the AI SDK chunk into the Day screen's bundle — the
-whole point of #82 requirement 7. `formatDigest`/`DigestItem` themselves live in
-`assistant/context.ts`, which has no SDK dependency, so importing those is safe
-and keeps the digest format identical to what the chat assistant sends.
-
-### src/dayview/daySummaryClient.ts
-
-**Purpose:** The opt-in prose's network call (#82) — a single direct `fetch` to
-the LLM host's **native** (Ollama-style) `/api/chat` endpoint, deliberately
-**not** `assistant/transport.ts`'s `DirectChatTransport`/`ToolLoopAgent` (that
-pulls in `ai` + `@ai-sdk/openai-compatible`, the same chunk `dayDigest.ts`
-avoids above; it is already `ChatScreen`'s own lazy chunk, excluded from the SW
-precache in `vite.config.ts`) and **not** the assistant's own model or its
-OpenAI-compat `/v1` endpoint either: the chat default (`gpt-oss:20b`) is a
-reasoning model whose small `num_predict` budget is consumed entirely by its
-`reasoning` field on this endpoint, returning empty `content`; only the native
-API honors `think: false` (same reason `vision/api.ts` uses it), so the prose
-runs on the non-reasoning `gemma4:e4b` path instead — the same host+path as
-photo captioning (`VISION_CHAT_URL`, `src/enrich/config.ts`, issue #62). No
-streaming, no tools, no history — one request, one completion.
-
-**Export:** `fetchDaySummary(prompt: DaySummaryPrompt): Promise<string | undefined>`
-— posts to `VISION_CHAT_URL` with `model: 'gemma4:e4b'`, `think: false`,
-`stream: false`, and a 120-token `num_predict` budget; returns the trimmed
-`message.content` from the native response shape, or `undefined` on any
-failure (offline, non-2xx, malformed body, empty completion) — never throws, so
-a failed generation never blocks or replaces the deterministic stat line
-already on screen.
-
-### src/dayview/synthesisCache.ts
-
-**Purpose:** The derived-data cache the daily prose lives in (#82 decision,
-recorded in the issue: derived, rebuildable data must not enter the append-only
-event log — SPEC §3.2 #5). Backed by the existing IndexedDB `meta` key-value
-store (`store/db.ts`), one row per day.
-
-**Exports:** `interface DaySynthesisCacheEntry { date; inputHash; prose;
-generatedAt }`; `readDaySynthesisCache(date)` / `writeDaySynthesisCache(entry)` —
-best-effort, never throw (same convention as `places/geocode.ts`'s cache).
-Keyed `` `daySynthesis:<date>` ``. The deterministic stat line itself is not
-cached — `daySynthesis` is cheap enough to recompute every render.
-
-### src/dayview/useDaySynthesis.ts
-
-**Purpose:** Wires the always-on stat line to the explicit-tap-only prose.
-
-**Export:** `useDaySynthesis(date, entries, dateLabel, assistantEnabled, model):
-UseDaySynthesisResult` — `{ stat: DaySynthesis; prose?: string; proseState:
-'idle' | 'loading' | 'ready' | 'error'; canGenerate: boolean; generate: () =>
-void }`.
-
-**Key behaviors:**
-
-- `stat` is computed synchronously from `entries` every render (`daySynthesis`)
-  — no gate, no opt-in check, zero network.
-- On mount and whenever the day's actual content changes (a stable
-  `id:lastEventSeq` join, not `entries`' array identity, which DayScreen
-  recreates every render), an effect reads the entry's digest, computes
-  `synthesisInputHash`, and checks `synthesisCache.ts` for a matching row —
-  **cache lookup only, never a network call.** A miss or stale hash (day's
-  entries changed since the cached prose was generated) leaves `prose`
-  undefined and `proseState: 'idle'`.
-- `generate()` is the **only** path that calls the network
-  (`daySummaryClient.fetchDaySummary`); nothing in this hook or `DayScreen`
-  calls it automatically. On success it writes the new `{inputHash, prose}` row
-  to the cache and sets `proseState: 'ready'`; on failure (including no
-  completion text) it sets `proseState: 'error'` without touching `stat`.
-- `canGenerate` additionally requires `assistantEnabled` — the hook enforces the
-  AI opt-in gate itself as a second line of defense, even though `DaySynthesisCard`
-  already hides the affordance entirely when the setting is off.
-
-### src/dayview/DaySynthesisCard.tsx
-
-**Purpose:** Presentational half of the artifact — renders `useDaySynthesis`'s
-output between `ScreenHeader` and `DayTimeline`.
-
-**Export:** `DaySynthesisCard({ synthesis, assistantEnabled })`.
-
-**Behavior:** renders nothing (`null`) when `stat.statLine` is empty (an empty
-day). Otherwise a `Card` with the stat line always shown; the "Generate
-summary"/"Regenerate summary" button and any cached/fresh prose render only
-when `assistantEnabled` is true — the affordance and the prose are both
-invisible when the opt-in is off, not just disabled. Prose renders in the quiet
-derived-content treatment (`type_.derived`/`tone.textDerived`, #80's authored-vs-
-generated pairing for machine inference) and is plain read-only text with
-no edit affordance; regenerating replaces it wholesale via a new tap. A failed
-generation shows a quiet caption-level note without hiding the stat line.
 
 ### src/dayview/DayTimeline.tsx
 
@@ -1575,7 +1277,7 @@ re-throw, matching the appStore `guard` convention.
   heaviest/darkest weight as authored, plus a quiet `SpokenMark` glyph). Never add a
   heuristic on text content to this decision, and never introduce new stored state for
   it — every renderer (`AttachmentBody`, `EntryCard`'s collapsed preview and related-rows
-  snippet, `DaySynthesisCard`'s prose) composes the same two tokens.
+  snippet) composes the same two tokens.
 - **`capturedAt` semantics:** for voice entries it is the record-tap time, not the stop
   time; text/photo entries use submit time. Inline time edits change only the
   time-of-day, re-rendered in the device zone (`withTimeOfDayIso`); the Edit sheet
@@ -1652,41 +1354,3 @@ re-throw, matching the appStore `guard` convention.
 - **Don't edit `EntryCard` for calendar needs:** pseudo-entries have their own card;
   real entries flow through `EntryList` unchanged so capture-card behavior stays
   identical on both screens.
-- **Day synthesis prose never leaves the event log path unaffected (#82):** the
-  cached prose (`synthesisCache.ts`, IndexedDB `meta` key `daySynthesis:<date>`)
-  is derived, rebuildable data, never a capture/amend/revoke event, never synced,
-  and never read by `fold`. Losing it (wipe, cache miss) only means the next
-  explicit "Generate summary" tap regenerates it; it never blocks or corrupts the
-  entries it summarizes.
-- **The daily prose only ever fires on an explicit tap:** `useDaySynthesis`'s
-  mount/content-change effect *only* reads the cache — it never calls
-  `fetchDaySummary`. Any change that makes the prose regenerate on screen open
-  (rather than on `generate()`) violates the #82/#89 product decision and must
-  be reverted.
-- **The AI opt-in gates the daily prose affordance, not just the call:**
-  `DaySynthesisCard` renders no "Generate summary" button, no prose, and no
-  error note at all when `appSettings.assistantEnabled` is false — `useDaySynthesis`
-  additionally refuses to generate in that state as a second guard. Only the
-  deterministic stat line is visible with the opt-in off.
-- **Never import `assistant/transport.ts` (or `assistant/tools.ts`) from
-  `dayview/`:** both pull in the `ai`/`@ai-sdk/openai-compatible` packages
-  (ChatScreen's own lazy chunk). The daily prose instead uses a direct `fetch`
-  (`daySummaryClient.ts`) and a local digest builder (`dayDigest.ts`) that only
-  import the SDK-free `assistant/config.ts`/`assistant/context.ts`, keeping the
-  Day screen in the main bundle.
-- **Relatedness is local-only and computed on demand, never proactive (#83):**
-  `related.ts` uses only `placeLabel` exact match, tokenized-text overlap, and a
-  day-gap recency factor — no embeddings, no LLM calls, no network. It runs only
-  when `EntryCard` is expanded (`useRelated`'s `enabled` gate), never for a whole
-  feed. There is no push/notification surface for it (`docs/modules/notify.md`
-  has no backend for "right moment" resurfacing); v1 is card-only.
-- **The related-rows threshold is a hard gate, not a UI nicety:** `relatedEntries`
-  filters by `RELATED_MIN_SCORE` internally, so `useRelated` returning `[]` means
-  "nothing genuinely relates" and `EntryCard` renders no section at all — false
-  connections are worse than none (#83).
-- **Recency damping compares two entries to each other, not to wall-clock now:**
-  `related.ts` takes no `now` argument; the "age" it damps by is
-  `|target.capturedAt − candidate.capturedAt|`, so the module stays pure without
-  needing one. Only the UI-facing `relativeDayLabel` needs "today", and callers
-  supply it (`localDateOf(toLocalIso(new Date()))`) rather than the function
-  computing it internally.

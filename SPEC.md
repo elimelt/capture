@@ -468,16 +468,6 @@ the folded entry list with results annotations, §3.5).
   Calendar"** (`htmlLink`) for changing the real event — the app never edits events.
 - **Hide** is a one-tap action on the card (an overlay `hidden` patch, not a revoke),
   with an Undo toast that appends the exact inverse.
-- **Day synthesis artifact (#82):** above the timeline, a deterministic stat line
-  ("N moments · M places" — distinct place labels, zero-segments omitted) always
-  renders, computed locally from the day's folded entries with no network and no
-  AI opt-in required. When the AI opt-in (§9, `assistantEnabled`) is on, an explicit
-  "Generate summary" tap may additionally produce a one-to-two-sentence prose recap
-  from the same digest text the chat assistant sends; it never generates
-  automatically on screen open. The prose is derived, rebuildable data cached
-  outside the append-only log (IndexedDB `meta`, keyed by date + a content hash)
-  per §3.2's derived-state rule — never a capture/amend event, never synced, and
-  invalidated (silently, no event) whenever the day's entries change.
 - Header: date picker; connection status; **"Process now" helper** — a button that copies
   a ready-made instruction ("Process my timelog stream") to the clipboard and/or
   deep-links to the user's chat app, since the app cannot trigger the skill itself.
@@ -1333,4 +1323,3 @@ applies to §10.1 above and to the background transcription/captioning pipelines
    logs, or one skill per stream? (Per-stream keeps prompts small and failures
    isolated; combined is one scheduled task.)
 7. Stream switcher UX (v2): header control vs long-press on the capture button?
-

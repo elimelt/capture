@@ -26,7 +26,7 @@ export const tone = {
   textFaint: 'text-ink-faint dark:text-ink-faint-dark',
   /**
    * Paired with `type_.derived` (#80): machine-inferred/generated content —
-   * photo captions, related-memory snippets, generated day prose. Same hue
+   * photo captions. Same hue
    * as `textMuted` (quiet, not the faintest ramp) but named for what it
    * means at the call site — authored-vs-generated, not just "muted" for
    * some other reason — so intent stays legible. Compose the two together,
@@ -78,7 +78,7 @@ export const type_ = {
   bodySmall: 'font-serif text-[14px] leading-normal',
   /**
    * Machine-inferred/generated text (#80): photo captions, AI-derived
-   * attachments, generated day prose, related-memory snippets — never
+   * attachments — never
    * bolder than authored/spoken text (`bodyStrong`). Still content the
    * user reads (serif, #85's split), but italic marks it as the app's
    * inference rather than the user's own words. Pairs with

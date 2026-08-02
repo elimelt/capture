@@ -1,11 +1,8 @@
 import { Suspense, lazy, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 import type { AmendPatch, Entry, GeoLocation } from '../contract/types'
-import { localDateOf, localTimeOf, toLocalIso } from '../contract/time'
-import { useAppStore } from '../store/appStore'
+import { localTimeOf } from '../contract/time'
 import type { SyncStatusRow } from '../store/db'
 import {
-  ChevronDownIcon,
   CopyIcon,
   IconButton,
   PinIcon,
@@ -26,9 +23,7 @@ import { LifecycleBadge } from './LifecycleBadge'
 import { entryLifecycle, hasPendingEnrichment } from './lifecycle'
 import { PlaceCard } from './PlaceCard'
 import { locationName } from './placeCardModel'
-import { reasonLabel, relativeDayLabel } from './related'
 import { useRecorder, type RecordingResult } from './useRecorder'
-import { useRelated, type RelatedRow } from './useRelated'
 
 // Leaflet-backed; lazy so its chunk (JS + CSS) stays out of the initial
 // bundle and now only loads once a card's `PlaceCard` row is explicitly
@@ -91,12 +86,8 @@ export function EntryCard({
 }: EntryCardProps) {
   // View-local only, never persisted, never an event — the log carries user
   // data, not UI state (#78, revised by #102). `menuOpen` is the single "+"
-  // affordance's expand state (actions are what collapse now); `relatedOpen`
-  // is the one piece of *content* still allowed to stay behind a reveal
-  // (#102: "related memories can stay behind expansion"), kept separate from
-  // the action menu so opening one never implies the other.
+  // affordance's expand state (actions are what collapse now).
   const [menuOpen, setMenuOpen] = useState(false)
-  const [relatedOpen, setRelatedOpen] = useState(false)
   const [noteOpen, setNoteOpen] = useState(false)
   const [locationOpen, setLocationOpen] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
@@ -108,14 +99,6 @@ export function EntryCard({
   // Per-card recorder for "+ audio" — entries can hold multiple clips.
   const rec = useRecorder()
   const lifecycle = entryLifecycle(sync, hasPendingEnrichment(entry))
-  const navigate = useNavigate()
-  // Candidates span the whole log, not just what this screen filtered to —
-  // relatedness can span any date (#83: "six months ago"). The hook itself
-  // gates all blob/tokenization work behind `relatedOpen` (#83 req. 5's cost
-  // bound, previously tied to card expansion — now tied to this dedicated
-  // reveal since card content is otherwise always visible, #102).
-  const allEntries = useAppStore((s) => s.entries)
-  const related = useRelated(entry, allEntries, relatedOpen)
 
   async function handleAudioTap() {
     if (rec.state === 'recording') {
@@ -217,27 +200,6 @@ export function EntryCard({
         </div>
       ) : (
         <div className={cx('mt-3 flex flex-wrap items-center gap-1 border-t pt-2', tone.border)}>
-          {/* Related memories (#83 v1) stay behind their own quiet reveal
-              (#102 explicitly allows this) — the one piece of content this
-              card doesn't show unconditionally, since computing it is a
-              full-log scan (#83 req. 5's cost bound). */}
-          <button
-            type="button"
-            aria-expanded={relatedOpen}
-            onClick={() => setRelatedOpen((o) => !o)}
-            className={cx(
-              'flex items-center gap-1 rounded-md px-1 py-0.5',
-              type_.caption,
-              tone.textFaint,
-              tone.pressWash,
-            )}
-          >
-            <span className={cx('inline-flex transition-transform', relatedOpen && 'rotate-180')}>
-              <ChevronDownIcon size={12} />
-            </span>
-            Related
-          </button>
-
           {/* The single "+" affordance (#102): replaces the old labelled
               action column. Every action is still reachable and labelled
               (aria-label) — icon-only now, tighter, but never removed. */}
@@ -320,14 +282,6 @@ export function EntryCard({
         </div>
       )}
 
-      {/* Related memories (#83 v1): a minimum-score threshold already gated
-          `related` server-side (relatedEntries) — an empty array means
-          nothing genuinely relates, so no section renders even once
-          `relatedOpen` reveals it. */}
-      {related.length > 0 && (
-        <RelatedRows rows={related} onOpen={(date) => navigate(`/day/${date}`)} />
-      )}
-
       <input
         ref={photoInputRef}
         type="file"
@@ -375,52 +329,5 @@ export function EntryCard({
         </Suspense>
       )}
     </TimelineRow>
-  )
-}
-
-/**
- * Up to `RELATED_MAX_RESULTS` quiet related-memory rows (#83 v1): relative
- * day label + "why" + a first-line snippet, tapping through to the related
- * entry's day. The snippet renders in `type_.derived`/`tone.textDerived`
- * (#80) — this is the app's *inference* that another memory relates, not
- * the user's own words in this position, so it gets the same quiet
- * treatment as a photo caption or generated prose, never the authored/
- * spoken weight — while the meta line stays `type_.caption`/`tone.textFaint`
- * chrome.
- */
-function RelatedRows({
-  rows,
-  onOpen,
-}: {
-  rows: RelatedRow[]
-  onOpen: (date: string) => void
-}) {
-  const today = localDateOf(toLocalIso(new Date()))
-  return (
-    <div className={cx('mt-3 flex flex-col gap-1 border-t pt-2', tone.border)}>
-      <span className={cx(type_.overline, tone.textFaint)}>Related</span>
-      {rows.map((row) => {
-        const why = reasonLabel(row.reasons, {
-          placeLabel: row.entry.location?.placeLabel,
-          sharedTerms: row.sharedTerms,
-        })
-        const meta = [relativeDayLabel(row.entry.capturedAt, today), why].filter(Boolean).join(' · ')
-        return (
-          <button
-            key={row.entryId}
-            type="button"
-            onClick={() => onOpen(localDateOf(row.entry.capturedAt))}
-            className={cx('block w-full text-left', tone.pressWash, 'rounded-md -mx-1 px-1 py-0.5')}
-          >
-            <span className={cx('block', type_.caption, tone.textFaint)}>{meta}</span>
-            {row.snippet && (
-              <span className={cx('line-clamp-1 block', type_.derived, tone.textDerived)}>
-                {row.snippet}
-              </span>
-            )}
-          </button>
-        )
-      })}
-    </div>
   )
 }

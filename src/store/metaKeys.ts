@@ -39,7 +39,6 @@
  * | `drive:account` | `drive/account.ts` | `string` (permissionId) | Yes — rebinds on the next `about.get` after reconnect. |
  * | `gcal:targetCalendar` | `gcal/config.ts` | `TargetCalendar` | Yes — the Drive-side `config.json` copy survives; local pick re-derives on reconnect. |
  * | `<pipeline>:skip:<file>` | `enrich/runner.ts`, bound per pipeline (`transcribe`, `caption`) | `SkipRecord \| true` (legacy) | Yes. Grows one row per permanently-failed attachment with no sweep (issue #57 evidence #2) — accepted as cheap-per-item; not addressed by this refactor, tracked as a known limitation. |
- * | `daySynthesis:<date>` | `dayview/synthesisCache.ts` | `DaySynthesisCacheEntry` | Yes — same unbounded-growth shape as skip markers (one row per day), same accepted tradeoff. |
  * | `migrated:settings-stream-v1` | `store/migrateSettingsV1.ts` | `true` | Yes — harmless: migration markers are only consulted from `db.ts`'s `upgrade()`, which never re-runs just because `getDb()` is called again after a wipe (only a version bump triggers it). |
  * | `migrated:chats:v1` | `store/migrateChatsV1.ts` | `true` | Yes — same reasoning as the settings marker. |
  * | `settings:app`, `settings:stream:<id>` | legacy, pre-v9; read-only rollback artifact consulted by `migrateSettingsV1.ts` | `Record<string, unknown>` | Yes. |
@@ -96,11 +95,6 @@ export const GCAL_TARGET_CALENDAR_KEY = 'gcal:targetCalendar'
  */
 export function skipKeyPrefix(pipeline: string): string {
   return `${pipeline}:skip:`
-}
-
-/** Per-day cached synthesized prose (issue #82). */
-export function daySynthesisKey(date: string): string {
-  return `daySynthesis:${date}`
 }
 
 /** Meta marker: the v9 legacy-settings-to-event-stream migration has run. */

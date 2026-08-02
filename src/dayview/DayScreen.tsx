@@ -13,9 +13,7 @@ import { getBlob } from '../store/events'
 import { copyPlainText } from '../context/clipboard'
 import { formatEntriesPlainText, formatEntryPlainText } from '../context/plainText'
 import { Button, CopyIcon, IconButton, ScreenHeader, Toast, cx, motion } from '../ui'
-import { DaySynthesisCard } from './DaySynthesisCard'
 import { DayTimeline } from './DayTimeline'
-import { useDaySynthesis } from './useDaySynthesis'
 
 function shiftDate(date: string, days: number): string {
   const d = new Date(`${date}T12:00:00`)
@@ -38,7 +36,6 @@ export default function DayScreen() {
   const navigate = useNavigate()
   const entries = useAppStore((s) => s.entries)
   const revoke = useAppStore((s) => s.revoke)
-  const appSettings = useAppStore((s) => s.appSettings)
   const del = usePendingDelete(revoke)
   const [copyFeedback, setCopyFeedback] = useState<'copied' | 'error' | null>(null)
 
@@ -73,13 +70,6 @@ export default function DayScreen() {
       setCopyFeedback('error')
     }
   }
-
-  const synthesis = useDaySynthesis(
-    date,
-    dayEntries,
-    title,
-    appSettings.assistantEnabled,
-  )
 
   return (
     <div className={cx('flex flex-col gap-4 p-4', motion.fadeIn)}>
@@ -118,8 +108,6 @@ export default function DayScreen() {
           </div>
         }
       />
-
-      <DaySynthesisCard synthesis={synthesis} assistantEnabled={appSettings.assistantEnabled} />
 
       <DayTimeline
         date={date}

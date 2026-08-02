@@ -191,8 +191,7 @@ Exports (one builder function or constant per key family): `seqKey(stream)`
 `DRIVE_ACCOUNT_KEY` (`drive:account`), `GCAL_TARGET_CALENDAR_KEY`
 (`gcal:targetCalendar`), `skipKeyPrefix(pipeline)` (`<pipeline>:skip:`, bound
 by `transcribe/runner.ts`/`vision/runner.ts` to `'transcribe'`/`'caption'` and
-combined with the source file by `enrich/runner.ts`), `daySynthesisKey(date)`
-(`daySynthesis:<date>`), `SETTINGS_MIGRATION_MARKER`
+combined with the source file by `enrich/runner.ts`), `SETTINGS_MIGRATION_MARKER`
 (`migrated:settings-stream-v1`), `CHATS_MIGRATION_MARKER`
 (`migrated:chats:v1`), `LEGACY_SETTINGS_APP_KEY`/`legacySettingsStreamKey(id)`
 (`settings:app` / `settings:stream:<id>`, read-only rollback sources for the
@@ -205,7 +204,7 @@ behavior for it (every key today is wiped — the table records *why* that's
 right per key, e.g. a self-healing Drive cache vs. a user-visible reset,
 rather than leaving it as an undocumented side effect of a blanket `.clear()`).
 It also flags the one open, deliberately-unaddressed issue: `<pipeline>:skip:*`
-and `daySynthesis:*` both grow one row per item forever with no sweep — cheap
+grows one row per permanently failed attachment forever with no sweep — cheap
 per row, accepted as a known limitation rather than fixed here.
 
 `metaKeys.test.ts` pins two things: golden literals (every builder reproduces

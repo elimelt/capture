@@ -10,7 +10,7 @@ import { TextSheet } from './TextSheet'
 
 interface PhotoGridProps {
   /** Every photo on the entry, paired with its own captions, in capture
-   *  order — `cardViewModel(...).photoGroups` (#102). */
+   *  order — the attachment timeline's photo groups (#102). */
   photoGroups: PhotoGroup[]
   /** Replace a caption's content (one amend: remove old + add new) — the
    *  same edit path `AttachmentBody`'s `NoteText` uses for other text. */
