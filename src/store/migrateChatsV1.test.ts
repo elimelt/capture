@@ -173,15 +173,16 @@ describe('migrateChatsV1', () => {
 
   it('guards by applied-state, not the version number', async () => {
     // A parallel schema branch (calendar overlays v8 / settings v9 / waveform
-    // cache v11) can carry a device to the current version without this
-    // migration ever running. Simulate: the DB is already at the code's
-    // version (keep this in sync with db.ts's current version) with legacy
-    // rows un-migrated — no upgrade fires on open.
+    // cache v11 / sync by-stream index v12) can carry a device to the
+    // current version without this migration ever running. Simulate: the DB
+    // is already at the code's version (keep this in sync with db.ts's
+    // current version) with legacy rows un-migrated — no upgrade fires on
+    // open.
     await seedLegacyDb(
       [chatRow('legacy-a', '2026-01-01T00:00:00.000Z', '2026-01-01T00:10:00.000Z', [
         msg('u1', 'user', 'hello'),
       ])],
-      11,
+      12,
     )
     const db = await getDb()
     expect(await db.get('meta', CHATS_MIGRATION_MARKER)).toBeUndefined()

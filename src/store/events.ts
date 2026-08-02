@@ -175,17 +175,34 @@ export async function putWaveform(file: string, peaks: number[]): Promise<void> 
   await db.put('waveforms', { file, peaks })
 }
 
-/** Sync status by event id for one stream (id is the identity — SPEC §3.3). */
+/**
+ * Sync status by event id for one stream (id is the identity — SPEC §3.3).
+ * Uses the `by-stream` index (v12, issue #63) so this is a bounded scan of
+ * just this stream's rows, not the whole `sync` table.
+ */
 export async function getSyncStatuses(stream: string): Promise<Map<string, SyncStatusRow>> {
   const db = await getDb()
-  const all = await db.getAll('sync')
-  return new Map(all.filter((r) => r.stream === stream).map((r) => [r.id, r]))
+  const rows = await db.getAllFromIndex('sync', 'by-stream', stream)
+  return new Map(rows.map((r) => [r.id, r]))
+}
+
+/**
+ * Every sync row across every stream, unfiltered — for callers that need to
+ * bucket by stream themselves (e.g. `appStore.summarizeGlobalSync`, which
+ * fans out over every registered stream on every `refresh()` and would
+ * otherwise issue one indexed query per stream). Prefer `getSyncStatuses`
+ * when only one stream's rows are needed.
+ */
+export async function listAllSyncStatuses(): Promise<SyncStatusRow[]> {
+  const db = await getDb()
+  return db.getAll('sync')
 }
 
 /**
  * Rows not yet uploaded for a stream, in seq order (id as tiebreak) — the
  * order the drainer must respect so the log commits monotonically (SPEC §5.2,
- * §8.4).
+ * §8.4). Uses the `by-stream` index (v12, issue #63), same as
+ * `getSyncStatuses`.
  *
  * Note: only locally-minted events appear here — pulled events are immediately
  * marked 'uploaded' by importEvents(). Since seq is monotonic per device, seq
@@ -194,9 +211,9 @@ export async function getSyncStatuses(stream: string): Promise<Map<string, SyncS
  */
 export async function listPendingSync(stream: string): Promise<SyncStatusRow[]> {
   const db = await getDb()
-  const all = await db.getAll('sync')
-  return all
-    .filter((r) => r.stream === stream && r.status !== 'uploaded')
+  const rows = await db.getAllFromIndex('sync', 'by-stream', stream)
+  return rows
+    .filter((r) => r.status !== 'uploaded')
     .sort((a, b) => a.seq - b.seq || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
 }
 

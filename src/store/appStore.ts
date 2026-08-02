@@ -8,6 +8,7 @@ import {
   getLastSyncAt,
   getLastSyncResult,
   getSyncStatuses,
+  listAllSyncStatuses,
   listEntries,
   setLastSyncAt,
   setLastSyncResult,
@@ -38,44 +39,19 @@ import { toLocalIso } from '../contract/time'
 import { connectionState, getValidAccessToken, type DriveConnection } from '../drive/token'
 import { connect, disconnect } from '../drive/auth'
 import { getStoredToken } from '../drive/token'
-import { drainStream, type DrainOutcome } from '../drive/queue'
+import { drainStream } from '../drive/queue'
 import { pullStream } from '../drive/pull'
+import { runSyncCycle, type SyncResult } from '../drive/syncCycle'
 import { allSyncStreams } from '../streams/registry'
 import { reduceSyncProgress, type SyncProgress, type SyncProgressEvent } from './syncProgress'
 
-/** One stream's slice of a sync cycle: its pull (Drive → local) then push. */
-export interface StreamSyncResult {
-  stream: string
-  outcome: DrainOutcome
-  uploaded: number
-  pulled: number
-  error?: string
-}
-
-/**
- * The aggregate cycle result's outcome space: every per-stream `DrainOutcome`
- * plus `'busy'` — a cycle-level-only outcome no stream ever reports itself.
- * `'busy'` means the re-entrancy guard (see `drainSync`) rejected this call
- * outright before any stream ran; it is distinct from `'retry-later'` (a
- * real Drive-side 429/5xx backoff after streams *did* run) so Settings can
- * tell "you double-tapped" from "Drive is having an outage" (issue #64).
- */
-export type SyncOutcome = DrainOutcome | 'busy'
+// Re-exported so existing consumers (e.g. `settings/SettingsScreen.tsx`) can
+// keep importing sync-result types from the store without knowing the sync
+// engine itself now lives in `drive/syncCycle` (issue #63).
+export type { SyncResult, StreamSyncResult, SyncOutcome } from '../drive/syncCycle'
 
 /** Web Locks name serializing `drainSync` across every tab/window on this origin (issue #50). */
 const SYNC_LOCK_NAME = 'capture:sync'
-
-/**
- * Combined result of one sync cycle across every registered stream
- * (`allSyncStreams()`): worst-of outcome, summed counts, per-stream detail.
- */
-export interface SyncResult {
-  outcome: SyncOutcome
-  uploaded: number
-  pulled: number
-  error?: string
-  perStream: StreamSyncResult[]
-}
 
 /**
  * Aggregate local sync state across every registered stream, for the Settings
@@ -90,33 +66,35 @@ export interface GlobalSyncSummary {
   lastSyncAt: string | null
 }
 
-/** Pending/error rollup + oldest lastSyncAt over all registered streams. */
+/**
+ * Pending/error rollup + oldest lastSyncAt over all registered streams.
+ * Reads the `sync` object store exactly once (`listAllSyncStatuses`) and
+ * buckets rows by stream in memory, rather than the previous `1 + N` shape
+ * (a `getSyncStatuses` per stream) — the by-stream index added for
+ * `getSyncStatuses`/`listPendingSync` (issue #63) makes each of those calls
+ * cheap on its own, but this rollup fans out across *every* registered
+ * stream on every `refresh()` (after each capture/amend/revoke, and on
+ * every `visibilitychange`), so one indexed query beats N of them.
+ * `lastSyncAt` stamps still cost one `meta` point-read per stream — cheap
+ * keyed gets, not scans, so left as-is.
+ */
 async function summarizeGlobalSync(): Promise<GlobalSyncSummary> {
-  const perStream = await Promise.all(
-    allSyncStreams().map(async (stream) => {
-      const [statuses, lastSyncAt] = await Promise.all([
-        getSyncStatuses(stream),
-        getLastSyncAt(stream),
-      ])
-      return { statuses, lastSyncAt }
-    }),
-  )
-  const rows = perStream.flatMap((s) => [...s.statuses.values()])
-  const stamps = perStream.map((s) => s.lastSyncAt)
+  const streams = allSyncStreams()
+  const [allRows, stamps] = await Promise.all([
+    listAllSyncStatuses(),
+    Promise.all(streams.map((stream) => getLastSyncAt(stream))),
+  ])
+  const byStream = new Map<string, SyncStatusRow[]>()
+  for (const row of allRows) {
+    const bucket = byStream.get(row.stream)
+    if (bucket) bucket.push(row)
+    else byStream.set(row.stream, [row])
+  }
+  const rows = streams.flatMap((stream) => byStream.get(stream) ?? [])
   const lastSyncAt = stamps.every((at): at is string => at !== undefined)
     ? stamps.reduce((oldest, at) => (at < oldest ? at : oldest))
     : null
   return { ...summarizeSyncStatuses(rows), lastSyncAt }
-}
-
-/** Worst-of ordering so one cycle reports its most actionable outcome. */
-const OUTCOME_RANK: Record<DrainOutcome, number> = {
-  idle: 0,
-  drained: 1,
-  'retry-later': 2,
-  quota: 3,
-  reconnect: 4,
-  error: 5,
 }
 
 interface AppState {
@@ -380,71 +358,30 @@ export const useAppStore = create<AppState>()((set, get) => {
         set({ syncing: true, syncProgress: null })
         emitProgress({ kind: 'cycle-start', streamsTotal: allSyncStreams().length })
         try {
-          const perStream: StreamSyncResult[] = []
-          // A 'reconnect' or 'quota' is account-wide, not stream-specific: the
-          // token is dead, or Drive is full, for every stream alike, so once
-          // either happens the remaining streams are skipped rather than
-          // burning more calls that would fail identically.
-          let abortOutcome: 'reconnect' | 'quota' | null = null
-          for (const stream of allSyncStreams()) {
-            if (abortOutcome) {
-              perStream.push({ stream, outcome: abortOutcome, uploaded: 0, pulled: 0 })
-              emitProgress({ kind: 'stream-start', stream })
-              emitProgress({ kind: 'stream-done', stream })
-              continue
-            }
-            emitProgress({ kind: 'stream-start', stream })
-            // Pull before push: local appends then land after everything the
-            // remote log already has, and a restored device rehydrates first.
-            const pull = await pullStream(token, stream, emitProgress)
-            if (pull.outcome === 'reconnect') {
-              perStream.push({ stream, outcome: 'reconnect', uploaded: 0, pulled: pull.pulled })
-              emitProgress({ kind: 'stream-done', stream })
-              abortOutcome = 'reconnect'
-              continue
-            }
-            const push = await drainStream(token, stream, emitProgress)
-            if (push.outcome === 'reconnect') abortOutcome = 'reconnect'
-            else if (push.outcome === 'quota') abortOutcome = 'quota'
-            emitProgress({ kind: 'stream-done', stream })
-
-            const pullOutcome: DrainOutcome = pull.outcome === 'pulled' ? 'drained' : pull.outcome
-            const outcome =
-              OUTCOME_RANK[pullOutcome] > OUTCOME_RANK[push.outcome] ? pullOutcome : push.outcome
-            const error = push.error ?? pull.error
-            // This stream's clean cycle (no reconnect/retry/error) marks *its*
-            // log synced; a failure elsewhere in the loop never blocks it.
-            if (outcome === 'idle' || outcome === 'drained') {
-              await setLastSyncAt(stream, toLocalIso(new Date()))
-            }
-            perStream.push({
-              stream,
-              outcome,
-              uploaded: push.uploaded,
-              pulled: pull.pulled,
-              ...(error ? { error } : {}),
-            })
-          }
-          if (abortOutcome === 'reconnect') set({ driveConnection: 'expired' })
+          // The actual pull-then-push loop, failure isolation, worst-of
+          // outcome ranking, and per-stream lastSyncAt stamping are pure
+          // orchestration living in drive/syncCycle.ts (issue #63) — this
+          // action now only supplies the token + the effectful deps and
+          // mirrors the result into store state.
+          const { result, reconnect, quotaExceeded } = await runSyncCycle(token, allSyncStreams(), {
+            pull: pullStream,
+            drain: drainStream,
+            setLastSyncAt,
+            now: () => toLocalIso(new Date()),
+            onProgress: emitProgress,
+          })
+          if (reconnect) set({ driveConnection: 'expired' })
           // Always set (not just on quota): a clean cycle must clear a stale
           // true left over from an earlier full-Drive cycle once space frees
           // up and "Sync now" runs clean again.
-          set({ driveQuotaExceeded: abortOutcome === 'quota' })
-
-          // Aggregate: worst-of outcome, summed counts, first stream error.
-          const outcome = perStream.reduce<DrainOutcome>(
-            (worst, r) => (OUTCOME_RANK[r.outcome] > OUTCOME_RANK[worst] ? r.outcome : worst),
-            'idle',
-          )
-          const uploaded = perStream.reduce((n, r) => n + r.uploaded, 0)
-          const pulled = perStream.reduce((n, r) => n + r.pulled, 0)
-          const error = perStream.find((r) => r.error !== undefined)?.error
-          if (outcome === 'error' && error) set({ lastError: `Sync failed: ${error}` })
+          set({ driveQuotaExceeded: quotaExceeded })
+          if (result.outcome === 'error' && result.error) {
+            set({ lastError: `Sync failed: ${result.error}` })
+          }
           // Re-read local state; pulled system-stream events can change
           // settings, so the in-memory settings cache reloads too.
           await get().refresh()
           await get().loadSettings()
-          const result: SyncResult = { outcome, uploaded, pulled, ...(error ? { error } : {}), perStream }
           await persistSyncResult(result)
           return result
         } catch (err) {
