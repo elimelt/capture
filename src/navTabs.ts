@@ -10,6 +10,8 @@
 export interface NavTab {
   to: string
   label: string
+  /** Use client-side button navigation for routes hosted without rewrite support. */
+  button?: boolean
   /** Gated behind the opt-in assistant (`AppSettings.assistantEnabled`). */
   assistant?: boolean
 }
@@ -17,7 +19,7 @@ export interface NavTab {
 export const TABS: readonly NavTab[] = [
   { to: '/', label: 'Capture' },
   { to: '/day', label: 'Today' },
-  { to: '/context', label: 'Context' },
+  { to: '/context', label: 'Context', button: true },
   { to: '/chat', label: 'Recall', assistant: true },
   { to: '/settings', label: 'Settings' },
 ]

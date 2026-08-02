@@ -15,6 +15,10 @@ describe('TABS', () => {
   it('marks exactly the Recall tab as assistant-gated', () => {
     expect(TABS.filter((t) => t.assistant).map((t) => t.to)).toEqual(['/chat'])
   })
+
+  it('marks Context as button navigation for static hosting', () => {
+    expect(TABS.find((t) => t.to === '/context')?.button).toBe(true)
+  })
 })
 
 describe('visibleTabs', () => {
