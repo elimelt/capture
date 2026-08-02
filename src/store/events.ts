@@ -169,9 +169,14 @@ export async function getSyncStatuses(stream: string): Promise<Map<string, SyncS
 }
 
 /**
- * Rows not yet uploaded for a stream, in seq order (loggedAt then id as
- * tiebreak) — the order the drainer must respect so the log commits
- * monotonically (SPEC §5.2, §8.4).
+ * Rows not yet uploaded for a stream, in seq order (id as tiebreak) — the
+ * order the drainer must respect so the log commits monotonically (SPEC §5.2,
+ * §8.4).
+ *
+ * Note: only locally-minted events appear here — pulled events are immediately
+ * marked 'uploaded' by importEvents(). Since seq is monotonic per device, seq
+ * collisions can only occur across devices, and those events never hit this
+ * queue. The id tiebreak is defensive; in practice seq is unique here.
  */
 export async function listPendingSync(stream: string): Promise<SyncStatusRow[]> {
   const db = await getDb()

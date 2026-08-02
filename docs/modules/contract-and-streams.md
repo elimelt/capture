@@ -241,6 +241,13 @@ per kind/mime/index, date partitioning, the invariant that lexicographic name
 order equals seq order, and `idOfRecordName` round-tripping generated record names
 while rejecting attachments and foreign files.
 
+### src/contract/filenames.edge-cases.test.ts
+
+Additional edge case coverage: filename sort order invariant under randomized input,
+large seq numbers (7+ digits), parsing robustness for foreign files and folders,
+timestamp sanitization for all timezone formats including Z suffix, and exhaustive
+attachment extension mapping.
+
 ### src/contract/files.test.ts
 
 Covers the non-event file serializers: exact bytes for the streams registry, stub
@@ -257,6 +264,13 @@ ordering within one amend, revoke behavior and `includeRevoked`, silent ignoring
 unknown/revoked targets, multi-target events, and insensitivity to event arrival
 order.
 
+### src/contract/fold.edge-cases.test.ts
+
+Validates `compareEvents` total ordering properties (transitivity, antisymmetry),
+fold determinism under adversarial conditions: multiple permutations of the same
+event set, concurrent multi-device amends with seq collisions, and tiebreak
+correctness when seq/loggedAt/id collide in various combinations.
+
 ### src/contract/ids.test.ts
 
 Checks that `newEventId` matches `/^[0-9a-z]{6}$/` and that 1000 consecutive ids
@@ -269,6 +283,13 @@ transcript (`derivedFrom`) and note-edit (`removeAttachments` + replacement) ame
 round-trip tests through `parseEvent` including optional-field omission and the
 `clearLocation`-vs-`location` wire rule; and validation-error tests for each failure
 mode of `parseEvent`.
+
+### src/contract/serialize.edge-cases.test.ts
+
+Extended serialization tests: byte stability (deterministic output regardless of
+object property insertion order), fixed key ordering verification, indentation and
+trailing newline contract, exhaustive round-trip tests for all event types with
+all optional fields, and comprehensive error handling validation.
 
 ### src/contract/time.test.ts
 

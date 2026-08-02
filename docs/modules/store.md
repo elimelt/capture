@@ -217,6 +217,14 @@ attachment naming and blob round-trips, queued sync rows with the correct initia
 fold behavior of amend/revoke, `wipeAll` (including seq-counter reset), and the
 migration to v5 (id-keyed `events`/`sync` stores replacing `[stream, seq]`-keyed ones).
 
+### src/store/events.sync.test.ts
+
+Sync-specific edge case tests: `importEvents` marking pulled events as `uploaded` (never
+re-pushed), seq counter bump correctness, idempotent re-import, blob keying by contract
+filename, `listPendingSync` ordering by seq, exclusion of uploaded events from pending
+queue, cross-device merge scenarios with seq collisions, and sequential multi-import
+handling.
+
 ### src/store/places.test.ts
 
 Verifies the places repo CRUD round-trip, `put` overwrite semantics on duplicate ids,
