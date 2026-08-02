@@ -1,25 +1,20 @@
 import type { Entry } from '../contract/types'
-import type { SyncStatusRow } from '../store/db'
 import { useAppStore } from '../store/appStore'
-import { addMinutesIso, toLocalIso } from '../contract/time'
+import { withTimeOfDayIso } from '../contract/time'
 import { EntryCard } from './EntryCard'
 
 interface EntryListProps {
   entries: Entry[]
-  syncStatuses: Map<number, SyncStatusRow>
+  /**
+   * Delete requests bubble up (B9): the screen hides the entry at once and
+   * appends the revoke only after the undo window, so delete is undoable
+   * without needing un-revoke in the contract.
+   */
+  onDelete: (entryId: string) => void
 }
 
-export function EntryList({ entries, syncStatuses }: EntryListProps) {
-  const revoke = useAppStore((s) => s.revoke)
+export function EntryList({ entries, onDelete }: EntryListProps) {
   const amend = useAppStore((s) => s.amend)
-
-  if (entries.length === 0) {
-    return (
-      <p className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">
-        No entries yet today.
-      </p>
-    )
-  }
 
   return (
     <div className="flex flex-col gap-2">
@@ -27,15 +22,13 @@ export function EntryList({ entries, syncStatuses }: EntryListProps) {
         <EntryCard
           key={entry.id}
           entry={entry}
-          status={syncStatuses.get(entry.seq)?.status ?? 'queued'}
-          onDelete={() => void revoke([entry.id])}
-          onShiftTime={(mode) => {
-            const capturedAt =
-              mode === 'now'
-                ? toLocalIso(new Date())
-                : addMinutesIso(entry.capturedAt, mode === '-5' ? -5 : -1)
-            void amend({ targets: [entry.id], patch: { capturedAt } })
-          }}
+          onDelete={() => onDelete(entry.id)}
+          onSetTime={(time) =>
+            void amend({
+              targets: [entry.id],
+              patch: { capturedAt: withTimeOfDayIso(entry.capturedAt, time) },
+            })
+          }
           onAddNote={(text) =>
             void amend({
               targets: [entry.id],

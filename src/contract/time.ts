@@ -37,6 +37,17 @@ export function addMinutesIso(iso: string, minutes: number): string {
   )
 }
 
+/**
+ * Set the wall-clock time of day ("HH:mm") on a local-offset ISO string,
+ * keeping the date and re-rendering in the device's current zone.
+ */
+export function withTimeOfDayIso(iso: string, time: string): string {
+  const [h, m] = time.split(':').map(Number)
+  const d = new Date(iso)
+  d.setHours(h, m, 0, 0)
+  return toLocalIso(d)
+}
+
 export function deviceTz(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone
 }

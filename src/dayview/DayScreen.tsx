@@ -1,9 +1,11 @@
-/** Screen 2 — Day (SPEC §4.2). M1 placeholder: local entries only, no calendar. */
+/** Screen 2 — Day (SPEC §4.2). M1: local entries timeline; calendar/results arrive M4. */
 import { useEffect } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { localDateOf, toLocalIso } from '../contract/time'
 import { useAppStore } from '../store/appStore'
-import { StatusBadge, timeLabel } from '../capture/EntryCard'
+import { timeLabel } from '../capture/EntryCard'
+import { AttachmentBody } from '../capture/AttachmentBody'
+import { Button, Card, EmptyState, IconButton, ScreenHeader, cx, tone, type_ } from '../ui'
 
 function shiftDate(date: string, days: number): string {
   const d = new Date(`${date}T12:00:00`)
@@ -11,11 +13,20 @@ function shiftDate(date: string, days: number): string {
   return localDateOf(toLocalIso(d))
 }
 
+function dayTitle(date: string, today: string): string {
+  if (date === today) return 'Today'
+  if (date === shiftDate(today, -1)) return 'Yesterday'
+  return new Date(`${date}T12:00:00`).toLocaleDateString([], {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+  })
+}
+
 export default function DayScreen() {
   const params = useParams<{ date?: string }>()
   const navigate = useNavigate()
   const entries = useAppStore((s) => s.entries)
-  const syncStatuses = useAppStore((s) => s.syncStatuses)
   const refresh = useAppStore((s) => s.refresh)
 
   const today = localDateOf(toLocalIso(new Date()))
@@ -29,71 +40,73 @@ export default function DayScreen() {
     .filter((e) => !e.revoked && localDateOf(e.capturedAt) === date)
     .sort((a, b) => a.capturedAt.localeCompare(b.capturedAt))
 
-  const navBtn =
-    'flex h-11 w-11 items-center justify-center rounded-lg border border-slate-300 text-slate-600 active:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:active:bg-slate-800'
-
   return (
     <div className="flex flex-col gap-4 p-4">
-      <div className="flex items-center gap-2">
-        <button
-          aria-label="Previous day"
-          onClick={() => navigate(`/day/${shiftDate(date, -1)}`)}
-          className={navBtn}
-        >
-          ‹
-        </button>
-        <input
-          type="date"
-          value={date}
-          onChange={(e) => {
-            if (e.target.value) navigate(`/day/${e.target.value}`)
-          }}
-          className="min-h-11 flex-1 rounded-lg border border-slate-300 bg-white px-3 text-center text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
-        />
-        <button
-          aria-label="Next day"
-          onClick={() => navigate(`/day/${shiftDate(date, 1)}`)}
-          className={navBtn}
-        >
-          ›
-        </button>
-      </div>
-
-      <div className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-800 dark:border-sky-900 dark:bg-sky-950 dark:text-sky-300">
-        Calendar integration arrives in M2+ — for now this shows your local entries only.
-      </div>
+      <ScreenHeader
+        title={dayTitle(date, today)}
+        subtitle={`${dayEntries.length} ${dayEntries.length === 1 ? 'entry' : 'entries'}`}
+        trailing={
+          <div className="flex items-center gap-1">
+            <IconButton
+              aria-label="Previous day"
+              variant="ghost"
+              onClick={() => navigate(`/day/${shiftDate(date, -1)}`)}
+            >
+              ‹
+            </IconButton>
+            {date !== today && (
+              <Button variant="ghost" size="sm" onClick={() => navigate('/day')}>
+                Today
+              </Button>
+            )}
+            <IconButton
+              aria-label="Next day"
+              variant="ghost"
+              disabled={date >= today}
+              onClick={() => navigate(`/day/${shiftDate(date, 1)}`)}
+            >
+              ›
+            </IconButton>
+          </div>
+        }
+      />
 
       {dayEntries.length === 0 ? (
-        <p className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">
-          No entries on {date}.
-        </p>
+        <EmptyState title={`Nothing logged ${date === today ? 'yet today' : 'this day'}`} />
       ) : (
-        <ol className="relative ml-2 border-l border-slate-200 dark:border-slate-800">
-          {dayEntries.map((entry) => (
-            <li key={entry.id} className="relative mb-4 ml-4">
-              <span className="absolute -left-[21px] top-1.5 h-2.5 w-2.5 rounded-full bg-sky-500" />
-              <div className="rounded-xl border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900">
-                <div className="flex items-baseline gap-2 text-sm">
-                  <span className="font-medium text-slate-900 dark:text-slate-100">
-                    {timeLabel(entry.capturedAt)}
-                  </span>
-                  {entry.location?.placeLabel && (
-                    <span className="truncate text-slate-500 dark:text-slate-400">
-                      {entry.location.placeLabel}
+        <ol className={cx('relative ml-2 border-l', tone.border)}>
+          {dayEntries.map((entry) => {
+            const audio = entry.attachments.find((a) => a.kind === 'audio')
+            return (
+              <li key={entry.id} className="relative mb-3 ml-4">
+                <span className="absolute -left-[21.5px] top-4 h-2.5 w-2.5 rounded-full bg-sky-500" />
+                <Card>
+                  <div className={cx('flex items-baseline gap-2', type_.body)}>
+                    <span className={cx('font-semibold tabular-nums', tone.textPrimary)}>
+                      {timeLabel(entry.capturedAt)}
                     </span>
-                  )}
-                  <span className="ml-auto">
-                    <StatusBadge
-                      status={syncStatuses.get(entry.seq)?.status ?? 'queued'}
-                    />
-                  </span>
-                </div>
-                <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">
-                  {entry.attachments.map((a) => a.kind).join(' · ') || 'no attachments'}
-                </p>
-              </div>
-            </li>
-          ))}
+                    {entry.location?.placeLabel && (
+                      <span className={cx('truncate', type_.sub, tone.textMuted)}>
+                        {entry.location.placeLabel}
+                      </span>
+                    )}
+                    {audio?.durationSec !== undefined && (
+                      <span
+                        className={cx(
+                          'ml-auto shrink-0 tabular-nums',
+                          type_.caption,
+                          tone.textFaint,
+                        )}
+                      >
+                        {audio.durationSec}s
+                      </span>
+                    )}
+                  </div>
+                  <AttachmentBody attachments={entry.attachments} />
+                </Card>
+              </li>
+            )
+          })}
         </ol>
       )}
     </div>

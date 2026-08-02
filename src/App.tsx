@@ -2,6 +2,7 @@ import { NavLink, Navigate, Route, Routes } from 'react-router-dom'
 import CaptureScreen from './capture/CaptureScreen'
 import DayScreen from './dayview/DayScreen'
 import SettingsScreen from './settings/SettingsScreen'
+import { cx, tone, type_ } from './ui'
 
 const TABS = [
   { to: '/', label: 'Capture' },
@@ -11,9 +12,11 @@ const TABS = [
 
 export default function App() {
   return (
-    <div className="min-h-dvh bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
+    <div className={cx('min-h-dvh', tone.bg, tone.textPrimary)}>
       <div className="mx-auto flex min-h-dvh max-w-md flex-col">
-        <main className="flex-1 pb-20">
+        {/* C12: black-translucent status bar means content extends under the
+            iOS status bar; pad every screen below it. */}
+        <main className="flex-1 pb-24 pt-[env(safe-area-inset-top)]">
           <Routes>
             <Route path="/" element={<CaptureScreen />} />
             <Route path="/day" element={<DayScreen />} />
@@ -22,7 +25,13 @@ export default function App() {
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>
-        <nav className="fixed inset-x-0 bottom-0 border-t border-slate-200 bg-white pb-[env(safe-area-inset-bottom)] dark:border-slate-800 dark:bg-slate-900">
+        <nav
+          className={cx(
+            'fixed inset-x-0 bottom-0 border-t pb-[env(safe-area-inset-bottom)]',
+            tone.border,
+            tone.surface,
+          )}
+        >
           <div className="mx-auto flex max-w-md">
             {TABS.map((tab) => (
               <NavLink
@@ -30,11 +39,11 @@ export default function App() {
                 to={tab.to}
                 end={tab.to === '/'}
                 className={({ isActive }) =>
-                  `flex min-h-14 flex-1 items-center justify-center text-sm font-medium ${
-                    isActive
-                      ? 'text-sky-600 dark:text-sky-400'
-                      : 'text-slate-500 dark:text-slate-400'
-                  }`
+                  cx(
+                    'flex min-h-14 flex-1 items-center justify-center font-medium',
+                    type_.sub,
+                    isActive ? tone.accent : tone.textMuted,
+                  )
                 }
               >
                 {tab.label}

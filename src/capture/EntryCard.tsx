@@ -1,123 +1,114 @@
 import { useRef, useState } from 'react'
 import type { Entry } from '../contract/types'
-import { getBlob } from '../store/events'
-import type { SyncStatus } from '../store/db'
-import { NoteSheet } from './NoteSheet'
+import { Button, Card, IconButton, cx, tone, type_ } from '../ui'
+import { TextSheet } from './TextSheet'
+import { AttachmentBody } from './AttachmentBody'
+import { useAudioPlayback } from './useAudioPlayback'
 
 export function timeLabel(iso: string): string {
   return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
 }
 
-const STATUS_DOT: Record<SyncStatus, string> = {
-  queued: 'bg-amber-500',
-  uploaded: 'bg-emerald-500',
-  error: 'bg-red-500',
-}
-
-export function StatusBadge({ status }: { status: SyncStatus }) {
-  return (
-    <span className="inline-flex items-center gap-1 text-xs text-slate-500 dark:text-slate-400">
-      <span className={`h-1.5 w-1.5 rounded-full ${STATUS_DOT[status]}`} />
-      {status}
-    </span>
-  )
+/** "HH:mm" (local) for <input type="time">. */
+function toTimeValue(iso: string): string {
+  const d = new Date(iso)
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
 interface EntryCardProps {
   entry: Entry
-  status: SyncStatus
   onDelete: () => void
-  onShiftTime: (mode: '-5' | '-1' | 'now') => void
+  /** New time-of-day "HH:mm" on the entry's own date (B8). */
+  onSetTime: (time: string) => void
   onAddNote: (text: string) => void
   onAddPhoto: (file: File) => void
 }
 
-export function EntryCard({
-  entry,
-  status,
-  onDelete,
-  onShiftTime,
-  onAddNote,
-  onAddPhoto,
-}: EntryCardProps) {
+export function EntryCard({ entry, onDelete, onSetTime, onAddNote, onAddPhoto }: EntryCardProps) {
   const [noteOpen, setNoteOpen] = useState(false)
-  const [playing, setPlaying] = useState(false)
   const photoInputRef = useRef<HTMLInputElement>(null)
+  const timeInputRef = useRef<HTMLInputElement>(null)
   const audio = entry.attachments.find((a) => a.kind === 'audio')
-
-  async function replay() {
-    if (!audio || playing) return
-    const blob = await getBlob(audio.file)
-    if (!blob) return
-    const url = URL.createObjectURL(blob)
-    const el = new Audio(url)
-    const done = () => {
-      URL.revokeObjectURL(url)
-      setPlaying(false)
-    }
-    el.onended = done
-    el.onerror = done
-    setPlaying(true)
-    void el.play().catch(done)
-  }
-
-  const stepBtn =
-    'min-h-11 min-w-11 rounded-lg border border-slate-300 px-2 text-xs font-medium text-slate-600 active:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:active:bg-slate-800'
+  const playback = useAudioPlayback(audio?.file)
 
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900">
+    <Card>
       <div className="flex items-center gap-2">
         <div className="min-w-0 flex-1">
-          <div className="flex items-baseline gap-2 text-sm font-medium text-slate-900 dark:text-slate-100">
-            <span>{timeLabel(entry.capturedAt)}</span>
+          <div className={cx('flex items-baseline gap-2', type_.body)}>
+            {/* Tapping the time opens the native iOS wheel picker (B8). */}
+            <span className="relative">
+              <button
+                onClick={() => {
+                  const el = timeInputRef.current
+                  if (!el) return
+                  if (typeof el.showPicker === 'function') el.showPicker()
+                  else el.focus()
+                }}
+                className={cx(
+                  'rounded-md font-semibold tabular-nums underline decoration-dotted underline-offset-4',
+                  tone.textPrimary,
+                  'decoration-slate-300 dark:decoration-slate-600',
+                )}
+              >
+                {timeLabel(entry.capturedAt)}
+              </button>
+              <input
+                ref={timeInputRef}
+                type="time"
+                value={toTimeValue(entry.capturedAt)}
+                onChange={(e) => {
+                  if (e.target.value) onSetTime(e.target.value)
+                }}
+                className="absolute inset-0 h-full w-full opacity-0"
+                tabIndex={-1}
+                aria-label="Change entry time"
+              />
+            </span>
             {entry.location?.placeLabel && (
-              <span className="truncate text-slate-500 dark:text-slate-400">
-                · {entry.location.placeLabel}
+              <span className={cx('truncate', type_.sub, tone.textMuted)}>
+                {entry.location.placeLabel}
               </span>
             )}
             {audio?.durationSec !== undefined && (
-              <span className="text-xs text-slate-400 dark:text-slate-500">
+              <span className={cx('ml-auto shrink-0 tabular-nums', type_.caption, tone.textFaint)}>
                 {audio.durationSec}s
               </span>
             )}
           </div>
-          <StatusBadge status={status} />
         </div>
         {audio && (
-          <button
-            onClick={() => void replay()}
-            aria-label="Replay audio"
-            className="flex h-11 w-11 items-center justify-center rounded-full border border-slate-300 text-slate-600 active:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:active:bg-slate-800"
+          <IconButton
+            aria-label={playback.playing ? 'Stop playback' : 'Play recording'}
+            onClick={() => void playback.toggle()}
+            className="relative overflow-hidden"
           >
-            {playing ? '…' : '▶'}
-          </button>
+            {/* Progress fill behind the icon (B10). */}
+            {playback.playing && (
+              <span
+                className="absolute inset-y-0 left-0 bg-sky-500/20 transition-[width] duration-200 ease-linear"
+                style={{ width: `${playback.progress * 100}%` }}
+              />
+            )}
+            <span className="relative">{playback.playing ? '■' : '▶'}</span>
+          </IconButton>
         )}
       </div>
-      <div className="mt-2 flex flex-wrap items-center gap-1.5">
-        <button onClick={() => onShiftTime('-5')} className={stepBtn}>
-          −5m
-        </button>
-        <button onClick={() => onShiftTime('-1')} className={stepBtn}>
-          −1m
-        </button>
-        <button onClick={() => onShiftTime('now')} className={stepBtn}>
-          now
-        </button>
-        <button onClick={() => setNoteOpen(true)} className={stepBtn}>
+
+      <AttachmentBody attachments={entry.attachments} />
+
+      <div className="mt-2 flex items-center gap-1">
+        <Button variant="ghost" size="sm" onClick={() => setNoteOpen(true)}>
           + note
-        </button>
-        <button onClick={() => photoInputRef.current?.click()} className={stepBtn}>
+        </Button>
+        <Button variant="ghost" size="sm" onClick={() => photoInputRef.current?.click()}>
           + photo
-        </button>
-        <button
-          onClick={() => {
-            if (window.confirm('Delete this entry?')) onDelete()
-          }}
-          className="ml-auto min-h-11 min-w-11 rounded-lg px-2 text-xs font-medium text-red-600 active:bg-red-50 dark:text-red-400 dark:active:bg-red-950"
-        >
+        </Button>
+        <Button variant="dangerGhost" size="sm" onClick={onDelete} className="ml-auto">
           Delete
-        </button>
+        </Button>
       </div>
+
       <input
         ref={photoInputRef}
         type="file"
@@ -130,7 +121,15 @@ export function EntryCard({
           e.target.value = ''
         }}
       />
-      {noteOpen && <NoteSheet onSave={onAddNote} onClose={() => setNoteOpen(false)} />}
-    </div>
+      {noteOpen && (
+        <TextSheet
+          title="Add note"
+          placeholder="Type a note…"
+          cta="Save note"
+          onSave={onAddNote}
+          onClose={() => setNoteOpen(false)}
+        />
+      )}
+    </Card>
   )
 }

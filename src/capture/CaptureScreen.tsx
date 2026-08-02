@@ -3,14 +3,20 @@ import { useEffect, useRef, useState } from 'react'
 import type { GeoLocation } from '../contract/types'
 import { localDateOf, toLocalIso } from '../contract/time'
 import { useAppStore } from '../store/appStore'
+import { Button, EmptyState, ScreenHeader, Toast } from '../ui'
 import { useRecorder, type RecordingResult } from './useRecorder'
 import { snapshotLocation } from './geo'
 import { EntryList } from './EntryList'
-import { StatusBadge, timeLabel } from './EntryCard'
+import { RecordPanel } from './RecordPanel'
+import { TextSheet } from './TextSheet'
+
+type ToastState =
+  | { kind: 'captured'; entryId: string }
+  | { kind: 'deleted'; entryId: string }
+  | { kind: 'discarded' }
 
 export default function CaptureScreen() {
   const entries = useAppStore((s) => s.entries)
-  const syncStatuses = useAppStore((s) => s.syncStatuses)
   const places = useAppStore((s) => s.places)
   const appSettings = useAppStore((s) => s.appSettings)
   const streamSettings = useAppStore((s) => s.streamSettings)
@@ -21,8 +27,10 @@ export default function CaptureScreen() {
   const revoke = useAppStore((s) => s.revoke)
 
   const recorder = useRecorder()
-  const [text, setText] = useState('')
-  const [toast, setToast] = useState<{ entryId: string } | null>(null)
+  const [textOpen, setTextOpen] = useState(false)
+  const [toast, setToast] = useState<ToastState | null>(null)
+  const [here, setHere] = useState<GeoLocation | null>(null)
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null)
   const tapStartRef = useRef<Date>(new Date())
   const locationRef = useRef<Promise<GeoLocation | undefined>>(Promise.resolve(undefined))
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -35,13 +43,34 @@ export default function CaptureScreen() {
 
   useEffect(() => () => clearTimeout(toastTimerRef.current), [])
 
-  function showUndoToast(entryId: string) {
+  // A5: passive location context under the button ("at Office"), refreshed
+  // when the app comes to the foreground.
+  useEffect(() => {
+    let stale = false
+    const probe = () => {
+      void snapshotLocation(places, appSettings.locationEnabled).then((loc) => {
+        if (!stale) setHere(loc ?? null)
+      })
+    }
+    probe()
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') probe()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      stale = true
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [places, appSettings.locationEnabled])
+
+  function showToast(next: ToastState) {
     clearTimeout(toastTimerRef.current)
-    setToast({ entryId })
+    setToast(next)
     toastTimerRef.current = setTimeout(() => setToast(null), 5000)
   }
 
-  async function commit(result: RecordingResult) {
+  const commitRef = useRef<(result: RecordingResult) => Promise<void>>(async () => {})
+  commitRef.current = async (result: RecordingResult) => {
     const location = await locationRef.current
     const event = await capture({
       capturedAt: toLocalIso(tapStartRef.current),
@@ -55,23 +84,42 @@ export default function CaptureScreen() {
         },
       ],
     })
-    showUndoToast(event.id)
+    showToast({ kind: 'captured', entryId: event.id })
   }
 
-  async function handleCaptureTap() {
+  // A6: iOS suspends backgrounded PWAs aggressively — commit the in-flight
+  // recording instead of losing it.
+  const recordingRef = useRef(false)
+  recordingRef.current = recorder.state === 'recording'
+  useEffect(() => {
+    const onHidden = () => {
+      if (document.visibilityState === 'hidden' && recordingRef.current) {
+        void recorder.stop().then((result) => {
+          if (result) void commitRef.current(result)
+        })
+      }
+    }
+    document.addEventListener('visibilitychange', onHidden)
+    return () => document.removeEventListener('visibilitychange', onHidden)
+  }, [recorder])
+
+  async function handleRecordTap() {
     if (recorder.state === 'recording') {
       const result = await recorder.stop()
-      if (result) await commit(result)
+      if (result) await commitRef.current(result)
     } else {
       tapStartRef.current = new Date()
       locationRef.current = snapshotLocation(places, appSettings.locationEnabled)
-      await recorder.start(streamSettings.maxClipSec, (result) => void commit(result))
+      await recorder.start(streamSettings.maxClipSec, (result) => void commitRef.current(result))
     }
   }
 
-  async function submitText() {
-    const trimmed = text.trim()
-    if (!trimmed) return
+  function handleDiscard() {
+    recorder.cancel()
+    showToast({ kind: 'discarded' })
+  }
+
+  async function submitText(text: string) {
     const location = await snapshotLocation(places, appSettings.locationEnabled)
     const event = await capture({
       capturedAt: toLocalIso(new Date()),
@@ -79,103 +127,134 @@ export default function CaptureScreen() {
       attachments: [
         {
           kind: 'text',
-          blob: new Blob([trimmed], { type: 'text/plain' }),
+          blob: new Blob([text], { type: 'text/plain' }),
           mimeType: 'text/plain',
         },
       ],
     })
-    setText('')
-    showUndoToast(event.id)
+    showToast({ kind: 'captured', entryId: event.id })
   }
 
-  async function undo(entryId: string) {
+  async function undoCapture(entryId: string) {
     clearTimeout(toastTimerRef.current)
     setToast(null)
     await revoke([entryId])
   }
 
+  // B9: delete hides the entry at once; the revoke is appended when the undo
+  // window closes (or on unmount), so undo needs no un-revoke in the contract.
+  const pendingDeleteRef = useRef<string | null>(null)
+  pendingDeleteRef.current = pendingDelete
+  const revokeRef = useRef(revoke)
+  revokeRef.current = revoke
+
+  function commitPendingDelete() {
+    const id = pendingDeleteRef.current
+    if (id) {
+      pendingDeleteRef.current = null
+      setPendingDelete(null)
+      void revokeRef.current([id])
+    }
+  }
+  const commitPendingDeleteRef = useRef(commitPendingDelete)
+  commitPendingDeleteRef.current = commitPendingDelete
+
+  useEffect(() => () => commitPendingDeleteRef.current(), [])
+
+  function handleDelete(entryId: string) {
+    commitPendingDelete() // only one pending delete at a time
+    clearTimeout(toastTimerRef.current)
+    setPendingDelete(entryId)
+    setToast({ kind: 'deleted', entryId })
+    toastTimerRef.current = setTimeout(() => {
+      setToast(null)
+      commitPendingDeleteRef.current()
+    }, 5000)
+  }
+
+  function undoDelete() {
+    clearTimeout(toastTimerRef.current)
+    setToast(null)
+    setPendingDelete(null)
+  }
+
   const today = localDateOf(toLocalIso(new Date()))
   const todayEntries = entries
-    .filter((e) => !e.revoked && localDateOf(e.capturedAt) === today)
+    .filter((e) => !e.revoked && e.id !== pendingDelete && localDateOf(e.capturedAt) === today)
     .sort((a, b) => b.capturedAt.localeCompare(a.capturedAt))
-  const latest = todayEntries[0]
   const recording = recorder.state === 'recording'
+
+  // C14: before the very first entry, in-browser visitors get nudged toward
+  // the installed experience (standalone is where capture is one tap away).
+  const firstLaunch = entries.length === 0
+  const standalone =
+    window.matchMedia('(display-mode: standalone)').matches ||
+    (navigator as Navigator & { standalone?: boolean }).standalone === true
+
+  const contextLabel = !appSettings.locationEnabled
+    ? undefined
+    : here?.placeLabel
+      ? `at ${here.placeLabel}`
+      : here
+        ? 'location on'
+        : undefined
 
   return (
     <div className="flex flex-col gap-4 p-4">
-      {latest && (
-        <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-800 dark:bg-slate-900">
-          <span className="font-medium text-slate-900 dark:text-slate-100">
-            {timeLabel(latest.capturedAt)}
-          </span>
-          {latest.location?.placeLabel && (
-            <span className="truncate text-slate-500 dark:text-slate-400">
-              · {latest.location.placeLabel}
-            </span>
+      <ScreenHeader
+        title="Capture"
+        subtitle={`${todayEntries.length} ${todayEntries.length === 1 ? 'entry' : 'entries'} today`}
+      />
+
+      <RecordPanel
+        recorder={recorder}
+        maxClipSec={streamSettings.maxClipSec}
+        contextLabel={contextLabel}
+        onTap={() => void handleRecordTap()}
+        onDiscard={handleDiscard}
+      />
+
+      {!recording && (
+        <Button variant="ghost" size="sm" onClick={() => setTextOpen(true)} className="mx-auto">
+          Type instead
+        </Button>
+      )}
+
+      {todayEntries.length === 0 ? (
+        <EmptyState title="Nothing logged yet today">
+          Tap the mic and say what you're doing — one sentence is plenty.
+          {firstLaunch && !standalone && (
+            <>
+              <br />
+              For quickest capture, add this to your Home Screen (Share → Add to Home Screen).
+            </>
           )}
-          <span className="ml-auto">
-            <StatusBadge status={syncStatuses.get(latest.seq)?.status ?? 'queued'} />
-          </span>
-        </div>
-      )}
-      <p className="text-center text-xs text-slate-500 dark:text-slate-400">
-        {todayEntries.length} {todayEntries.length === 1 ? 'entry' : 'entries'} today
-      </p>
-
-      {recorder.state === 'error' ? (
-        <div className="flex flex-col gap-2">
-          <p className="text-center text-xs text-red-600 dark:text-red-400">
-            Microphone unavailable — type your entry instead.
-          </p>
-          <textarea
-            rows={3}
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            placeholder="What just happened?"
-            className="w-full rounded-lg border border-slate-300 bg-white p-3 text-base text-slate-900 outline-none focus:border-sky-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
-          />
-          <button
-            onClick={() => void submitText()}
-            disabled={!text.trim()}
-            className="min-h-11 rounded-lg bg-sky-600 text-sm font-medium text-white disabled:opacity-50"
-          >
-            Log entry
-          </button>
-        </div>
+        </EmptyState>
       ) : (
-        <div className="flex flex-col items-center gap-3 py-4">
-          <button
-            onClick={() => void handleCaptureTap()}
-            aria-label={recording ? 'Stop recording' : 'Start recording'}
-            className={`flex h-28 w-28 items-center justify-center rounded-full text-sm font-semibold text-white shadow-lg transition-colors ${
-              recording
-                ? 'animate-pulse bg-red-600 active:bg-red-700'
-                : 'bg-sky-600 active:bg-sky-700'
-            }`}
-          >
-            {recording ? 'Stop' : 'Record'}
-          </button>
-          <p className="h-5 text-sm tabular-nums text-slate-500 dark:text-slate-400">
-            {recording
-              ? `${Math.floor(recorder.elapsedSec / 60)}:${String(recorder.elapsedSec % 60).padStart(2, '0')} / ${streamSettings.maxClipSec}s`
-              : 'Tap to record'}
-          </p>
-        </div>
+        <EntryList entries={todayEntries} onDelete={handleDelete} />
       )}
 
-      <EntryList entries={todayEntries} syncStatuses={syncStatuses} />
-
-      {toast && (
-        <div className="fixed inset-x-4 bottom-24 z-40 mx-auto flex max-w-md items-center justify-between rounded-xl bg-slate-900 px-4 py-3 text-sm text-white shadow-lg dark:bg-slate-700">
-          <span>Entry captured</span>
-          <button
-            onClick={() => void undo(toast.entryId)}
-            className="min-h-11 px-3 font-semibold text-sky-300"
-          >
-            Undo
-          </button>
-        </div>
+      {textOpen && (
+        <TextSheet
+          title="Log an entry"
+          placeholder="What just happened?"
+          cta="Log entry"
+          onSave={(text) => void submitText(text)}
+          onClose={() => setTextOpen(false)}
+        />
       )}
+
+      {toast?.kind === 'captured' && (
+        <Toast actionLabel="Undo" onAction={() => void undoCapture(toast.entryId)}>
+          Entry captured
+        </Toast>
+      )}
+      {toast?.kind === 'deleted' && (
+        <Toast actionLabel="Undo" onAction={undoDelete}>
+          Entry deleted
+        </Toast>
+      )}
+      {toast?.kind === 'discarded' && <Toast>Recording discarded</Toast>}
     </div>
   )
 }
