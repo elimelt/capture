@@ -2,7 +2,7 @@ import { useEffect, useState, useSyncExternalStore } from 'react'
 import type { Attachment } from '../contract/types'
 import { getBlob } from '../store/events'
 import { liveTranscripts, type LiveTextStore } from '../store/livetext'
-import { IconButton, MicIcon, cx, motion, tone, type_ } from '../ui'
+import { MicIcon, cx, motion, tone, type_ } from '../ui'
 import { authorship, type Authorship } from './authorship'
 import { groupAttachments } from './attachmentGroups'
 import { useAudioPlayback } from './useAudioPlayback'
@@ -59,7 +59,7 @@ export function AttachmentBody({ attachments, onEditText }: AttachmentBodyProps)
   >(null)
   const liveT = useLiveText(liveTranscripts)
   const { transcripts, notes, audio, orphanCaptions } = groupAttachments(attachments)
-  // The first clip plays from the card header; later ones render here.
+  // The first clip's waveform appears in the card header; later ones render here.
   const extraAudio = audio.slice(1)
   // Streaming transcripts for sources with no persisted transcript yet.
   // Once the amend lands the stored attachment wins, live text is ignored.
@@ -262,21 +262,14 @@ function AudioRow({ file, durationSec }: { file: string; durationSec?: number })
   const playback = useAudioPlayback(file)
   return (
     <div className="flex items-center gap-2">
-      <IconButton
-        variant="accent"
+      <button
+        type="button"
         aria-label={playback.playing ? 'Stop playback' : 'Play recording'}
         onClick={() => void playback.toggle()}
-        className="relative overflow-hidden"
+        className="shrink-0 rounded-md"
       >
-        {playback.playing && (
-          <span
-            className="absolute inset-y-0 left-0 bg-spruce/20 transition-[width] duration-200 ease-linear dark:bg-spruce-dark/25"
-            style={{ width: `${playback.progress * 100}%` }}
-          />
-        )}
-        <span className="relative">{playback.playing ? '■' : '▶'}</span>
-      </IconButton>
-      <Waveform file={file} progress={playback.progress} className="w-16 shrink-0" />
+        <Waveform file={file} progress={playback.progress} className="w-16" />
+      </button>
       <span className={cx('tabular-nums', type_.caption, tone.textFaint)}>
         Recording{durationSec !== undefined ? ` · ${durationSec}s` : ''}
       </span>

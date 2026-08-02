@@ -37,8 +37,8 @@ interface WaveformProps {
  * for any reason (unsupported container, corrupt blob, no AudioContext —
  * iOS `audio/mp4` is expected to work, but this is a silent best-effort
  * fallback matching `useRecorder`'s `LevelMeter` precedent) the component
- * renders nothing, leaving exactly the plain play control that existed
- * before this feature — never a crash, never a blocked render.
+ * renders nothing, leaving the surrounding playback target available — never
+ * a crash, never a blocked render.
  */
 export function Waveform({ file, progress = 0, height = 24, className }: WaveformProps) {
   const [status, setStatus] = useState<Status>('loading')
@@ -87,7 +87,7 @@ export function Waveform({ file, progress = 0, height = 24, className }: Wavefor
       } catch {
         // Decode failure (or a missing blob/AudioContext) is a silent
         // best-effort fallback (#86 req. 2): render nothing, leaving the
-        // plain play control this component sits beside/inside.
+        // playback target this component sits inside.
         if (!stale) setStatus('failed')
       }
     })()

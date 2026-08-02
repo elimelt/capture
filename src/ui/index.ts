@@ -18,6 +18,7 @@ export {
   CalendarIcon,
   CameraIcon,
   ChevronDownIcon,
+  CopyIcon,
   EyeOffIcon,
   MicIcon,
   PinIcon,

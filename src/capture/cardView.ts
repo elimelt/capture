@@ -36,7 +36,7 @@ export interface CardViewModel {
    * too, just after this one (`EntryCard`'s unconditional `AttachmentBody`).
    */
   primaryText?: { file: string; authorship: Authorship }
-  /** The clip that plays from the card header (first audio attachment). */
+  /** The clip whose waveform appears in the card header (first audio attachment). */
   primaryAudio?: Attachment
   /** Whether the header shows a place-label/address string. */
   collapsedShowsLocation: boolean

@@ -1,12 +1,14 @@
-# Context export
+# Inline plain-text context
 
-The Context screen (`src/context/ContextScreen.tsx`) provides a portable view of
-the folded local log at `/context`. It defaults to the last seven local calendar
-days and supports Today, Yesterday, This week, or a custom inclusive date range.
+`src/context/plainText.ts` renders folded entries as portable Markdown/plaintext.
+Every text attachment is labeled by provenance: `Note` for user-authored text,
+`Voice transcript` for text derived from audio, and `Image description` for text
+derived from a photo. Each entry includes its captured wall-clock timestamp, the
+numeric UTC offset, device IANA timezone, location, and media counts/durations.
 
-The screen reads visible entries from the Zustand store and text attachment blobs
-from IndexedDB, then renders a Markdown/plaintext preview. `src/context/export.ts`
-contains the pure `formatContext` function: entries are grouped by local day and
-include wall-clock time, place, note/transcript text, and audio/photo counts.
-The Copy context action uses the Clipboard API when available and an off-screen
-textarea fallback for older Safari/PWA contexts. No data is sent over the network.
+The renderer reads only the entry's text blobs from IndexedDB through an injected
+`getBlob` function. `src/context/clipboard.ts` copies the result locally using
+the Clipboard API with an off-screen textarea fallback for older Safari/PWA
+contexts. Entry cards expose `Copy entry`; the Day screen exposes `Copy day` and
+passes the same representation through to each entry. Nothing is sent over the
+network.
