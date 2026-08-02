@@ -3,7 +3,7 @@
  * entries and calendar pseudo-entries (editable overlays — §3.6), rendered
  * by DayTimeline.
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { localDateOf, toLocalIso } from '../contract/time'
 import type { Entry } from '../contract/types'
@@ -14,6 +14,8 @@ import { copyPlainText } from '../context/clipboard'
 import { formatEntriesPlainText, formatEntryPlainText } from '../context/plainText'
 import { Button, CopyIcon, IconButton, ScreenHeader, Toast, cx, motion } from '../ui'
 import { DayTimeline } from './DayTimeline'
+
+type PreparedDayCopy = { signature: string; text: string }
 
 function shiftDate(date: string, days: number): string {
   const d = new Date(`${date}T12:00:00`)
@@ -39,6 +41,7 @@ export default function DayScreen() {
   const revoke = useAppStore((s) => s.revoke)
   const del = usePendingDelete(revoke)
   const [copyFeedback, setCopyFeedback] = useState<'copied' | 'error' | null>(null)
+  const preparedDayCopyRef = useRef<PreparedDayCopy | null>(null)
 
   useEffect(() => {
     if (!copyFeedback) return
@@ -53,6 +56,19 @@ export default function DayScreen() {
   const dayEntries = entries
     .filter((e) => !e.revoked && e.id !== del.pendingId && localDateOf(e.capturedAt) === date)
     .sort((a, b) => a.capturedAt.localeCompare(b.capturedAt))
+  const dayCopySignature = dayEntries.map((entry) => `${entry.id}:${entry.lastEventSeq}`).join('|')
+
+  useEffect(() => {
+    let stale = false
+    preparedDayCopyRef.current = null
+    if (dayEntries.length === 0) return
+    void formatEntriesPlainText(dayEntries, getBlob).then((text) => {
+      if (!stale) preparedDayCopyRef.current = { signature: dayCopySignature, text }
+    })
+    return () => {
+      stale = true
+    }
+  }, [dayCopySignature])
 
   async function copyEntry(entry: Entry) {
     try {
@@ -63,13 +79,17 @@ export default function DayScreen() {
     }
   }
 
-  async function copyDay() {
-    try {
-      await copyPlainText(await formatEntriesPlainText(dayEntries, getBlob))
-      setCopyFeedback('copied')
-    } catch {
+  function copyDay() {
+    const prepared = preparedDayCopyRef.current
+    if (!prepared || prepared.signature !== dayCopySignature) {
       setCopyFeedback('error')
+      return
     }
+    // Keep this synchronous with the button's click. Safari's clipboard APIs
+    // require transient user activation, so blob reads happen in the effect.
+    void copyPlainText(prepared.text)
+      .then(() => setCopyFeedback('copied'))
+      .catch(() => setCopyFeedback('error'))
   }
 
   return (
@@ -102,7 +122,7 @@ export default function DayScreen() {
             <IconButton
               aria-label="Copy day"
               disabled={dayEntries.length === 0}
-              onClick={() => void copyDay()}
+              onClick={copyDay}
             >
               <CopyIcon size={16} />
             </IconButton>
