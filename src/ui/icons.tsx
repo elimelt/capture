@@ -114,6 +114,19 @@ export function SlidersIcon({ size = 14 }: IconProps) {
   )
 }
 
+/**
+ * Small downward chevron for the entry card's overflow/expand affordance
+ * (#78). Callers rotate it 180° for the collapsed→expanded transition
+ * rather than drawing a second icon.
+ */
+export function ChevronDownIcon({ size = 14 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 14 14" fill="none" aria-hidden="true">
+      <path d="M3 5.2 7 9l4-3.8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
 /** Small calendar page marking calendar-sourced content (pseudo-entries). */
 export function CalendarIcon({ size = 14 }: IconProps) {
   return (
