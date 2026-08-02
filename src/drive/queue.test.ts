@@ -339,6 +339,65 @@ describe('drainStream', () => {
     expect(await drainStream('tok', 'timelog')).toEqual({ outcome: 'idle', uploaded: 0 })
   })
 
+  it('defaults onProgress to a no-op — existing callers are unaffected', async () => {
+    await captureWithAudio()
+    const { drainStream } = await import('./queue')
+    // No third argument: must not throw.
+    await expect(drainStream('tok', 'timelog')).resolves.toMatchObject({ outcome: 'drained' })
+  })
+
+  it('reports an upload-start total then one upload-progress per commit unit, never per file', async () => {
+    await captureWithAudio()
+    await captureWithAudio() // 2 same-partition rows -> one segment batch (SPEC §5.7)
+    const { drainStream } = await import('./queue')
+    const events: unknown[] = []
+    const res = await drainStream('tok', 'timelog', (e) => events.push(e))
+    expect(res).toMatchObject({ outcome: 'drained', uploaded: 2 })
+    expect(events).toEqual([
+      { kind: 'upload-start', stream: 'timelog', itemsTotal: 2 },
+      { kind: 'upload-progress', stream: 'timelog', delta: 2 },
+    ])
+  })
+
+  it('reports an idle stream (nothing queued) with zero progress events', async () => {
+    const { drainStream } = await import('./queue')
+    const events: unknown[] = []
+    await drainStream('tok', 'timelog', (e) => events.push(e))
+    expect(events).toEqual([])
+  })
+
+  it('reports one upload-progress per batch on a mixed run (record then segment)', async () => {
+    await captureWithAudio() // lone event -> per-event record path
+    await import('./bootstrap').then((m) => m.ensureTree('tok', ['timelog']))
+    const { drainStream } = await import('./queue')
+    const firstRunEvents: unknown[] = []
+    await drainStream('tok', 'timelog', (e) => firstRunEvents.push(e))
+    expect(firstRunEvents).toEqual([
+      { kind: 'upload-start', stream: 'timelog', itemsTotal: 1 },
+      { kind: 'upload-progress', stream: 'timelog', delta: 1 },
+    ])
+
+    await captureWithAudio()
+    await captureWithAudio() // 2 more same-partition rows -> one segment batch
+    const secondRunEvents: unknown[] = []
+    await drainStream('tok', 'timelog', (e) => secondRunEvents.push(e))
+    expect(secondRunEvents).toEqual([
+      { kind: 'upload-start', stream: 'timelog', itemsTotal: 2 },
+      { kind: 'upload-progress', stream: 'timelog', delta: 2 },
+    ])
+  })
+
+  it('does not report upload-progress for a batch that fails', async () => {
+    await captureWithAudio()
+    await import('./bootstrap').then((m) => m.ensureTree('tok', ['timelog']))
+    drive.failNext(500)
+    const { drainStream } = await import('./queue')
+    const events: unknown[] = []
+    const res = await drainStream('tok', 'timelog', (e) => events.push(e))
+    expect(res.outcome).toBe('retry-later')
+    expect(events).toEqual([{ kind: 'upload-start', stream: 'timelog', itemsTotal: 1 }])
+  })
+
   it('batches ≥2 pending events into one sealed segment upload (SPEC §5.7)', async () => {
     const e1 = await captureWithAudio()
     const e2 = await captureWithAudio()
