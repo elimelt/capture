@@ -44,8 +44,12 @@ Defines the IndexedDB schema (via the `idb` package) and owns the singleton conn
 Key exports:
 
 - `getDb(): Promise<TimeboxDatabase>` — opens (once, memoized in a module-level promise)
-  the `timebox` database at **version 10** and runs versioned upgrades.
+  the `timebox` database at **version 10** and runs versioned upgrades. Handles the
+  full `openDB` lifecycle — `blocked`/`blocking`/`terminated` plus open failures —
+  see "Connection lifecycle" below.
 - `resetDbCache(): void` — test hook; forgets the cached connection promise.
+- `DB_BLOCKED_MESSAGE` — the boot-splash note shown while an upgrade is blocked by
+  another tab.
 - `type TimeboxDatabase = IDBPDatabase<TimeboxDB>`.
 - `type SyncStatus = 'queued' | 'uploaded' | 'error'` — user-facing rollup.
 - `type SyncPhase = 'attachments-pending' | 'record-pending' | 'done'` — position in the
@@ -106,6 +110,35 @@ higher version without a given migration having run; each call is state-guarded 
 meta marker (plus, for chats, a stream-state check) instead. Any branch adding a
 migration must raise the version above the current max so `upgrade()` fires; each
 state-guarded block then self-selects.
+
+Connection lifecycle (version-agnostic; composes with any future version bump):
+
+- **`blocked`** — our upgrade is waiting on an old-version connection in another
+  tab/window, so `openDB` stays pending and boot sits on the splash (`init()` in
+  appStore.ts can't settle, `ready` never flips). Since this fires before React
+  mounts, the handler writes `DB_BLOCKED_MESSAGE` directly into the boot splash's
+  `<p>` (index.html) — "Close other Capture tabs or windows to finish updating" —
+  instead of hanging silently; the open still proceeds the moment the old tab
+  closes its connection. No-ops without a DOM (tests) or once the splash is gone.
+- **`blocking`** — this connection is holding up a *newer* version elsewhere (a tab
+  that loaded a newer deploy). We close the connection so the other tab can upgrade,
+  and forget the memo: the next `getDb()` here reopens (same version if this code is
+  current) or fails fast with the reload-prompt error below (if this tab is stale) —
+  never wedging the other tab's boot.
+- **`terminated`** — the browser force-closed the connection (resource reclaim,
+  storage cleared); the memo is forgotten so the next `getDb()` reconnects rather
+  than reusing a dead handle.
+- **Open failure** — a rejected open is *never* memoized: the promise cache is
+  cleared on rejection so the next `getDb()` retries instead of replaying a cached
+  rejection for the rest of the session. A `VersionError` (the DB was already
+  upgraded past what this code opens — only newer code can open it) is mapped to
+  `"Capture was updated in another tab — reload this page to continue."`, which
+  store actions surface via `lastError`.
+
+Lifecycle behavior is covered by `db.test.ts` (fake-indexeddb supports
+multi-connection blocking, and its `forceCloseDatabase` simulates abnormal
+termination). Not simulatable there: a real browser's cross-process timing and the
+splash DOM itself (tests stub `document`).
 
 ### src/store/migrateChatsV1.ts
 
@@ -527,7 +560,9 @@ and wrong-typed legacy fields ignored.
 - **Blobs are keyed by contract filename**, computed at append time — the same name is
   used locally and in Drive, which is what makes re-uploads idempotent.
 - **`db.ts` caches the connection**; tests (and anything deleting the database) must
-  call `resetDbCache()` or they will reuse a closed/stale handle.
+  call `resetDbCache()` or they will reuse a closed/stale handle. (Rejected opens,
+  `blocking`, and `terminated` clear the cache themselves — see the db.ts
+  connection-lifecycle notes.)
 - **Settings are an event-sourced stream.** `settings.ts` never touches `meta`
   (the legacy `settings:*` keys remain only as migration input/rollback artifacts):
   reads re-fold the `settings` stream per call, writes append through `events.ts` —

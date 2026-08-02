@@ -145,8 +145,29 @@ export type TimeboxDatabase = IDBPDatabase<TimeboxDB>
 
 let dbPromise: Promise<TimeboxDatabase> | undefined
 
+/** Boot-splash note shown while a version upgrade is blocked by another tab. */
+export const DB_BLOCKED_MESSAGE = 'Close other Capture tabs or windows to finish updating'
+
+/**
+ * Surface a blocked upgrade on the boot splash (index.html). `blocked` fires
+ * before React mounts — openDB is still pending, so `init()` never settles and
+ * the splash is the only UI on screen — hence direct DOM, not store state.
+ * No-ops once the splash is gone (post-boot) or without a DOM (tests).
+ */
+function noteUpgradeBlocked(): void {
+  if (typeof document === 'undefined') return
+  const note = document.getElementById('splash')?.querySelector('p')
+  if (note) note.textContent = DB_BLOCKED_MESSAGE
+}
+
+/** Forget the memoized connection iff it is still the current one. */
+function forget(promise: Promise<TimeboxDatabase>): void {
+  if (dbPromise === promise) dbPromise = undefined
+}
+
 export function getDb(): Promise<TimeboxDatabase> {
-  dbPromise ??= openDB<TimeboxDB>('timebox', 10, {
+  if (dbPromise) return dbPromise
+  const promise: Promise<TimeboxDatabase> = openDB<TimeboxDB>('timebox', 10, {
     async upgrade(db, oldVersion, _newVersion, tx) {
       if (oldVersion < 1) {
         const events = db.createObjectStore('events', { keyPath: ['stream', 'seq'] })
@@ -232,8 +253,43 @@ export function getDb(): Promise<TimeboxDatabase> {
       // inside migrateChatsV1) — never by oldVersion. Idempotent.
       await migrateChatsV1(tx)
     },
+    blocked() {
+      // Our upgrade is waiting on an old-version connection in another
+      // tab/window (openDB stays pending, so boot sits on the splash).
+      // Make the wait actionable instead of an infinite silent splash.
+      noteUpgradeBlocked()
+    },
+    blocking() {
+      // This connection is holding up a NEWER version elsewhere (a tab that
+      // loaded a deploy with a higher DB version). Close so that tab can
+      // upgrade, and forget the memo: the next getDb() here reopens — same
+      // version if this code is current, or a fast VersionError (mapped to a
+      // reload prompt below, surfaced via the store's lastError) if this tab
+      // is stale — instead of wedging the other tab's boot forever.
+      forget(promise)
+      void promise.then(
+        (db) => db.close(),
+        () => undefined,
+      )
+    },
+    terminated() {
+      // The browser force-closed the connection behind our back; forget the
+      // memo so the next getDb() reconnects instead of using a dead handle.
+      forget(promise)
+    },
+  }).catch((err: unknown) => {
+    // Never memoize a rejection: one transient open failure must not brick
+    // every later getDb() in the session — forget so the next call retries.
+    forget(promise)
+    if (err instanceof Error && err.name === 'VersionError') {
+      // Another tab already upgraded the DB past what this code opens: only
+      // newer code can open it. Say so instead of leaking IndexedDB jargon.
+      throw new Error('Capture was updated in another tab — reload this page to continue.')
+    }
+    throw err
   })
-  return dbPromise
+  dbPromise = promise
+  return promise
 }
 
 /** Test hook: forget the cached connection (e.g. after deleting the DB). */
