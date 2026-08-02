@@ -12,6 +12,7 @@ type Json = Record<string, unknown>
 function orderedLocation(l: GeoLocation): Json {
   const out: Json = { lat: l.lat, lng: l.lng, accuracyM: l.accuracyM }
   if (l.placeLabel !== undefined) out.placeLabel = l.placeLabel
+  if (l.address !== undefined) out.address = l.address
   return out
 }
 
@@ -26,6 +27,7 @@ function orderedPatch(p: AmendPatch): Json {
   const out: Json = {}
   if (p.capturedAt !== undefined) out.capturedAt = p.capturedAt
   if (p.location !== undefined) out.location = orderedLocation(p.location)
+  else if (p.clearLocation) out.clearLocation = true
   if (p.removeAttachments !== undefined) out.removeAttachments = p.removeAttachments
   return out
 }

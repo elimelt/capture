@@ -1,5 +1,5 @@
-import { useRef, useState } from 'react'
-import type { Entry } from '../contract/types'
+import { Suspense, lazy, useRef, useState } from 'react'
+import type { Entry, GeoLocation } from '../contract/types'
 import type { SyncStatus } from '../store/db'
 import { Button, Card, IconButton, cx, motion, tone, type_ } from '../ui'
 import { TextSheet } from './TextSheet'
@@ -7,6 +7,13 @@ import { AttachmentBody } from './AttachmentBody'
 import { SyncBadge } from './SyncBadge'
 import { useAudioPlayback } from './useAudioPlayback'
 import { useRecorder, type RecordingResult } from './useRecorder'
+
+// Leaflet-backed; lazy so its chunk (JS + CSS) stays out of the initial
+// bundle and only loads for cards that show or edit a location.
+const MiniMap = lazy(() => import('./MiniMap'))
+const LocationSheet = lazy(() =>
+  import('./LocationSheet').then((m) => ({ default: m.LocationSheet })),
+)
 
 export function timeLabel(iso: string): string {
   return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
@@ -31,6 +38,8 @@ interface EntryCardProps {
   onAddAudio: (result: RecordingResult) => void
   onEditText: (oldFile: string, text: string, derivedFrom?: string) => void
   onRemoveAttachment: (file: string) => void
+  /** Set or clear the entry's location (amend patch.location). */
+  onSetLocation: (location: GeoLocation | null) => void
 }
 
 export function EntryCard({
@@ -44,8 +53,10 @@ export function EntryCard({
   onAddAudio,
   onEditText,
   onRemoveAttachment,
+  onSetLocation,
 }: EntryCardProps) {
   const [noteOpen, setNoteOpen] = useState(false)
+  const [locationOpen, setLocationOpen] = useState(false)
   const photoInputRef = useRef<HTMLInputElement>(null)
   const timeInputRef = useRef<HTMLInputElement>(null)
   const audio = entry.attachments.find((a) => a.kind === 'audio')
@@ -96,9 +107,9 @@ export function EntryCard({
                 aria-label="Change entry time"
               />
             </span>
-            {entry.location?.placeLabel && (
+            {(entry.location?.placeLabel ?? entry.location?.address) && (
               <span className={cx('truncate', type_.sub, tone.textMuted)}>
-                {entry.location.placeLabel}
+                {entry.location.placeLabel ?? `near ${entry.location.address}`}
               </span>
             )}
             <span className={cx('shrink-0', audio?.durationSec === undefined && 'ml-auto')}>
@@ -134,6 +145,14 @@ export function EntryCard({
         onEditText={onEditText}
         onRemoveAttachment={onRemoveAttachment}
       />
+
+      {entry.location && (
+        <div className="mt-2">
+          <Suspense fallback={null}>
+            <MiniMap location={entry.location} />
+          </Suspense>
+        </div>
+      )}
 
       {rec.state === 'recording' ? (
         <div
@@ -181,6 +200,9 @@ export function EntryCard({
               + audio
             </Button>
           )}
+          <Button variant="ghost" size="sm" onClick={() => setLocationOpen(true)}>
+            {entry.location ? '· location' : '+ location'}
+          </Button>
           <Button variant="dangerGhost" size="sm" onClick={onDelete} className="ml-auto">
             Delete
           </Button>
@@ -207,6 +229,16 @@ export function EntryCard({
           onSave={onAddNote}
           onClose={() => setNoteOpen(false)}
         />
+      )}
+      {locationOpen && (
+        <Suspense fallback={null}>
+          <LocationSheet
+            initial={entry.location}
+            onSave={(loc) => onSetLocation(loc)}
+            onClear={() => onSetLocation(null)}
+            onClose={() => setLocationOpen(false)}
+          />
+        </Suspense>
       )}
     </Card>
   )

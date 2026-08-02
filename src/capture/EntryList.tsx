@@ -83,6 +83,14 @@ export function EntryList({ entries, onDelete }: EntryListProps) {
               patch: { removeAttachments: [file] },
             })
           }
+          onSetLocation={(location) =>
+            void amend({
+              targets: [entry.id],
+              // A null clears the location via the append-only clearLocation
+              // flag; the fold treats an absent `location` as "no change".
+              patch: location ? { location } : { clearLocation: true },
+            })
+          }
         />
       ))}
     </div>

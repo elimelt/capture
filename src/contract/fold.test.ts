@@ -76,6 +76,24 @@ describe('fold', () => {
     expect(entry.seq).toBe(1)
   })
 
+  it('clears the location via patch.clearLocation', () => {
+    const loc = { lat: 40.7, lng: -74, accuracyM: 10, placeLabel: 'Office' }
+    const events = [
+      cap(1, 'aaaaaa', '2026-08-02T09:00:00-04:00', { location: loc }),
+      amend(2, ['aaaaaa'], { clearLocation: true }),
+    ]
+    expect(fold(events)[0].location).toBeUndefined()
+  })
+
+  it('prefers patch.location over clearLocation when both are present', () => {
+    const loc = { lat: 40.7, lng: -74, accuracyM: 10 }
+    const events = [
+      cap(1, 'aaaaaa', '2026-08-02T09:00:00-04:00'),
+      amend(2, ['aaaaaa'], { location: loc, clearLocation: true }),
+    ]
+    expect(fold(events)[0].location).toEqual(loc)
+  })
+
   it('appends amend attachments to the target entry', () => {
     const note: Attachment = { kind: 'text', file: '000002_x_note.txt', mimeType: 'text/plain' }
     const audio: Attachment = { kind: 'audio', file: '000001_x.m4a', mimeType: 'audio/mp4' }
