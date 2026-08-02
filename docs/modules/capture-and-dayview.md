@@ -196,15 +196,17 @@ tested directly (`editPlan.test.ts`), no I/O.
 - `EntryEditDraft` — `{ date: "YYYY-MM-DD", time: "HH:mm", removeFiles: string[] }`,
   the editable envelope fields of an entry.
 - `draftFromEntry(entry): EntryEditDraft` — current values (`localDateOf` /
-  `localTimeOf` of `capturedAt`), nothing staged.
+  `civilTimeOf` of `capturedAt` — both pure slices of the string's own civil
+  fields, so the pair is consistent in the entry's zone), nothing staged.
 - `toggleRemoval(draft, file): EntryEditDraft` — stages/unstages one attachment file
   for removal; pure, non-mutating.
 - `draftPatch(entry, draft): AmendPatch | null` — the single amend patch a saved
   draft implies, or `null` when nothing changed (callers append no event for a no-op
   edit). Date/time changes recompose `capturedAt` via
-  `withDateIso` + `withTimeOfDayIso` (seconds zeroed, device-zone rendering — same
-  semantics as the inline time picker); removals are deduped and filtered to files
-  the entry currently shows.
+  `zonedIso(draft.date, draft.time, entry.deviceTz)` (seconds zeroed, DST-resolved
+  offset) — the entry's own zone, so an edit made from another timezone moves
+  exactly the wall time the sheet displayed and preserves the entry's offset;
+  removals are deduped and filtered to files the entry currently shows.
 
 ### src/capture/EditEntrySheet.tsx
 
@@ -473,8 +475,9 @@ covers `coerceRadiusM` (parsing, defaulting, 10 m floor) and `needsPlacePrompt`
   user's edit. `onEditText` performs remove-old + add-new in a *single* amend.
 - **`capturedAt` semantics:** for voice entries it is the record-tap time, not the stop
   time; text/photo entries use submit time. Inline time edits change only the
-  time-of-day on the entry's own date (`withTimeOfDayIso`); the Edit sheet can also
-  move the date (`withDateIso`), and both land in `patch.capturedAt`.
+  time-of-day, re-rendered in the device zone (`withTimeOfDayIso`); the Edit sheet
+  edits date and time in the **entry's own zone** (`civilTimeOf` draft, `zonedIso`
+  recomposition with `entry.deviceTz`), and both land in `patch.capturedAt`.
 - **Recorder races are resolved by claiming:** `finalize()` nulls `recorderRef` before
   stopping, so a user tap racing the auto-stop timer (or the background-commit handler)
   yields exactly one committed clip.

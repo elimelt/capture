@@ -27,6 +27,17 @@ export function localTimeOf(iso: string): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
+/**
+ * Wall-clock time of day ("HH:mm") as written in the string — the entry's
+ * own offset, not the device zone (the counterpart of localDateOf's pure
+ * slice). For canonical contract timestamps these civil fields are exactly
+ * the wall clock of the entry's `deviceTz` at capture, so pairing this with
+ * localDateOf describes one consistent civil instant in the entry's zone.
+ */
+export function civilTimeOf(iso: string): string {
+  return iso.slice(11, 16)
+}
+
 /** Add minutes to a local-offset ISO string, preserving the original offset. */
 export function addMinutesIso(iso: string, minutes: number): string {
   const offset = iso.slice(19) // "±HH:MM" or "Z"
@@ -54,17 +65,52 @@ export function withTimeOfDayIso(iso: string, time: string): string {
   return toLocalIso(d)
 }
 
+/** Offset (minutes east of UTC) of IANA zone `tz` at the given instant. */
+function offsetMinutesAt(utcMs: number, tz: string): number {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      hourCycle: 'h23',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    })
+      .formatToParts(new Date(utcMs))
+      .map((p) => [p.type, p.value]),
+  )
+  const asUtc = Date.UTC(
+    Number(parts.year),
+    Number(parts.month) - 1,
+    Number(parts.day),
+    Number(parts.hour),
+    Number(parts.minute),
+    Number(parts.second),
+  )
+  return (asUtc - utcMs) / 60_000
+}
+
 /**
- * Set the local calendar date ("YYYY-MM-DD") on a local-offset ISO string,
- * keeping the wall-clock time of day and re-rendering in the device's
- * current zone (the counterpart of withTimeOfDayIso). Crossing a DST
- * boundary keeps the wall time — the offset in the output adjusts.
+ * Render civil wall time — `date` "YYYY-MM-DD" + `time` "HH:mm", seconds
+ * zeroed — in IANA zone `tz` as a contract ISO string, resolving the zone's
+ * offset at that moment (DST-safe: the output's civil fields are exactly the
+ * given wall time; only the offset varies). The edit sheet uses this with
+ * the entry's own `deviceTz`, so editing preserves the entry's zone instead
+ * of silently re-rendering into the device's. A wall time skipped or
+ * repeated by a DST transition resolves deterministically (second-pass
+ * offset probe).
  */
-export function withDateIso(iso: string, date: string): string {
+export function zonedIso(date: string, time: string, tz: string): string {
   const [y, mo, d] = date.split('-').map(Number)
-  const t = new Date(iso)
-  t.setFullYear(y, mo - 1, d)
-  return toLocalIso(t)
+  const [h, mi] = time.split(':').map(Number)
+  const wallAsUtc = Date.UTC(y, mo - 1, d, h, mi, 0)
+  const guess = offsetMinutesAt(wallAsUtc, tz)
+  const offMin = offsetMinutesAt(wallAsUtc - guess * 60_000, tz)
+  const sign = offMin >= 0 ? '+' : '-'
+  const abs = Math.abs(offMin)
+  return `${date}T${time}:00${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`
 }
 
 export function deviceTz(): string {

@@ -93,7 +93,12 @@ Key exports:
 - `localDateOf(iso: string): string` — `"YYYY-MM-DD"` prefix of a local-offset ISO
   string (a pure `slice(0, 10)`; assumes the canonical shape).
 - `localTimeOf(iso: string): string` — wall-clock `"HH:mm"` of the instant in the
-  **device's current zone** (feeds `<input type="time">` values and edit drafts).
+  **device's current zone** (feeds the entry card's inline `<input type="time">`).
+- `civilTimeOf(iso: string): string` — wall-clock `"HH:mm"` as **written in the
+  string** (a pure `slice(11, 16)`, the counterpart of `localDateOf`). Paired with
+  `localDateOf` it describes one consistent civil instant in the entry's own zone;
+  the edit-sheet draft uses this pair so a cross-timezone entry never shows the
+  string's date with the device zone's time.
 - `addMinutesIso(iso: string, minutes: number): string` — shifts the instant and
   re-renders in the **original string's offset** (not the device zone). `Z`-suffixed
   or offset-less input renders back as `...Z`. Note: the offset is read at fixed
@@ -101,10 +106,12 @@ Key exports:
 - `withTimeOfDayIso(iso: string, time: string): string` — sets wall-clock `"HH:mm"`
   (seconds zeroed), keeping the date, but re-renders in the **device's current zone**
   via `toLocalIso` (unlike `addMinutesIso`).
-- `withDateIso(iso: string, date: string): string` — sets the local calendar date
-  `"YYYY-MM-DD"`, keeping the wall-clock time, re-rendered in the **device's current
-  zone**; crossing a DST boundary keeps the wall time and adjusts the offset. The
-  Edit sheet composes it with `withTimeOfDayIso` to move an entry across days.
+- `zonedIso(date: string, time: string, tz: string): string` — renders a civil wall
+  time (`"YYYY-MM-DD"` + `"HH:mm"`, seconds zeroed) in an **explicit IANA zone**,
+  resolving that zone's offset at that moment via `Intl.DateTimeFormat` (DST-safe;
+  wall times skipped/repeated by a transition resolve deterministically). The Edit
+  sheet recomposes `capturedAt` with the entry's own `deviceTz`, so edits preserve
+  the entry's zone instead of silently re-rendering into the device's.
 - `deviceTz(): string` — IANA zone from `Intl.DateTimeFormat`.
 
 Relations: `filenames.ts` uses `localDateOf` for partitions; event producers use
@@ -357,9 +364,12 @@ ids, and that `BUILTIN_STREAMS` contains the timelog stream.
   mutates them after bootstrap.
 - **Shallow parse validation.** `parseEvent` validates the envelope and
   type-required fields only; attachment and patch internals are trusted.
-- **Time-helper asymmetry.** `addMinutesIso` re-renders in the *input string's*
-  offset, while `withTimeOfDayIso`/`withDateIso` re-render in the *device's
-  current* zone.
+- **Time-helper bases differ — don't mix them.** `addMinutesIso` re-renders in the
+  *input string's* offset; `withTimeOfDayIso`/`localTimeOf` use the *device's
+  current* zone; `civilTimeOf`/`localDateOf` read the *string's own* civil fields;
+  `zonedIso` renders in an *explicit* IANA zone. A date+time pair shown to the user
+  must come from one basis (the edit sheet uses the string's civil fields and saves
+  via `zonedIso(entry.deviceTz)`); mixing bases mislabels cross-timezone entries.
 - **`getStream` throws** for unknown ids; callers must pass a registered stream id.
 - **Event ids are random, not checked for uniqueness** (6-char base36); uniqueness
   is probabilistic "per stream".

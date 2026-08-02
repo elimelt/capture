@@ -26,11 +26,29 @@ function entry(extra: Partial<Entry> = {}): Entry {
   }
 }
 
+// An entry captured in Tokyo, opened for editing on the (New York) device.
+const TOKYO = {
+  loggedAt: '2026-08-03T00:30:00+09:00',
+  capturedAt: '2026-08-03T00:30:00+09:00',
+  deviceTz: 'Asia/Tokyo',
+}
+
 describe('draftFromEntry', () => {
   it('reads the current date and wall-clock time with nothing staged', () => {
     expect(draftFromEntry(entry())).toEqual({
       date: '2026-08-02',
       time: '09:04',
+      removeFiles: [],
+    })
+  })
+
+  it("shows a consistent date+time pair in the ENTRY's zone, not the device's", () => {
+    // Device zone (America/New_York) would read this instant as Aug 2,
+    // 11:30 — mixing that time with the string's Aug 3 date corrupted
+    // cross-timezone edits. Both fields must come from the entry's zone.
+    expect(draftFromEntry(entry(TOKYO))).toEqual({
+      date: '2026-08-03',
+      time: '00:30',
       removeFiles: [],
     })
   })
@@ -99,5 +117,25 @@ describe('draftPatch', () => {
     const e = entry()
     const patch = draftPatch(e, { ...draftFromEntry(e), date: '2026-01-15' })
     expect(patch).toEqual({ capturedAt: '2026-01-15T09:04:00-05:00' })
+  })
+
+  it('open-then-save of a cross-timezone entry is a no-op (null, no amend)', () => {
+    const e = entry(TOKYO)
+    expect(draftPatch(e, draftFromEntry(e))).toBeNull()
+  })
+
+  it("date-only edit keeps the wall time and offset of the ENTRY's zone", () => {
+    // Editing from New York must move the Tokyo entry by whole Tokyo days:
+    // same 00:30 wall time, same +09:00 offset — never re-rendered into the
+    // device zone.
+    const e = entry(TOKYO)
+    const patch = draftPatch(e, { ...draftFromEntry(e), date: '2026-08-02' })
+    expect(patch).toEqual({ capturedAt: '2026-08-02T00:30:00+09:00' })
+  })
+
+  it("time-only edit round-trips through the entry's own offset", () => {
+    const e = entry(TOKYO)
+    const patch = draftPatch(e, { ...draftFromEntry(e), time: '01:45' })
+    expect(patch).toEqual({ capturedAt: '2026-08-03T01:45:00+09:00' })
   })
 })
