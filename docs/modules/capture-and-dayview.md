@@ -435,9 +435,10 @@ The card computes its own `EntryLifecycle` from `sync` + `hasPendingEnrichment(e
   entries show no separate content block; the header play button already represents the
   primary clip.
 - **Expanded content:** the full `AttachmentBody` (all attachments, inline editing) plus
-  the `MiniMap` location preview (when `entry.location` is set) mount only once
-  `expanded` is true — strictly lazier than before, since `MiniMap`'s chunk now loads
-  only for an expanded card with a location, not every collapsed one.
+  a `PlaceCard` row (when `entry.location` is set) mount once `expanded` is true.
+  `PlaceCard` is leaflet-free — no network, no map tiles in the feed (#81); tapping it
+  sets `mapOpen`, which mounts the lazy `MiniMap` full-screen dialog. Leaflet's chunk
+  now loads only on that explicit tap, not for every expanded card with a location.
 - **Per-card recorder:** "+ audio"/"Add audio" uses its own `useRecorder()` instance so
   entries can hold multiple clips; while recording, the footer (labelled actions or the
   overflow toggle) is replaced by a compact timer bar with Discard/Done, regardless of
@@ -445,7 +446,10 @@ The card computes its own `EntryLifecycle` from `sync` + `hasPendingEnrichment(e
   already expanded whenever this bar shows). If that recorder errors, "Add audio"
   becomes a "mic unavailable" button that just calls `rec.resetError`.
 - **Lazy Leaflet:** `MiniMap` and `LocationSheet` are `lazy()` imports wrapped in
-  `Suspense fallback={null}`, keeping the Leaflet JS+CSS chunk out of the initial bundle.
+  `Suspense fallback={null}`, keeping the Leaflet JS+CSS chunk out of the initial
+  bundle; `MiniMap` additionally only mounts while `mapOpen` is true (#81), so opening
+  it is the one thing that loads the chunk, not expanding the card or opening the
+  location editor.
 - Hidden photo input (camera capture) and a `TextSheet` for "Add note" mirror the
   capture-screen patterns.
 - **Labelled action row (expanded only, #78):** a full-bleed hairline divider separates
@@ -765,25 +769,62 @@ where `onSave: (location: GeoLocation) => void` and `onClear: () => void`.
 - "Clear" (only when `initial` exists) calls `onClear()` then `onClose()`; upstream this
   becomes `patch.clearLocation: true`.
 
+### src/capture/placeCardModel.ts
+
+**Purpose:** Pure place-card label derivation (#81) — no I/O, no React; unit-tested
+directly (`placeCardModel.test.ts`, no jsdom). The single source of truth for "what do
+we call this location", shared by `PlaceCard.tsx` and `MiniMap.tsx`'s full-screen
+dialog labelling so neither re-derives the placeLabel/address fallback independently.
+
+**Exports:**
+
+- `locationName(location): string | undefined` — `placeLabel` wins, else
+  `"near <address>"`, else `undefined`. A single-line label for call sites (the map
+  dialog's header and pin popup) with no separate title/subtitle slots.
+- `interface PlaceCardModel { title: string; subtitle?: string }` and
+  `placeCardModel(location): PlaceCardModel` — a place label leads as `title` with its
+  address as a secondary `subtitle` (only set when *both* exist); an address alone
+  becomes the `"near <address>"` title with no subtitle; a bare coordinate (no label,
+  no address) falls back to the generic title `"Location captured"`. Never emits raw
+  `lat`/`lng` in either field (pinned invariant, `placeCardModel.test.ts`).
+
+### src/capture/PlaceCard.tsx
+
+**Purpose:** Compact place card (#81) — represents an entry's location without loading
+Leaflet, fetching map tiles, or making any network request. Replaces `MiniMap`'s old
+always-mounted 96px map-tile preview, which no longer exists; the interactive map is
+now one explicit tap away.
+
+**Export:** `PlaceCard({ location, capturedAtLabel?, onExpand }: { location:
+GeoLocation; capturedAtLabel?: string; onExpand: () => void })`. `capturedAtLabel` is
+optional and unused by `EntryCard` (its header already shows the capture time) — kept
+for other call sites (e.g. a future Settings places list) that don't already show one.
+
+**Behavior:** a single tappable row — no new bordered surface, just a row inside the
+entry's `Card` (#81 req 5) — with a `PinIcon`, the `placeCardModel` title in
+`type_.bodyStrong`/`tone.textPrimary` (serif; an explicit exception to the #85 "sans is
+chrome" default, per the issue), and, when present, the subtitle in
+`type_.caption`/`tone.textMuted`. Tapping anywhere on the row calls `onExpand`.
+
 ### src/capture/MiniMap.tsx
 
-**Purpose:** Embedded location preview inside an entry card, expanding to a full-screen
-interactive map. Lazy chunk (Leaflet JS + CSS loaded only when a card has a location).
+**Purpose:** Full-screen interactive location map (#81) — the only Leaflet surface left
+in the entry card. Lazy chunk (Leaflet JS + CSS) loaded only while the dialog is open,
+i.e. only after an explicit tap on `PlaceCard`, never merely because a card is expanded
+or in view.
 
-**Exports:** default `MiniMap({ location }: { location: GeoLocation })`; named
-`LocationLabel({ location })` (caption text: `placeLabel` or `near <address>`, or null).
+**Export:** default `MiniMap({ location, onClose }: { location: GeoLocation; onClose:
+() => void })`. Callers own the open/close boolean (`EntryCard`'s `mapOpen` state) and
+mount this only while it's true; there is no compact/preview mode anymore.
 
 **Key behaviors:**
 
-- Compact state: a `pointer-events-none`, 96px-tall non-interactive `MapContainer`
-  (zoom 15, all controls/gestures disabled) with a clay `CircleMarker`, wrapped in a
-  button that opens the full-screen dialog.
 - `Recenter` helper: react-leaflet's `MapContainer` reads `center`/`zoom` only on mount,
   so after a location amend the map would keep showing the old spot; `Recenter` calls
   `map.setView` imperatively whenever the coordinate changes.
-- Expanded state: full-screen dialog (zoom 16, interactive) with a `Popup` label and,
-  when `placeLabel` is set, a spruce accuracy `Circle` of radius
-  `max(accuracyM, 40)` meters.
+- Full-screen dialog (zoom 16, interactive) with a header (`locationName` label + a
+  "Done" button calling `onClose`) and a `Popup` label on the marker, plus, when
+  `placeLabel` is set, a spruce accuracy `Circle` of radius `max(accuracyM, 40)` meters.
 
 ### src/capture/LifecycleBadge.tsx
 
@@ -1242,6 +1283,11 @@ re-throw, matching the appStore `guard` convention.
 - **Leaflet is always lazy:** `MiniMap` and `LocationSheet` load as separate chunks;
   `MiniMap` must re-center imperatively (`Recenter`) because `MapContainer` ignores
   `center` prop changes after mount.
+- **No map tiles in the feed (#81):** the collapsed and expanded card both represent a
+  location via the leaflet-free `PlaceCard` row (`placeCardModel.ts` for the pure
+  title/subtitle derivation); `MiniMap` renders only the full-screen interactive dialog,
+  mounted only while `EntryCard`'s `mapOpen` is true. Don't reintroduce a compact/preview
+  map mode — that chunk-loading cost is exactly what this issue removed.
 - **Manually placed pins have `accuracyM: 0`** (or the prior value when editing), and
   `LocationSheet` recomputes `placeLabel`/`address` for the new coordinate on save.
 - **Blob-backed rendering is async:** note text, photos, and audio all load from
