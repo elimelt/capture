@@ -17,7 +17,7 @@ export interface RecordingResult {
   durationSec: number
 }
 
-export type RecorderState = 'idle' | 'recording' | 'error'
+export type RecorderState = 'idle' | 'starting' | 'recording' | 'error'
 
 /** 'denied': user must enable the mic in iOS Settings. 'failed': worth retrying. */
 export type RecorderErrorKind = 'denied' | 'failed'
@@ -80,6 +80,8 @@ export function createRecorderEngine(callbacks: RecorderEngineCallbacks): Record
   let audioCtx: AudioContext | null = null
   let analyser: AnalyserNode | null = null
   let levelBuf: Uint8Array<ArrayBuffer> | null = null
+  let startInFlight = false
+  let active = true
 
   function cleanup() {
     if (timer !== undefined) clearInterval(timer)
@@ -174,9 +176,16 @@ export function createRecorderEngine(callbacks: RecorderEngineCallbacks): Record
   }
 
   async function start(maxSec = 60, onAutoStop?: (result: RecordingResult) => void) {
-    if (recorderRef.current) return
+    if (recorderRef.current || startInFlight) return
+    startInFlight = true
+    callbacks.onErrorKind(undefined)
+    callbacks.onStateChange('starting')
     try {
       const mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      if (!active) {
+        mediaStream.getTracks().forEach((track) => track.stop())
+        return
+      }
       const mimeType = pickMimeType()
       const recorder = new MediaRecorder(mediaStream, mimeType ? { mimeType } : undefined)
       chunks = []
@@ -212,7 +221,6 @@ export function createRecorderEngine(callbacks: RecorderEngineCallbacks): Record
         /* meter unavailable; recording continues */
       }
       recorder.start()
-      callbacks.onErrorKind(undefined)
       callbacks.onStateChange('recording')
       callbacks.onElapsed(0)
       timer = setInterval(() => {
@@ -228,6 +236,8 @@ export function createRecorderEngine(callbacks: RecorderEngineCallbacks): Record
       cleanup()
       callbacks.onErrorKind(classifyError(e))
       callbacks.onStateChange('error')
+    } finally {
+      startInFlight = false
     }
   }
 
@@ -236,5 +246,10 @@ export function createRecorderEngine(callbacks: RecorderEngineCallbacks): Record
     callbacks.onStateChange('idle')
   }
 
-  return { start, stop: finalize, cancel, resetError, getLevel, destroy: cleanup }
+  function destroy() {
+    active = false
+    cleanup()
+  }
+
+  return { start, stop: finalize, cancel, resetError, getLevel, destroy }
 }

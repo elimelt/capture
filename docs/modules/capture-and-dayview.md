@@ -1038,7 +1038,7 @@ instance held in a ref for the component's lifetime.
 **Exports:**
 
 - `useRecorder(): Recorder`
-- `interface Recorder { state: 'idle' | 'recording' | 'error'; elapsedSec: number;
+- `interface Recorder { state: 'idle' | 'starting' | 'recording' | 'error'; elapsedSec: number;
   start(maxSec = 60, onAutoStop?): Promise<void>; stop(): Promise<RecordingResult |
   null>; cancel(): void; resetError(): void; getLevel(): number; errorKind?: 'denied' |
   'failed' }`
@@ -1047,7 +1047,10 @@ instance held in a ref for the component's lifetime.
 
 **Lifecycle & edge cases:** see `recorderEngine.ts` above for `start`/`stop`/`cancel`/
 out-of-band-stop behavior — this hook adds nothing but state plumbing. The engine is
-created once (guarded by the ref already being set) and destroyed on unmount.
+created once (guarded by the ref already being set) and destroyed on unmount. `start`
+is a no-op while a permission request is already in flight; iOS permission negotiation
+is represented as `starting`, not `recording`, and a destroyed hook stops any stream
+that resolves after unmount.
 
 ### src/capture/useAudioPlayback.ts
 
