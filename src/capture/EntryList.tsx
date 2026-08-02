@@ -91,6 +91,7 @@ export function EntryList({ entries, onDelete }: EntryListProps) {
               patch: location ? { location } : { clearLocation: true },
             })
           }
+          onApplyEdit={(patch) => void amend({ targets: [entry.id], patch })}
         />
       ))}
     </div>

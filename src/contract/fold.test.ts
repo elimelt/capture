@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { AmendEvent, Attachment, CaptureEvent, RevokeEvent } from './types'
 import { EVENT_SCHEMA } from './types'
 import { fold } from './fold'
+import { parseEvent, serializeEvent } from './serialize'
 
 const STREAM = 'timelog'
 const TZ = 'America/New_York'
@@ -271,5 +272,38 @@ describe('fold', () => {
     expect(fold(shuffled)).toEqual(fold(events))
     expect(fold(shuffled).map((e) => e.id)).toEqual(['aaaaaa'])
     expect(fold(shuffled)[0].attachments).toEqual([note])
+  })
+
+  it('applies an amend imported before its target capture (out-of-order pull)', () => {
+    // A pull can hand importEvents the amend record before the capture it
+    // targets; the fold's total order — not arrival order — decides.
+    const events = [
+      amend(2, ['aaaaaa'], { capturedAt: '2026-08-02T08:40:00-04:00' }),
+      cap(1, 'aaaaaa', '2026-08-02T09:00:00-04:00'),
+    ]
+    expect(fold(events)[0].capturedAt).toBe('2026-08-02T08:40:00-04:00')
+  })
+
+  it('folds identically after a serialize/parse round-trip (sync wire format)', () => {
+    // Amendments sync through Drive as ordinary event records; a reader that
+    // folds the parsed bytes must converge on the same entries.
+    const note: Attachment = { kind: 'text', file: '000003_x_note.txt', mimeType: 'text/plain' }
+    const events = [
+      cap(1, 'aaaaaa', '2026-08-02T09:00:00-04:00', {
+        location: { lat: 40.7, lng: -74, accuracyM: 25, placeLabel: 'Office' },
+        attachments: [{ kind: 'audio', file: '000001_x.m4a', mimeType: 'audio/mp4', durationSec: 3 }],
+      }),
+      cap(2, 'bbbbbb', '2026-08-02T10:00:00-04:00'),
+      amend(3, ['aaaaaa'], { capturedAt: '2026-08-02T08:40:00-04:00' }, [note]),
+      amend(4, ['aaaaaa'], { clearLocation: true, removeAttachments: ['000001_x.m4a'] }),
+      revoke(5, ['bbbbbb']),
+    ]
+    const wire = events.map((e) => parseEvent(serializeEvent(e)))
+    expect(fold(wire, { includeRevoked: true })).toEqual(fold(events, { includeRevoked: true }))
+    const folded = fold(wire)
+    expect(folded.map((e) => e.id)).toEqual(['aaaaaa'])
+    expect(folded[0].capturedAt).toBe('2026-08-02T08:40:00-04:00')
+    expect(folded[0].location).toBeUndefined()
+    expect(folded[0].attachments).toEqual([note])
   })
 })

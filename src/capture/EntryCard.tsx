@@ -1,5 +1,6 @@
 import { Suspense, lazy, useRef, useState } from 'react'
-import type { Entry, GeoLocation } from '../contract/types'
+import type { AmendPatch, Entry, GeoLocation } from '../contract/types'
+import { localTimeOf } from '../contract/time'
 import type { SyncStatus } from '../store/db'
 import {
   Button,
@@ -7,6 +8,7 @@ import {
   IconButton,
   PinIcon,
   PlusIcon,
+  SlidersIcon,
   TrashIcon,
   captureIcon,
   cx,
@@ -14,6 +16,7 @@ import {
   tone,
   type_,
 } from '../ui'
+import { EditEntrySheet } from './EditEntrySheet'
 import { TextSheet } from './TextSheet'
 import { AttachmentBody } from './AttachmentBody'
 import { SyncBadge } from './SyncBadge'
@@ -37,12 +40,6 @@ export function timeLabel(iso: string): string {
   return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
 }
 
-/** "HH:mm" (local) for <input type="time">. */
-function toTimeValue(iso: string): string {
-  const d = new Date(iso)
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-}
-
 interface EntryCardProps {
   entry: Entry
   maxClipSec: number
@@ -58,6 +55,8 @@ interface EntryCardProps {
   onRemoveAttachment: (file: string) => void
   /** Set or clear the entry's location (amend patch.location). */
   onSetLocation: (location: GeoLocation | null) => void
+  /** One combined edit (date/time + attachment removals) as a single amend. */
+  onApplyEdit: (patch: AmendPatch) => void
 }
 
 export function EntryCard({
@@ -72,9 +71,11 @@ export function EntryCard({
   onEditText,
   onRemoveAttachment,
   onSetLocation,
+  onApplyEdit,
 }: EntryCardProps) {
   const [noteOpen, setNoteOpen] = useState(false)
   const [locationOpen, setLocationOpen] = useState(false)
+  const [editOpen, setEditOpen] = useState(false)
   const photoInputRef = useRef<HTMLInputElement>(null)
   const timeInputRef = useRef<HTMLInputElement>(null)
   const audio = entry.attachments.find((a) => a.kind === 'audio')
@@ -116,7 +117,7 @@ export function EntryCard({
               <input
                 ref={timeInputRef}
                 type="time"
-                value={toTimeValue(entry.capturedAt)}
+                value={localTimeOf(entry.capturedAt)}
                 onChange={(e) => {
                   if (e.target.value) onSetTime(e.target.value)
                 }}
@@ -221,7 +222,10 @@ export function EntryCard({
           <Button variant="ghost" size="sm" onClick={() => setLocationOpen(true)}>
             {entry.location ? <PinIcon /> : <PlusIcon />} location
           </Button>
-          <Button variant="dangerGhost" size="sm" onClick={onDelete} className="ml-auto">
+          <Button variant="ghost" size="sm" onClick={() => setEditOpen(true)} className="ml-auto">
+            <SlidersIcon /> Edit
+          </Button>
+          <Button variant="dangerGhost" size="sm" onClick={onDelete}>
             <TrashIcon /> Delete
           </Button>
         </div>
@@ -246,6 +250,13 @@ export function EntryCard({
           cta="Save note"
           onSave={onAddNote}
           onClose={() => setNoteOpen(false)}
+        />
+      )}
+      {editOpen && (
+        <EditEntrySheet
+          entry={entry}
+          onSave={onApplyEdit}
+          onClose={() => setEditOpen(false)}
         />
       )}
       {locationOpen && (

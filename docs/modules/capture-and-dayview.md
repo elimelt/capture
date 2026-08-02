@@ -11,8 +11,10 @@ option. Camera and text entry are secondary paths one tap away. Every capture ta
 best-effort geolocation snapshot (`geo.ts`) that resolves concurrently with recording and
 never throws. Captured entries appear in a same-day list of `EntryCard`s that support
 playback, inline note/transcript editing, adding attachments (note/photo/audio),
-changing the captured time, editing location on a map, per-entry Drive sync status, and
-undoable delete.
+changing the captured time, editing location on a map, per-entry Drive sync status,
+undoable delete, and an Edit sheet (`EditEntrySheet`) that changes the capture date
+and time and removes any attachment — every entry field is editable, always via new
+`amend`/`revoke` events, never mutation.
 
 The module writes exclusively through the zustand store (`src/store/appStore.ts`):
 `capture` appends a capture event, `amend` patches entries (time, location, attachment
@@ -139,6 +141,9 @@ hides the entry immediately and appends the revoke only after the undo window.
 - `onSetLocation(location | null)` → `patch.location` when set, `patch.clearLocation:
   true` when null (the fold treats an absent `location` as "no change", so clearing
   needs an explicit flag).
+- `onApplyEdit(patch)` → the patch verbatim (already assembled by
+  `editPlan.draftPatch` from the Edit sheet's draft: a recomposed `capturedAt` and/or
+  `removeAttachments`), so one sheet Save is exactly one amend event.
 
 It also reads `streamSettings.maxClipSec` and looks up each entry's sync status by
 `entry.id` from `syncStatuses`.
@@ -153,7 +158,7 @@ actions open.
 (locale time like "9:04 AM"). Props: `entry`, `maxClipSec`, `syncStatus?`, and callbacks
 `onDelete`, `onSetTime(time)`, `onAddNote(text)`, `onAddPhoto(file)`,
 `onAddAudio(result)`, `onEditText(oldFile, text, derivedFrom?)`,
-`onRemoveAttachment(file)`, `onSetLocation(location | null)`.
+`onRemoveAttachment(file)`, `onSetLocation(location | null)`, `onApplyEdit(patch)`.
 
 **Key behaviors:**
 
@@ -176,8 +181,49 @@ actions open.
   capture-screen patterns.
 - **Action-row icons:** the note/photo/audio buttons render the same glyphs as the main
   CTA — pencil/camera/mic via `captureIcon` from `src/ui` — so an entry's add actions
-  share the capture control's visual language; location uses `PinIcon`/`PlusIcon` and
-  delete uses `TrashIcon` from the same shared set.
+  share the capture control's visual language; location uses `PinIcon`/`PlusIcon`,
+  edit uses `SlidersIcon`, and delete uses `TrashIcon` from the same shared set.
+- **Edit sheet:** an "Edit" ghost button (sliders glyph — the pencil already means
+  *text* in this row) opens `EditEntrySheet`; its Save calls `onApplyEdit(patch)`.
+
+### src/capture/editPlan.ts
+
+**Purpose:** Pure planning core for the Edit sheet — the draft→amend translation,
+tested directly (`editPlan.test.ts`), no I/O.
+
+**Exports:**
+
+- `EntryEditDraft` — `{ date: "YYYY-MM-DD", time: "HH:mm", removeFiles: string[] }`,
+  the editable envelope fields of an entry.
+- `draftFromEntry(entry): EntryEditDraft` — current values (`localDateOf` /
+  `civilTimeOf` of `capturedAt` — both pure slices of the string's own civil
+  fields, so the pair is consistent in the entry's zone), nothing staged.
+- `toggleRemoval(draft, file): EntryEditDraft` — stages/unstages one attachment file
+  for removal; pure, non-mutating.
+- `draftPatch(entry, draft): AmendPatch | null` — the single amend patch a saved
+  draft implies, or `null` when nothing changed (callers append no event for a no-op
+  edit). Date/time changes recompose `capturedAt` via
+  `zonedIso(draft.date, draft.time, entry.deviceTz)` (seconds zeroed, DST-resolved
+  offset) — the entry's own zone, so an edit made from another timezone moves
+  exactly the wall time the sheet displayed and preserves the entry's offset;
+  removals are deduped and filtered to files the entry currently shows.
+
+### src/capture/EditEntrySheet.tsx
+
+**Purpose:** Per-entry edit sheet — the one place every envelope field of an entry is
+editable: capture date (native `<input type="date">`, capped at today), time of day,
+and which attachments the entry keeps.
+
+**Export:** `EditEntrySheet({ entry, onSave, onClose }: EditEntrySheetProps)` where
+`onSave(patch: AmendPatch)` receives one combined patch (never called for a no-op).
+
+**Behavior:** holds an `EntryEditDraft` in state; each attachment renders a row
+(kind label, async one-line text preview or 36px photo thumbnail from `getBlob`,
+duration for audio) with a Remove/Restore toggle — staged removals stay visible,
+struck through, until Save. Save is disabled while `draftPatch` is `null`; on tap it
+emits the patch and closes. Removals are append-only fold-time hides
+(`patch.removeAttachments`); note/transcript *text* editing stays inline on the card
+(`AttachmentBody`), and location keeps its own map sheet.
 
 ### src/capture/AttachmentBody.tsx
 
@@ -405,8 +451,9 @@ covers `coerceRadiusM` (parsing, defaulting, 10 m floor) and `needsPlacePrompt`
 - **Entries:** filters to `!revoked`, not the pending delete, and
   `localDateOf(capturedAt) === date`; sorted **oldest-first** (chronological), unlike the
   capture screen's newest-first ordering. Rendered with the shared
-  `EntryList`, so all card edits (time, notes, photos, audio, location, attachment
-  removal) work identically here.
+  `EntryList`, so all card edits (date/time via the Edit sheet, notes, photos, audio,
+  location, attachment removal) work identically here. Moving an entry's date via the
+  Edit sheet makes it leave the current day's list and appear on the target day.
 - **Delete:** wires `usePendingDelete(revoke)` — `EntryList.onDelete` is `del.request`,
   with the same 5s Undo toast as the capture screen.
 - **Calendar overlay:** `useDayEvents(date)` fetches the target calendar's events via
@@ -427,8 +474,10 @@ covers `coerceRadiusM` (parsing, defaulting, 10 m floor) and `needsPlacePrompt`
   `derivedFrom` link so the transcription/captioning runners never re-derive over a
   user's edit. `onEditText` performs remove-old + add-new in a *single* amend.
 - **`capturedAt` semantics:** for voice entries it is the record-tap time, not the stop
-  time; text/photo entries use submit time. Time edits change only the time-of-day on
-  the entry's own date (`withTimeOfDayIso`).
+  time; text/photo entries use submit time. Inline time edits change only the
+  time-of-day, re-rendered in the device zone (`withTimeOfDayIso`); the Edit sheet
+  edits date and time in the **entry's own zone** (`civilTimeOf` draft, `zonedIso`
+  recomposition with `entry.deviceTz`), and both land in `patch.capturedAt`.
 - **Recorder races are resolved by claiming:** `finalize()` nulls `recorderRef` before
   stopping, so a user tap racing the auto-stop timer (or the background-commit handler)
   yields exactly one committed clip.

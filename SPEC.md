@@ -214,7 +214,7 @@ interface AmendEvent extends EventBase {
             removeAttachments?: string[] };  // files the fold hides (append-only
                                              // removal; files stay in the log)
   attachments?: Attachment[];  // appended to the target entry
-}                              // timestamp stepper, "+ note"/"+ photo"/"+ audio",
+}                              // date/time edits, "+ note"/"+ photo"/"+ audio",
                                // note edits, and attachment removal emit these
 
 interface RevokeEvent extends EventBase {
@@ -249,12 +249,18 @@ Rules:
   (audio for `timelog`). Other kinds are optional add-ons, never requirements.
 - The capture-screen **Undo toast emits a `revoke`** (it does not unwind the append —
   even a 5-second-old capture is already committed locally).
-- The timestamp stepper and post-capture edits ("+ note", "+ photo", "+ audio", note
-  edits, attachment removal) emit `amend` events. Attachment *files* are immutable; an
-  amend adds new attachments and/or hides prior ones via `patch.removeAttachments` —
-  hidden files and their history remain in the log, the fold just stops showing them.
-  Editing a note is one amend that removes the old text file and adds its replacement
-  (an edited transcript keeps its `derivedFrom` link, so it is never re-transcribed).
+- Post-capture edits emit `amend` events: time-of-day via the entry card's inline time
+  picker, and the card's **Edit sheet** — the full editor covering the capture *date*,
+  time, and removal of any attachment — which commits a whole edit (recomposed
+  `patch.capturedAt` plus `patch.removeAttachments`) as **one** amend, so an edit is a
+  single log append. "+ note" / "+ photo" / "+ audio" and note edits are amends too.
+  Attachment *files* are immutable; an amend adds new attachments and/or hides prior
+  ones via `patch.removeAttachments` — hidden files and their history remain in the
+  log, the fold just stops showing them. Editing a note is one amend that removes the
+  old text file and adds its replacement (an edited transcript keeps its `derivedFrom`
+  link, so it is never re-transcribed). Every entry field the user sees is editable
+  this way except the identity/envelope fields (`id`, `seq`, `stream`, `loggedAt`,
+  `deviceTz`), which record the append itself and never change.
 - Spoken corrections remain first-class: "correction: I actually left at 8:40" is just a
   new `capture` event whose *interpretation* is the skill's job. `amend`/`revoke` exist
   for structured UI actions, not for meaning.
@@ -313,9 +319,10 @@ Design principle: **three screens**; capture is 95% of usage and must be near-in
   (camera/library). Added during capture they join the capture event; added after, they
   become `amend` events (§3.3). The add-on set is identical across streams; only the
   primary action varies.
-- **Timestamp**: taken when the capture button is tapped; adjustable post-capture via a
-  compact "−5m / −1m / now" stepper on the entry card (emits an `amend`). Relative
-  phrases in the audio itself ("ten minutes ago") are the skill's job to honor (§6.3).
+- **Timestamp**: taken when the capture button is tapped; adjustable post-capture — the
+  entry card's time label opens a native time picker, and the card's Edit sheet changes
+  the date and time together (both emit an `amend`). Relative phrases in the audio
+  itself ("ten minutes ago") are the skill's job to honor (§6.3).
 - **Geolocation** is requested concurrently and never blocks capture (8s timeout,
   `maximumAge: 60s`; low accuracy acceptable).
 - **Failure behavior**: if mic permission is denied or `MediaRecorder` fails at tap time,
@@ -332,6 +339,9 @@ the folded entry list with results annotations, §3.5).
 
 - Vertical day timeline rendering **calendar events from the target calendar** (read-only),
   interleaved with **pending entry pins** (unprocessed entries shown at their timestamps).
+- Local entries render with the same fully-editable cards as the capture screen (§4.1):
+  date/time, notes, attachments, location, and delete — all expressed as `amend`/`revoke`
+  appends (§3.3). Moving an entry's date re-files it under the target day.
 - Header: date picker; connection status; **"Process now" helper** — a button that copies
   a ready-made instruction ("Process my timelog stream") to the clipboard and/or
   deep-links to the user's chat app, since the app cannot trigger the skill itself.
