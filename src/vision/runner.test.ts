@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AmendEvent } from '../contract/types'
 
 const { captionPhoto } = vi.hoisted(() => ({
-  captionPhoto: vi.fn<(blob: Blob) => Promise<string>>(),
+  captionPhoto: vi.fn<(blob: Blob, onPartial?: (text: string) => void) => Promise<string>>(),
 }))
 vi.mock('./api', () => ({ captionPhoto }))
 
@@ -20,8 +20,9 @@ const photoAttachment = () => ({
 async function setup() {
   const events = await import('../store/events')
   const db = await import('../store/db')
+  const livetext = await import('../store/livetext')
   const runner = await import('./runner')
-  return { ...events, ...db, ...runner }
+  return { ...events, ...db, ...runner, liveCaptions: livetext.liveCaptions }
 }
 
 async function appendPhotoCapture(s: Awaited<ReturnType<typeof setup>>) {
@@ -116,6 +117,67 @@ describe('drainCaptions', () => {
 
     expect(await s.drainCaptions('timelog')).toBe(0)
     expect(captionPhoto).not.toHaveBeenCalled()
+    expect(amendsOf(await s.listEvents('timelog'))).toEqual([])
+  })
+
+  it('publishes streamed partials to the live store; only the final text is persisted', async () => {
+    const s = await setup()
+    let emitPartial!: (text: string) => void
+    let resolveText!: (text: string) => void
+    captionPhoto.mockImplementation(
+      (_blob, onPartial) =>
+        new Promise((res) => {
+          emitPartial = onPartial!
+          resolveText = res
+        }),
+    )
+    const cap = await appendPhotoCapture(s)
+    const file = cap.attachments[0].file
+
+    const drain = s.drainCaptions('timelog')
+    await vi.waitFor(() => expect(captionPhoto).toHaveBeenCalledTimes(1))
+    emitPartial('A latte')
+    expect(s.liveCaptions.snapshot().get(file)).toBe('A latte')
+    emitPartial('A latte on a wooden table.')
+    resolveText('A latte on a wooden table.')
+
+    expect(await drain).toBe(1)
+    // The final live text lingers (until the next drain sweeps it) so the
+    // card never flashes empty before the store refresh.
+    expect(s.liveCaptions.snapshot().get(file)).toBe('A latte on a wooden table.')
+    const amends = amendsOf(await s.listEvents('timelog'))
+    expect(amends).toHaveLength(1)
+    expect(await (await s.getBlob(amends[0].attachments![0].file))!.text()).toBe(
+      'A latte on a wooden table.',
+    )
+  })
+
+  it('sweeps stale live text on the next drain once the caption is persisted', async () => {
+    const s = await setup()
+    captionPhoto.mockImplementation(async (_blob, onPartial) => {
+      onPartial?.('A latte.')
+      return 'A latte.'
+    })
+    const cap = await appendPhotoCapture(s)
+    const file = cap.attachments[0].file
+
+    expect(await s.drainCaptions('timelog')).toBe(1)
+    expect(s.liveCaptions.snapshot().get(file)).toBe('A latte.')
+    expect(await s.drainCaptions('timelog')).toBe(0)
+    expect(s.liveCaptions.snapshot().has(file)).toBe(false)
+  })
+
+  it('clears live partial text when captioning fails mid-stream and persists nothing', async () => {
+    const s = await setup()
+    captionPhoto.mockImplementation(async (_blob, onPartial) => {
+      onPartial?.('A lat')
+      throw new Error('connection lost')
+    })
+    const cap = await appendPhotoCapture(s)
+    const file = cap.attachments[0].file
+
+    expect(await s.drainCaptions('timelog')).toBe(0)
+    expect(s.liveCaptions.snapshot().has(file)).toBe(false)
     expect(amendsOf(await s.listEvents('timelog'))).toEqual([])
   })
 

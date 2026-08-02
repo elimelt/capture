@@ -5,12 +5,17 @@
  * amend event with a derivedFrom text attachment (append-only — the caption
  * flows to Drive with everything else).
  *
+ * While a caption streams, partial text is published to the transient
+ * `liveCaptions` store (keyed by source photo file) for the entry card;
+ * only the final, complete caption is ever appended to the log.
+ *
  * Failure handling: transient errors back off in memory (reset on app
  * relaunch); permanently uncaptionable photos (empty caption, missing blob)
  * get a local skip marker in the meta store so they are never retried.
  */
 import { getDb } from '../store/db'
 import { appendAmend, getBlob, listEvents } from '../store/events'
+import { liveCaptions } from '../store/livetext'
 import { captionPhoto } from './api'
 import { pendingCaptions } from './plan'
 
@@ -63,8 +68,12 @@ export function drainCaptions(streamId: string): Promise<number> {
 async function drain(streamId: string): Promise<number> {
   if (!navigator.onLine) return 0
   const events = await listEvents(streamId)
+  const pending = pendingCaptions(events)
+  // Sweep live text from earlier attempts: anything no longer pending has
+  // its persisted caption visible by now, so the transient copy is stale.
+  liveCaptions.sweep(new Set(pending.map((p) => p.photo.file)))
   let appended = 0
-  for (const { entryId, stream, photo } of pendingCaptions(events)) {
+  for (const { entryId, stream, photo } of pending) {
     if (!eligible(photo.file) || (await isSkipped(photo.file))) continue
     try {
       const blob = await getBlob(photo.file)
@@ -73,8 +82,13 @@ async function drain(streamId: string): Promise<number> {
         await markSkipped(photo.file)
         continue
       }
-      const text = await captionPhoto(blob)
+      // Partial text streams into the live store for the entry card; it is
+      // display-only and never persisted. Only the resolved final text
+      // reaches the log below — a mid-stream failure lands in the catch,
+      // which clears the partial and backs off exactly as before.
+      const text = await captionPhoto(blob, (partial) => liveCaptions.set(photo.file, partial))
       if (text === '') {
+        liveCaptions.clear(photo.file)
         await markSkipped(photo.file)
         continue
       }
@@ -90,9 +104,13 @@ async function drain(streamId: string): Promise<number> {
           },
         ],
       })
+      // The final text stays in the live store until the next drain sweeps
+      // it, so the card never flashes empty between the amend landing and
+      // the store refresh that reveals the persisted attachment.
       retryState.delete(photo.file)
       appended++
     } catch {
+      liveCaptions.clear(photo.file)
       recordFailure(photo.file)
     }
   }
