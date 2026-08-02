@@ -1,4 +1,8 @@
-import type { InputHTMLAttributes, TextareaHTMLAttributes } from 'react'
+import type {
+  InputHTMLAttributes,
+  SelectHTMLAttributes,
+  TextareaHTMLAttributes,
+} from 'react'
 import { cx, shape, tap, tone, type_ } from './tokens'
 
 const FIELD = cx(
@@ -16,6 +20,18 @@ export function TextInput({
 }: InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input {...rest} className={cx(FIELD, tap, 'px-3', type_.ui, className)} />
+  )
+}
+
+export function Select({
+  className,
+  children,
+  ...rest
+}: SelectHTMLAttributes<HTMLSelectElement>) {
+  return (
+    <select {...rest} className={cx(FIELD, tap, 'px-3', type_.ui, className)}>
+      {children}
+    </select>
   )
 }
 

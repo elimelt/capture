@@ -9,13 +9,19 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "test": "vitest run",
+    "test:integration": "VITEST_INTEGRATION=1 vitest run src/assistant/transport.integration.test.ts",
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@ai-sdk/openai-compatible": "^3.0.20",
+    "@ai-sdk/react": "^4.0.51",
+    "ai": "^7.0.48",
     "idb": "^8.0.3",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
+    "react-markdown": "^10.1.0",
     "react-router-dom": "^7.18.2",
+    "remark-gfm": "^4.0.1",
     "zustand": "^5.0.14"
   },
   "overrides": {

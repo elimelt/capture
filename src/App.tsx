@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { Suspense, lazy, useEffect } from 'react'
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom'
 import CaptureScreen from './capture/CaptureScreen'
 import DayScreen from './dayview/DayScreen'
@@ -7,9 +7,14 @@ import { useAppStore } from './store/appStore'
 import { drainTranscriptions } from './transcribe/runner'
 import { Toast, cx, tone, type_ } from './ui'
 
+// Opt-in assistant: lazy so users who never enable it never download the
+// chat bundle (AI SDK + markdown renderer).
+const ChatScreen = lazy(() => import('./assistant/ChatScreen'))
+
 const TABS = [
   { to: '/', label: 'Capture' },
   { to: '/day', label: 'Day' },
+  { to: '/chat', label: 'Chat', assistant: true },
   { to: '/settings', label: 'Settings' },
 ]
 
@@ -20,6 +25,8 @@ export default function App() {
   const ready = useAppStore((s) => s.ready)
   const lastError = useAppStore((s) => s.lastError)
   const clearError = useAppStore((s) => s.clearError)
+  const assistantEnabled = useAppStore((s) => s.appSettings.assistantEnabled)
+  const tabs = TABS.filter((t) => !t.assistant || assistantEnabled)
 
   // The HTML boot splash (index.html) covers the app until the store is
   // hydrated, so the first paint is real content, never a flash of empty
@@ -73,6 +80,18 @@ export default function App() {
             <Route path="/" element={<CaptureScreen />} />
             <Route path="/day" element={<DayScreen />} />
             <Route path="/day/:date" element={<DayScreen />} />
+            <Route
+              path="/chat"
+              element={
+                assistantEnabled ? (
+                  <Suspense fallback={null}>
+                    <ChatScreen />
+                  </Suspense>
+                ) : (
+                  <Navigate to="/" replace />
+                )
+              }
+            />
             <Route path="/settings" element={<SettingsScreen />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
@@ -86,7 +105,7 @@ export default function App() {
           )}
         >
           <div className="mx-auto flex max-w-md">
-            {TABS.map((tab) => (
+            {tabs.map((tab) => (
               <NavLink
                 key={tab.to}
                 to={tab.to}

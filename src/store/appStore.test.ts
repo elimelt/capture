@@ -33,7 +33,7 @@ beforeEach(async () => {
     syncStatuses: new Map(),
     places: [],
     lastError: null,
-    appSettings: { locationEnabled: true },
+    appSettings: { locationEnabled: true, assistantEnabled: false, assistantModel: 'gpt-oss:20b' },
     streamSettings: { maxClipSec: 60, keepAudioLocally: true },
   })
 })
@@ -87,9 +87,10 @@ describe('refresh', () => {
 
 describe('settings actions', () => {
   it('updateSettings persists and updates state', async () => {
-    await useAppStore.getState().updateSettings({ locationEnabled: false })
-    expect(useAppStore.getState().appSettings).toEqual({ locationEnabled: false })
-    expect(await getSettings()).toEqual({ locationEnabled: false })
+    const next = { locationEnabled: false, assistantEnabled: true, assistantModel: 'gemma3:27b' }
+    await useAppStore.getState().updateSettings(next)
+    expect(useAppStore.getState().appSettings).toEqual(next)
+    expect(await getSettings()).toEqual(next)
   })
 
   it('updateStreamSettings persists for the current stream and updates state', async () => {

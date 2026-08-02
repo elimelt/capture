@@ -709,7 +709,7 @@ chat subscription instead of per-call API keys.
 | Framework | React 18 + TypeScript, Vite |
 | PWA | `vite-plugin-pwa` (Workbox), `registerType: 'autoUpdate'` |
 | State | Zustand (UI) + IndexedDB via `idb` (entries keyed by stream, blobs, queue, places, settings) |
-| Routing | React Router: `/` capture, `/day/:date`, `/settings` |
+| Routing | React Router: `/` capture, `/day/:date`, `/settings`, `/chat` (opt-in assistant) |
 | Styling | Tailwind CSS; dark-mode aware; ≥44pt touch targets |
 | Google | GIS script tag + hand-rolled `fetch` clients for Drive v3 / Calendar v3 |
 | Audio | `getUserMedia` + `MediaRecorder`, mime-type negotiated at runtime |
@@ -725,13 +725,32 @@ src/
   dayview/    // timelog: event + pending-entry timeline
   places/     // CRUD + point-in-radius matching
   store/      // IndexedDB repos (keyed by stream), Zustand slices
+  assistant/  // opt-in AI chat: LLM client, context digest (app-level, like dayview/)
 skills/
   timelog.SKILL.md  // canonical provider-agnostic skill prompt (versioned with schema)
 ```
 
 Layering rule: `streams/`, `capture/`, `contract/`, `drive/`, `store/` are
-stream-agnostic and must not import from `gcal/` or `dayview/` (the timelog-specific
-modules). This keeps the generic capture client separable by construction.
+stream-agnostic and must not import from `gcal/`, `dayview/` or `assistant/` (the
+timelog-specific / app-level modules). This keeps the generic capture client
+separable by construction.
+
+### 10.1 In-app AI assistant (fully opt-in)
+
+- Off by default (`AppSettings.assistantEnabled`). The Chat tab and route only
+  exist once enabled, the chat bundle is lazy-loaded, and no request leaves the
+  device until the user sends a message.
+- Endpoint: `https://llm.elimelt.com/v1` — OpenAI-compatible, CORS-gated to the
+  app origin, no API key. Model is user-selectable from a curated list
+  (`AppSettings.assistantModel`, default `gpt-oss:20b`).
+- Client-only: the AI SDK agent runs in-process (`DirectChatTransport`); there is
+  no chat backend. The system prompt embeds a plain-text digest of the last 7
+  days of folded entries — transcript/note text, place labels and media counts,
+  never raw audio or photos.
+- The assistant is read-only over the log: it answers questions; it never
+  appends events. The current conversation persists locally (IndexedDB) so it
+  survives app restarts; "New chat" or a data wipe clears it. Nothing is
+  stored server-side.
 
 ---
 

@@ -2,6 +2,10 @@ import { getDb } from './db'
 
 export interface AppSettings {
   locationEnabled: boolean
+  /** AI assistant is fully opt-in; the chat tab and code stay absent until enabled. */
+  assistantEnabled: boolean
+  /** Model id on the LLM endpoint (curated list in assistant/config.ts). */
+  assistantModel: string
 }
 
 export interface StreamSettings {
@@ -9,7 +13,11 @@ export interface StreamSettings {
   keepAudioLocally: boolean
 }
 
-const APP_DEFAULTS: AppSettings = { locationEnabled: true }
+const APP_DEFAULTS: AppSettings = {
+  locationEnabled: true,
+  assistantEnabled: false,
+  assistantModel: 'gpt-oss:20b',
+}
 const STREAM_DEFAULTS: StreamSettings = { maxClipSec: 60, keepAudioLocally: true }
 
 export async function getSettings(): Promise<AppSettings> {

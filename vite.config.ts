@@ -12,9 +12,21 @@ export default defineConfig({
     VitePWA({
       registerType: 'autoUpdate',
       workbox: {
+        // The assistant is opt-in: keep its lazy chunk (AI SDK + markdown)
+        // out of the precache so users who never enable it never download
+        // it. Opted-in users get it runtime-cached below on first visit.
+        globIgnores: ['**/ChatScreen-*.js'],
         // Offline-first: cache Google Fonts (stylesheet + font files) at
         // runtime so Libertinus Serif survives without a network.
         runtimeCaching: [
+          {
+            urlPattern: /\/assets\/ChatScreen-[^/]+\.js$/,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'assistant-chunk',
+              expiration: { maxEntries: 3, maxAgeSeconds: 60 * 60 * 24 * 30 },
+            },
+          },
           {
             urlPattern: /^https:\/\/fonts\.googleapis\.com\//,
             handler: 'StaleWhileRevalidate',
@@ -55,5 +67,10 @@ export default defineConfig({
   ],
   test: {
     environment: 'node',
+    // Live-API integration tests are opt-in: `npm run test:integration`.
+    exclude: [
+      '**/node_modules/**',
+      ...(process.env.VITEST_INTEGRATION ? [] : ['**/*.integration.test.ts']),
+    ],
   },
 })

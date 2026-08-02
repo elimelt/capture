@@ -3,9 +3,9 @@ import { cx, motion, tone, type_ } from './tokens'
 
 /**
  * Height of the iOS software keyboard overlapping the layout viewport, so
- * bottom sheets can lift their content above it (C12).
+ * bottom sheets and fixed composers can lift their content above it (C12).
  */
-function useKeyboardInset(): number {
+export function useKeyboardInset(): number {
   const [inset, setInset] = useState(0)
   useEffect(() => {
     const vv = window.visualViewport

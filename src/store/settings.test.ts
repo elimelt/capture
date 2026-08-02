@@ -18,20 +18,27 @@ beforeEach(async () => {
   await deleteDb('timebox')
 })
 
+const APP_DEFAULTS = {
+  locationEnabled: true,
+  assistantEnabled: false,
+  assistantModel: 'gpt-oss:20b',
+}
+
 describe('app settings', () => {
   it('returns defaults when nothing is stored', async () => {
-    expect(await getSettings()).toEqual({ locationEnabled: true })
+    expect(await getSettings()).toEqual(APP_DEFAULTS)
   })
 
   it('round-trips saved settings', async () => {
-    await saveSettings({ locationEnabled: false })
-    expect(await getSettings()).toEqual({ locationEnabled: false })
+    const saved = { locationEnabled: false, assistantEnabled: true, assistantModel: 'gemma3:27b' }
+    await saveSettings(saved)
+    expect(await getSettings()).toEqual(saved)
   })
 
   it('merges a partial stored object over defaults', async () => {
     const db = await getDb()
-    await db.put('meta', {}, 'settings:app')
-    expect(await getSettings()).toEqual({ locationEnabled: true })
+    await db.put('meta', { locationEnabled: false }, 'settings:app')
+    expect(await getSettings()).toEqual({ ...APP_DEFAULTS, locationEnabled: false })
   })
 })
 

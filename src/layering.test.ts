@@ -30,7 +30,9 @@ const sources = import.meta.glob(
 )
 
 // Top-level src/ directories the generic layers must not reach into.
-const FORBIDDEN_DIRS = ['gcal', 'dayview', 'settings']
+// assistant/ is app-level (it digests entries for the LLM); generic layers
+// must never depend on it.
+const FORBIDDEN_DIRS = ['gcal', 'dayview', 'settings', 'assistant']
 
 // Layers that exist today; guards against the glob patterns silently rotting.
 const LAYERS_EXPECTED_TODAY = ['streams', 'capture', 'contract', 'store', 'places', 'transcribe', 'ui']
