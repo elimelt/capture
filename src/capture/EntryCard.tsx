@@ -31,7 +31,7 @@ const LocationSheet = lazy(() =>
 )
 
 // Entry action buttons carry the same glyphs as the main CTA (RecordPanel):
-// audio → mic, photo → camera, note → pencil, via the shared modality mapping.
+// audio → mic, photo → camera, note → text cursor, via the shared modality mapping.
 const AudioIcon = captureIcon('audio')
 const PhotoIcon = captureIcon('photo')
 const NoteIcon = captureIcon('text')

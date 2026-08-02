@@ -97,11 +97,11 @@ onCamera, onText }: RecordPanelProps)`.
 - `recording`: focused panel with `LevelMeter` (fed `recorder.getLevel`), an m:ss timer,
   an "Ns left" countdown once `maxClipSec - elapsedSec <= 10`, and Discard / Done
   buttons (`onDiscard` / `onTap`).
-- idle: the large mic button (`onTap`) flanked by camera and pencil `SatelliteButton`s
+- idle: the large mic button (`onTap`) flanked by camera and text-cursor `SatelliteButton`s
   (`onCamera` / `onText`). No visible labels — all three capture buttons are icon-only
   for visual consistency (aria-labels for accessibility).
 
-Private helpers: `SatelliteButton`, `clock()`. The mic/camera/pencil glyphs come from
+Private helpers: `SatelliteButton`, `clock()`. The mic/camera/text-cursor glyphs come from
 the shared `captureIcon` mapping in `src/ui` (icons.tsx), which entry cards reuse so
 their action buttons match the main CTA.
 
@@ -187,9 +187,9 @@ actions open.
 - **Action bar:** a full-bleed hairline divider separates the card's content from a
   footer of icon-only 44 px `IconButton`s (no text labels; names live in `aria-label`
   and `title`): add actions on the left — note/photo/audio render the same glyphs as
-  the main CTA (pencil/camera/mic via `captureIcon` from `src/ui`, so an entry's add
+  the main CTA (text cursor/camera/mic via `captureIcon` from `src/ui`, so an entry's add
   actions share the capture control's visual language) plus location
-  (`PinIcon`/`PlusIcon`) — and on the right, Edit (`SlidersIcon` — the pencil already
+  (`PinIcon`/`PlusIcon`) — and on the right, Edit (`SlidersIcon` — the text cursor already
   means *text* here) opening `EditEntrySheet` (Save → `onApplyEdit(patch)`), then
   Delete (`TrashIcon`, `danger` variant — muted clay) at the far edge. A recorder
   error swaps the audio button for a labelled "mic unavailable" reset button.

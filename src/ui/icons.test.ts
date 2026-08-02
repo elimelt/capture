@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   CameraIcon,
   MicIcon,
-  PencilIcon,
+  TextCursorIcon,
   captureIcon,
   type CaptureKind,
   type IconProps,
@@ -11,10 +11,10 @@ import {
 describe('captureIcon', () => {
   it('maps each capture modality to the main-CTA glyph', () => {
     // The entry action row relies on this mapping to stay visually in
-    // lockstep with RecordPanel's mic / camera / pencil buttons.
+    // lockstep with RecordPanel's mic / camera / text-cursor buttons.
     expect(captureIcon('audio')).toBe(MicIcon)
     expect(captureIcon('photo')).toBe(CameraIcon)
-    expect(captureIcon('text')).toBe(PencilIcon)
+    expect(captureIcon('text')).toBe(TextCursorIcon)
   })
 
   it('renders a decorative svg that scales via the size prop', () => {
