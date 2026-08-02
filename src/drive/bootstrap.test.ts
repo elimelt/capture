@@ -38,7 +38,7 @@ function fakeDrive() {
     },
   )
   let user = 'user-A'
-  const getAboutUser = vi.fn(async (_t: string) => ({ permanentId: user }))
+  const getAboutUser = vi.fn(async (_t: string) => ({ permissionId: user }))
   return {
     nodes,
     find,

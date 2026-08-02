@@ -35,7 +35,7 @@ function fakeDrive() {
     setUser(id: string) {
       user = id
     },
-    getAboutUser: vi.fn(async (_t: string) => ({ permanentId: user })),
+    getAboutUser: vi.fn(async (_t: string) => ({ permissionId: user })),
     findFile: vi.fn(async (_t: string, a: { name: string; parentId: string }) =>
       find(a.name, a.parentId)?.id ?? null,
     ),

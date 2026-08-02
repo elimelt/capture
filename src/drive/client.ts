@@ -117,21 +117,21 @@ export async function generateIds(token: string, count: number): Promise<string[
 /** The authorized account's stable identity (about.get `user` — §8.2). */
 export interface AboutUser {
   /** Google's stable, email-change-proof id for the authorizing user. */
-  permanentId: string
+  permissionId: string
 }
 
 /**
- * Who authorized this token: `about.get?fields=user(permanentId)`. One cheap
+ * Who authorized this token: `about.get?fields=user(permissionId)`. One cheap
  * metadata request; `drive.file` scope suffices. Used to bind account-bound
  * local caches (tree ids, changes cursors, pre-generated file ids) to the
  * account that minted them (account.ts).
  */
 export async function getAboutUser(token: string): Promise<AboutUser> {
-  const params = new URLSearchParams({ fields: 'user(permanentId)' })
+  const params = new URLSearchParams({ fields: 'user(permissionId)' })
   const res = await ensureOk(await fetch(`${API}/about?${params}`, { headers: bearer(token) }))
-  const data = (await res.json()) as { user?: { permanentId?: string } }
-  if (!data.user?.permanentId) throw new DriveError(500, 'about.get returned no user identity')
-  return { permanentId: data.user.permanentId }
+  const data = (await res.json()) as { user?: { permissionId?: string } }
+  if (!data.user?.permissionId) throw new DriveError(500, 'about.get returned no user identity')
+  return { permissionId: data.user.permissionId }
 }
 
 export interface UploadArgs {

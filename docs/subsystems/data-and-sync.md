@@ -296,7 +296,7 @@ Google account, and several pieces of local state are only meaningful on the
 account that minted them: the `tree.ts` id cache, the per-stream changes cursors,
 and pre-generated upload file ids (the in-memory pool and sync rows' `fileIds`).
 `src/drive/account.ts` binds them all to the granting account's stable
-`user.permanentId` (`about.get`, one request per token per session), persisted in
+`user.permissionId` (`about.get`, one request per token per session), persisted in
 `meta` (`drive:account`). Both `pullStream` and `drainStream` (and `ensureTree`
 itself) verify the binding before reading any of that state; on a mismatch the
 whole set is silently discarded — exactly as if the device had never
