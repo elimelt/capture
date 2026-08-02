@@ -82,7 +82,7 @@ Key exports:
 - `listChildren(token, parentId): Promise<DriveChild[]>` — every non-trashed child of a folder, following `nextPageToken` pagination (`pageSize` 1000). Used by the pull path to list dirty partitions (and, on cold start, `log/` itself); because filenames lead with the zero-padded seq and embed the id (§5.1), the names alone answer discovery without opening a file.
 - `getFileMetadata(token, fileId): Promise<FileMetadata>` — one file's `id, name, mimeType, parents`; the pull path resolves a changed record's uncached parent partition with it.
 - `getAboutUser(token): Promise<AboutUser>` — `about.get?fields=user(permissionId)`: the authorizing account's stable, email-change-proof id (`drive.file` scope suffices; one cheap metadata request). Used by `account.ts` to bind local caches to the account that minted them. Throws `DriveError` 500 if Drive returns no identity.
-- `getStartPageToken(token): Promise<string>` — the changes cursor for "everything from now on".
+- `getStartPageToken(token): Promise<string>` — the changes cursor for "everything from now on"; requests only `startPageToken` in the response.
 - `listChanges(token, pageToken): Promise<ChangeList>` — drains the changes feed from a cursor, following `nextPageToken` pagination, returning `{ changes: DriveChange[], newStartPageToken }`. Pins `spaces=drive` and `restrictToMyDrive=true`; with `drive.file` scope the feed only ever contains app-created files. Throws `DriveError` 410 when the cursor expired (caller falls back to a full listing).
 - `updateFileContent(token, fileId, mimeType, body): Promise<void>` — `PATCH …?uploadType=media`, overwriting content in place. Used only for the app-owned `config.json`; the immutable `log/` is never updated this way.
 
