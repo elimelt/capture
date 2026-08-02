@@ -8,13 +8,19 @@
  * 409 answer counts as success — no find-before-upload GETs. Rows written by
  * older app versions (no `fileIds`) that already attempted an upload keep the
  * legacy find-before-upload probe so they never duplicate. Failures classify:
- * 401/403 stops and asks for reconnect; 429/5xx backs off with `nextRetryAt`;
- * anything else marks the row errored and moves on.
+ * 401/403 stops and asks for reconnect; 429/5xx stops with 'retry-later',
+ * keeping the row queued; anything else marks the row errored and stops.
+ *
+ * There is no per-row backoff gate: sync is manual-only (the sole drain
+ * trigger is "Sync now"), so every queued row is attempted on every drain —
+ * the user is the rate limiter, and an explicit retry must never be silently
+ * skipped. (An earlier version persisted `nextRetryAt` and skipped rows
+ * inside the window while still reporting the drain clean, which left
+ * entries "queued forever" from the user's point of view.)
  */
 import { serializeEvent } from '../contract/serialize'
 import { eventRecordName, partitionOf } from '../contract/filenames'
 import type { Attachment, LogEvent } from '../contract/types'
-import { toLocalIso } from '../contract/time'
 import { getStreamSettings } from '../store/settings'
 import type { SyncStatusRow } from '../store/db'
 import {
@@ -30,11 +36,6 @@ import { allocateIds } from './ids'
 import { tags } from './tags'
 import { ensureTree } from './bootstrap'
 import { getTree, saveTree, type DriveTree } from './tree'
-
-/** Retry backoff: 30s, 2m, 8m, … capped at 1h (attempts is 1-based here). */
-function backoffMs(attempts: number): number {
-  return Math.min(30_000 * 4 ** (attempts - 1), 60 * 60_000)
-}
 
 export type DrainOutcome = 'idle' | 'drained' | 'reconnect' | 'retry-later' | 'error'
 
@@ -177,10 +178,8 @@ export async function drainStream(token: string, stream: string): Promise<DrainR
   let tree = (await getTree()) ?? (await ensureTree(token, [stream]))
   if (!tree.streams[stream]) tree = await ensureTree(token, [stream])
 
-  const now = Date.now()
   let uploaded = 0
   for (const row of pending) {
-    if (row.nextRetryAt && Date.parse(row.nextRetryAt) > now) continue
     const event = await getEventById(row.id)
     if (!event) {
       // Log file erased out-of-band (§11): nothing to upload, drop the row.
@@ -199,8 +198,10 @@ export async function drainStream(token: string, stream: string): Promise<DrainR
         return { outcome: 'reconnect', uploaded }
       }
       if (err instanceof DriveError && err.isRetryable) {
-        const nextRetryAt = toLocalIso(new Date(now + backoffMs(attempts)))
-        await putSyncStatus({ ...row, status: 'queued', attempts, nextRetryAt, error: err.message })
+        // Keep the row queued with no retry gate: the next manual "Sync now"
+        // attempts it again immediately (sync has no automatic trigger that
+        // a persisted backoff could defer to).
+        await putSyncStatus({ ...row, status: 'queued', attempts, error: err.message })
         return { outcome: 'retry-later', uploaded }
       }
       const message = err instanceof Error ? err.message : String(err)

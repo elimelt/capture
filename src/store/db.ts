@@ -26,7 +26,12 @@ export interface SyncStatusRow {
   /** 'done' iff status is 'uploaded'. */
   phase: SyncPhase
   attempts: number
-  /** ISO local time; absent = eligible for upload now. */
+  /**
+   * Legacy (unused): older versions persisted a backoff stamp here and
+   * skipped rows inside the window. Sync is manual-only, so a user's "Sync
+   * now" must attempt every queued row — the drainer no longer writes or
+   * consults this; rows from older versions may still carry it.
+   */
   nextRetryAt?: string
   error?: string
   /**

@@ -177,7 +177,7 @@ nothing in `src/drive/` changed. Rules:
   of the cycle immediately — the token is dead for every stream — and the
   skipped streams are marked `'reconnect'` in `perStream`. A `'retry-later'` or
   `'error'` on one stream does **not** block the others: each stream's Drive
-  folders, row backoff state, and `drive:changes:<stream>` cursor are
+  folders, sync rows, and `drive:changes:<stream>` cursor are
   independent.
 - **Per-stream `lastSyncAt`.** Each stream's stamp is written only when *that
   stream's* pull+push completed cleanly (`idle`/`drained`), regardless of what
@@ -273,12 +273,15 @@ consumes:
 | Failure | Queue behavior | Outcome → store reaction |
 |---|---|---|
 | 401 / 403 (`isAuth`) | row re-queued, drain stops | `'reconnect'` → `driveConnection: 'expired'` (pill) |
-| 429 / 5xx (`isRetryable`) | row re-queued with `nextRetryAt` backoff | `'retry-later'` (silent; retried on next drain) |
+| 429 / 5xx (`isRetryable`) | row re-queued, drain stops | `'retry-later'` (retried on next drain) |
 | anything else | row marked `'error'`, drain stops | `'error'` → `lastError` toast |
 
-Backoff is exponential per row: `min(30s × 4^(attempts−1), 1h)` — 30s, 2m, 8m, …
-capped at an hour; rows whose `nextRetryAt` is in the future are skipped, and auth
-errors bypass backoff entirely. `drainSync` merges each stream's pull and push
+There is deliberately no per-row retry backoff: sync runs only from the manual
+"Sync now" button, so every drain is an explicit user ask and attempts every
+queued row — the user is the rate limiter. (Older versions persisted a
+`nextRetryAt` window and skipped rows inside it while reporting the drain
+clean, which presented as entries stuck "queued" forever; the drainer now
+ignores any legacy `nextRetryAt` still on a row.) `drainSync` merges each stream's pull and push
 outcomes worst-of (`idle < drained < retry-later < reconnect < error`), then the
 per-stream outcomes worst-of into the aggregate; a `'reconnect'` anywhere skips
 that stream's push and aborts the remaining streams (the token is dead either
@@ -317,7 +320,7 @@ The subsystem is safe to interrupt at any point, by construction:
   computed once, at append time, from `seq`/`loggedAt`/`id`; the same name keys
   the local blob and the Drive file. The drainer mints Drive file ids client-side
   and persists them on the sync row *before* the first attempt, so a retried row
-  (after crash, network drop, or backoff) re-uploads with the same id and Drive's
+  (after a crash, network drop, or failed drain) re-uploads with the same id and Drive's
   409 counts as success — never duplicating anything already in Drive, without
   any find-before-upload requests. (Rows from older app versions that already
   attempted an upload keep the legacy `findFile` probe.)

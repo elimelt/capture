@@ -860,8 +860,10 @@ user's assistant, authorized separately by the user in that product.
    app creates is tagged with app-private `appProperties` at creation time; tags
    are advisory (older files carry none) and invisible to other readers.
 4. Success → status `uploaded`; local audio blob retained or pruned per Settings.
-5. Failures: exponential backoff on 429/5xx; 401/403 → keep queued + reconnect pill;
-   storage-quota errors surface explicitly (Drive full).
+5. Failures: 429/5xx → keep queued, stop the drain; the next manual "Sync now"
+   retries immediately (no persisted backoff — sync has no automatic trigger, so a
+   retry window could only swallow the user's explicit ask). 401/403 → keep queued +
+   reconnect pill; storage-quota errors surface explicitly (Drive full).
 
 ### 8.5 Pull engine (Drive → local; bidirectional sync)
 
@@ -901,7 +903,7 @@ device — or a reinstalled/wiped one — converges on the full log:
    a partial pull keeps everything already imported.
 6. **Per-stream failure isolation.** A 401/403 on any stream aborts the remainder of
    the cycle (the token is dead for every stream); a retry-later or error on one
-   stream never blocks the others — each stream's Drive folders, backoff state, and
+   stream never blocks the others — each stream's Drive folders, sync rows, and
    changes cursor are independent. `lastSyncAt` is stamped per stream, only when
    that stream's own pull+push completed cleanly; Settings shows the aggregate
    (pending/errors summed across streams, "last synced" = the **oldest** per-stream

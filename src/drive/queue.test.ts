@@ -251,8 +251,11 @@ describe('drainStream', () => {
     expect([...(await getSyncStatuses('timelog')).values()][0].status).toBe('queued')
   })
 
-  it('backs off with nextRetryAt on a 429', async () => {
-    await captureWithAudio()
+  it('keeps the row queued on a 429 and the next drain retries it immediately', async () => {
+    // Stuck-queue regression (sync is manual-only): a transient 429/5xx must
+    // not gate the row out of later drains — every "Sync now" is an explicit
+    // user ask, so the very next drain retries and uploads.
+    const event = await captureWithAudio()
     await import('./bootstrap').then((m) => m.ensureTree('tok', ['timelog']))
     drive.failNext(429)
     const { drainStream } = await import('./queue')
@@ -262,8 +265,39 @@ describe('drainStream', () => {
     const { getSyncStatuses } = await import('../store/events')
     const row = [...(await getSyncStatuses('timelog')).values()][0]
     expect(row.status).toBe('queued')
-    expect(row.nextRetryAt).toBeTruthy()
+    expect(row.nextRetryAt).toBeUndefined() // no persisted backoff gate
     expect(row.attempts).toBe(1)
+    expect(row.error).toBeTruthy() // failure is recorded, not silent
+
+    drive.failNext(null)
+    const retry = await drainStream('tok', 'timelog')
+    expect(retry.outcome).toBe('drained')
+    expect(retry.uploaded).toBe(1)
+    expect((await getSyncStatuses('timelog')).get(event.id)?.status).toBe('uploaded')
+  })
+
+  it('drains a legacy row stuck behind a persisted nextRetryAt (stuck-queue regression)', async () => {
+    // Rows written by older app versions can carry a nextRetryAt up to an
+    // hour in the future. The old drainer skipped them *and* reported the
+    // cycle 'drained' (clean), so "Sync now" said "Already up to date" and
+    // stamped lastSyncAt while the entry stayed queued — for a manual-only
+    // sync that reads as "queued forever". A drain must upload such rows.
+    const event = await captureWithAudio()
+    const { getSyncStatuses, putSyncStatus } = await import('../store/events')
+    const row = (await getSyncStatuses('timelog')).get(event.id)!
+    const { toLocalIso } = await import('../contract/time')
+    await putSyncStatus({
+      ...row,
+      attempts: 3,
+      nextRetryAt: toLocalIso(new Date(Date.now() + 60 * 60_000)),
+      error: 'Drive 503: boom',
+    })
+
+    const { drainStream } = await import('./queue')
+    const res = await drainStream('tok', 'timelog')
+    expect(res.outcome).toBe('drained')
+    expect(res.uploaded).toBe(1)
+    expect((await getSyncStatuses('timelog')).get(event.id)?.status).toBe('uploaded')
   })
 
   it('prunes local audio when keepAudioLocally is false', async () => {
