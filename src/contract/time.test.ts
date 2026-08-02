@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { addMinutesIso, deviceTz, localDateOf, toLocalIso, withTimeOfDayIso } from './time'
+import {
+  addMinutesIso,
+  deviceTz,
+  localDateOf,
+  localTimeOf,
+  toLocalIso,
+  withDateIso,
+  withTimeOfDayIso,
+} from './time'
 
 // Node's process, typed locally to keep node types out of the app tsconfig.
 declare const process: { env: Record<string, string | undefined> }
@@ -60,6 +68,46 @@ describe('addMinutesIso', () => {
     const out = addMinutesIso('2026-08-02T09:04:11-04:00', 90)
     expect(new Date(out).getTime()).toBe(
       new Date('2026-08-02T09:04:11-04:00').getTime() + 90 * 60_000,
+    )
+  })
+})
+
+describe('localTimeOf', () => {
+  it('returns the device-local wall-clock time, zero-padded', () => {
+    expect(localTimeOf('2026-08-02T09:04:11-04:00')).toBe('09:04')
+    expect(localTimeOf('2026-08-02T23:59:59-04:00')).toBe('23:59')
+  })
+
+  it('renders a Z-suffixed instant in the device-local zone', () => {
+    expect(localTimeOf('2026-08-02T13:04:11Z')).toBe('09:04')
+  })
+})
+
+describe('withDateIso', () => {
+  it('sets the calendar date and keeps the wall-clock time', () => {
+    expect(withDateIso('2026-08-02T09:04:11-04:00', '2026-08-01')).toBe(
+      '2026-08-01T09:04:11-04:00',
+    )
+  })
+
+  it('keeps wall time across a DST boundary (offset adjusts)', () => {
+    expect(withDateIso('2026-08-02T09:04:11-04:00', '2026-01-15')).toBe(
+      '2026-01-15T09:04:11-05:00',
+    )
+    expect(withDateIso('2026-01-15T12:00:00-05:00', '2026-08-02')).toBe(
+      '2026-08-02T12:00:00-04:00',
+    )
+  })
+
+  it('is a no-op for the same date', () => {
+    expect(withDateIso('2026-08-02T09:04:11-04:00', '2026-08-02')).toBe(
+      '2026-08-02T09:04:11-04:00',
+    )
+  })
+
+  it('handles month ends and zero-pads', () => {
+    expect(withDateIso('2026-08-31T09:00:00-04:00', '2026-02-01')).toBe(
+      '2026-02-01T09:00:00-05:00',
     )
   })
 })

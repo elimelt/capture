@@ -21,6 +21,12 @@ export function localDateOf(iso: string): string {
   return iso.slice(0, 10)
 }
 
+/** Wall-clock time of day ("HH:mm") of an ISO string in the device's zone. */
+export function localTimeOf(iso: string): string {
+  const d = new Date(iso)
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
 /** Add minutes to a local-offset ISO string, preserving the original offset. */
 export function addMinutesIso(iso: string, minutes: number): string {
   const offset = iso.slice(19) // "±HH:MM" or "Z"
@@ -46,6 +52,19 @@ export function withTimeOfDayIso(iso: string, time: string): string {
   const d = new Date(iso)
   d.setHours(h, m, 0, 0)
   return toLocalIso(d)
+}
+
+/**
+ * Set the local calendar date ("YYYY-MM-DD") on a local-offset ISO string,
+ * keeping the wall-clock time of day and re-rendering in the device's
+ * current zone (the counterpart of withTimeOfDayIso). Crossing a DST
+ * boundary keeps the wall time — the offset in the output adjusts.
+ */
+export function withDateIso(iso: string, date: string): string {
+  const [y, mo, d] = date.split('-').map(Number)
+  const t = new Date(iso)
+  t.setFullYear(y, mo - 1, d)
+  return toLocalIso(t)
 }
 
 export function deviceTz(): string {
