@@ -79,17 +79,19 @@ function messageText(m: UIMessage): string {
     .join('')
 }
 
-function hasVisibleText(m: UIMessage): boolean {
-  return m.parts.some((p) => p.type === 'text' && p.text.trim() !== '')
+function hasVisibleContent(m: UIMessage): boolean {
+  return m.parts.some(
+    (p) => (p.type === 'text' || p.type === 'reasoning') && p.text.trim() !== '',
+  )
 }
 
 /** A response is in flight but nothing readable has arrived yet (tool calls
- * and reasoning can run for seconds before the first visible text). */
+ * can run for seconds before the first visible text or reasoning). */
 function awaitingResponse(status: string, messages: UIMessage[]): boolean {
   if (status === 'submitted') return true
   if (status !== 'streaming') return false
   const last = messages.at(-1)
-  return !(last?.role === 'assistant' && hasVisibleText(last))
+  return !(last?.role === 'assistant' && hasVisibleContent(last))
 }
 
 /** One-line caption for a tool invocation part; null for other parts or
@@ -288,6 +290,11 @@ function ChatView({
           ) : (
             <div key={m.id} className={cx('min-w-0 self-stretch', motion.fadeIn)}>
               {m.parts.map((p, i) => {
+                if (p.type === 'reasoning') {
+                  return p.text.trim() !== '' ? (
+                    <ReasoningTrace key={i} text={p.text} streaming={p.state === 'streaming'} />
+                  ) : null
+                }
                 const activity = toolActivityLabel(p)
                 return activity ? (
                   <p key={i} className={cx('mb-1 italic', type_.caption, tone.textMuted)}>
@@ -396,6 +403,35 @@ function RoundButton({
         {children}
       </svg>
     </button>
+  )
+}
+
+/** Collapsible reasoning trace: a quiet caption while streaming, tappable
+ * to reveal the full thought text (kept collapsed by default). */
+function ReasoningTrace({ text, streaming }: { text: string; streaming: boolean }) {
+  return (
+    <details className={cx('mb-1', motion.fadeIn)}>
+      <summary
+        className={cx(
+          'cursor-pointer list-none select-none italic [&::-webkit-details-marker]:hidden',
+          type_.caption,
+          tone.textMuted,
+          streaming && 'animate-pulse',
+        )}
+      >
+        {streaming ? 'Thinking…' : 'Thought process'}
+      </summary>
+      <p
+        className={cx(
+          'mb-1 mt-1 whitespace-pre-wrap border-l-2 pl-3 italic [overflow-wrap:anywhere]',
+          type_.caption,
+          tone.textMuted,
+          tone.border,
+        )}
+      >
+        {text}
+      </p>
+    </details>
   )
 }
 
