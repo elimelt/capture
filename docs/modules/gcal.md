@@ -16,7 +16,9 @@ auth of its own; callers pass the token in, exactly as with `drive/client`.
 Data flow: Settings' `CalendarPicker` lists calendars via `listCalendars` and persists
 the pick via `setTargetCalendar` (local `meta` row + Drive `config.json` mirror) → the
 Day view's `useDayEvents` hook (`src/dayview`) resolves token + target and calls
-`listEvents` over the `dayRange(date)` window → `CalendarEvents` renders the rows.
+`listEvents` over the `dayRange(date)` window → `DayTimeline` (`src/dayview`, see
+[capture-and-dayview.md](capture-and-dayview.md)) merges the events with their
+overlays into pseudo-entry cards on the day's timeline.
 
 Layering (SPEC §10, enforced by `src/layering.test.ts`): `gcal/` is timelog-specific.
 It may import the generic `contract/`, `drive/`, `store/`, and `streams/` layers —
@@ -35,7 +37,7 @@ Key exports:
 - `interface CalendarSummary { id: string; summary: string; primary: boolean }` — a calendar-list entry for the Settings picker.
 - `interface CalEvent { id: string; summary: string; htmlLink?: string; startMs: number; endMs: number; allDay: boolean; updated?: string; recurringEventId?: string }` — a normalized event; `startMs` is the ordering + render key. `updated` (the API's last-modification stamp) and `recurringEventId` (parent series id of an expanded instance) exist for the overlay layer (SPEC §3.6).
 - `interface RawEventTime { dateTime?: string; date?: string }` and `interface RawEvent { id?; summary?; htmlLink?; status?; start?; end?; updated?; recurringEventId? }` — the subset of the API resource that is read.
-- `parseEvent(raw: RawEvent): CalEvent | null` — `null` for unusable events: cancelled (`status === 'cancelled'`), id-less, or missing a parseable start/end. `allDay` is true when `start.date` is present; summary is trimmed with a `'(no title)'` fallback; `htmlLink`, `updated`, and `recurringEventId` are omitted (not `undefined`-valued) when absent. (Note: `client.ts`'s `fields` filter does not request `updated`/`recurringEventId` yet — that wiring belongs to the day-view overlay workstream.)
+- `parseEvent(raw: RawEvent): CalEvent | null` — `null` for unusable events: cancelled (`status === 'cancelled'`), id-less, or missing a parseable start/end. `allDay` is true when `start.date` is present; summary is trimmed with a `'(no title)'` fallback; `htmlLink`, `updated`, and `recurringEventId` are omitted (not `undefined`-valued) when absent.
 - `parseEvents(raw: RawEvent[]): CalEvent[]` — maps + drops nulls; does **not** reorder (the API is asked to sort).
 - `sortEvents(events: CalEvent[]): CalEvent[]` — stable copy ordered by `startMs`, then `endMs`.
 - `dayRange(date: string): { timeMin: string; timeMax: string }` — the `[timeMin, timeMax)` RFC-3339 window covering one local calendar date, rendered with the device UTC offset via `contract/time#toLocalIso` so the API returns that day's events in the user's zone.
@@ -54,7 +56,7 @@ Key exports:
 - `class CalendarError extends Error` — carries `status: number`; getters `isAuth` (401/403 → token expired or calendar scope not granted: prompt reconnect) and `isRetryable` (429 or ≥500 → transient). Thrown by both helpers on a non-OK response, with the message extracted from the JSON error body when available.
 - `listCalendars(token: string): Promise<CalendarSummary[]>` — `GET /users/me/calendarList` with `minAccessRole=reader`, `maxResults=250`, and a `fields` filter. Entries without an `id` are dropped; `summary` falls back to the id when blank; `primary` defaults to `false`.
 - `interface ListEventsArgs { calendarId: string; timeMin: string; timeMax: string }` — window bounds are RFC-3339; use `events.dayRange()` to build them.
-- `listEvents(token, { calendarId, timeMin, timeMax }): Promise<CalEvent[]>` — `GET /calendars/{id}/events` with `singleEvents=true` (recurring events expanded server-side into concrete instances), `orderBy=startTime`, `maxResults=250`, and a `fields` filter. `calendarId` is `encodeURIComponent`-ed in the path (ids contain `@` and can contain `/`). The response is run through `parseEvents` + `sortEvents`.
+- `listEvents(token, { calendarId, timeMin, timeMax }): Promise<CalEvent[]>` — `GET /calendars/{id}/events` with `singleEvents=true` (recurring events expanded server-side into concrete instances), `orderBy=startTime`, `maxResults=250`, and a `fields` filter that includes `updated` and `recurringEventId` (the overlay layer's dirty-check fast path and instance identity — SPEC §3.6). `calendarId` is `encodeURIComponent`-ed in the path (ids contain `@` and can contain `/`). The response is run through `parseEvents` + `sortEvents`.
 
 ### src/gcal/config.ts
 
@@ -83,8 +85,9 @@ retitle, annotate, re-time, or hide a calendar event without ever writing to Goo
 any skill**. The log is **local-only** today: no sync rows are written, it is not in
 `allSyncStreams()`, and Drive wiring is deferred — unlike the system streams, it does
 not reuse the `capture.event.v1` envelope/stores, so the multi-stream sync engine
-needs overlay-aware wiring before it can carry it. The Day view UI for
-pseudo-entries is a follow-up workstream; nothing in `dayview/` consumes this yet.
+needs overlay-aware wiring before it can carry it. The Day view consumes this module
+through `src/dayview` (`DayTimeline` / `PseudoEntryCard` / `EditPseudoEntrySheet` /
+`useOverlays` — see [capture-and-dayview.md](capture-and-dayview.md)).
 
 - `overlay/types.ts` — `OVERLAY_SCHEMA` / `OVERLAY_STREAM`; `CalendarEventRef`
   (instance-level `{calendarId, eventId, recurringEventId?}` — `singleEvents=true`
@@ -152,7 +155,7 @@ pseudo-entries is a follow-up workstream; nothing in `dayview/` consumes this ye
 - `src/gcal/overlay/buildPseudoEntries.test.ts` — eventId matching, recurring-instance independence, hidden exclusion, orphan date-matching, multi-calendar filtering, effective-start ordering.
 - `src/gcal/overlay/overlayPlan.test.ts` — draft round-trip, the no-op guard (including whitespace-only edits), per-field diffs, emptied-field → `clearX`, `toggleHidden`.
 - `src/gcal/overlay/store.test.ts` — fake-indexeddb append/list/fold round-trips, independent `calendar-overlay` seq allocation, the v8 migration (existing stores intact, `overlayEvents` empty), and `wipeAll` clearing the log + counter.
-- `src/gcal/client.test.ts` — with stubbed `fetch`, verifies the query parameters and Bearer header of both endpoints, `calendarId` path-encoding, dropped id-less calendar entries, and `CalendarError` status classification (`isAuth` / `isRetryable`).
+- `src/gcal/client.test.ts` — with stubbed `fetch`, verifies the query parameters and Bearer header of both endpoints (including that the `listEvents` `fields` filter requests `updated` and `recurringEventId` and that both survive parsing), `calendarId` path-encoding, dropped id-less calendar entries, and `CalendarError` status classification (`isAuth` / `isRetryable`).
 - `src/gcal/config.test.ts` — exercises the pure `mergeTargetCalendar` (preservation of sibling `skillConfig` fields and `userNotes`, overwrite of a prior `targetCalendar`, fresh-stub fallback on missing/corrupt bodies, and the fixed-key/trailing-newline serialization convention) and the pure `resolveTargetSelection` (auto-pick of primary on first load, stored target selected without re-persisting — including when absent from the list — and no auto-pick without a primary).
 
 ## Cross-module wiring
@@ -165,10 +168,14 @@ pseudo-entries is a follow-up workstream; nothing in `dayview/` consumes this ye
 - `src/dayview/useDayEvents.ts` — hook returning a discriminated `DayEventsState`
   (`not-connected` / `no-calendar` / `loading` / `ready` / `auth-error` / `error`).
   Missing token or target calendar are **normal, non-error states**; a thrown
-  `CalendarError` maps to `auth-error` only when `isAuth`.
-- `src/dayview/CalendarEvents.tsx` — renders the `ready` state as tappable rows that
-  open each event in Google Calendar via `htmlLink`; non-ready states render quiet,
-  non-blocking one-line notes.
+  `CalendarError` maps to `auth-error` only when `isAuth`. The `ready` state carries
+  `calendarId` alongside the events — the overlay layer matches and targets overlays
+  per calendar, and `CalEvent` itself has no calendar id.
+- `src/dayview/DayTimeline.tsx` — merges the `ready` events with the folded overlays
+  into pseudo-entry cards interleaved with the day's real entries
+  (`buildPseudoEntries` runs **only** on `'ready'`); non-ready states render quiet,
+  non-blocking one-line notes. Documented in
+  [capture-and-dayview.md](capture-and-dayview.md).
 - `src/settings/SettingsScreen.tsx` (`CalendarPicker`) — lists calendars when
   connected and resolves the initial selection via `resolveTargetSelection`: the
   stored target if any, else the primary calendar, which is then **persisted
