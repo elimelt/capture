@@ -1,21 +1,17 @@
 /**
- * Chat persistence: conversations survive app restarts (iOS kills standalone
- * PWAs freely). Each conversation is a row in the `chats` store; "New chat"
- * starts a fresh row, past rows stay browsable/searchable from the history
- * sheet, and Settings → wipe clears the store wholesale.
+ * Chat history: pure presentation helpers (title, search) over the synced
+ * chats plus thin CRUD delegates. Conversations are event-sourced in the
+ * `assistant-chats` stream (see chatSync.ts) — this module keeps the API the
+ * history sheet and chat screen consume: "New chat" starts a fresh
+ * conversation, past ones stay browsable/searchable, delete is a soft revoke,
+ * and Settings → wipe clears the whole log.
  */
 import type { UIMessage } from 'ai'
-import { getDb } from '../store/db'
+import { deleteChatStream, loadChatSummaries, type SyncedChat } from './chatSync'
 
-/** A persisted conversation — the store row with strong message typing. */
-export interface StoredChat {
-  id: string
-  /** ISO local time. */
-  createdAt: string
-  /** ISO local time; caller bumps it on every save. */
-  updatedAt: string
-  messages: UIMessage[]
-}
+/** The conversation shape the UI renders; alias of the synced shape. */
+export type StoredChat = SyncedChat
+export { loadAllChats, loadChat, loadMostRecentChat } from './chatSync'
 
 /** What the history list renders: no message payloads, just the gist. */
 export interface ChatSummary {
@@ -55,41 +51,21 @@ export function searchChats(chats: StoredChat[], query: string): StoredChat[] {
   })
 }
 
-export async function loadChat(id: string): Promise<StoredChat | undefined> {
-  const db = await getDb()
-  return (await db.get('chats', id)) as StoredChat | undefined
-}
-
-/** Upsert; the caller sets updatedAt. */
-export async function saveChat(chat: StoredChat): Promise<void> {
-  const db = await getDb()
-  await db.put('chats', chat)
-}
-
-/** Every conversation, most recently touched first. */
-export async function loadAllChats(): Promise<StoredChat[]> {
-  const db = await getDb()
-  const all = (await db.getAll('chats')) as StoredChat[]
-  return all.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-}
-
+/**
+ * Summaries, most recently touched first. Reads at most one blob per chat
+ * (the first message, always a user turn, carries the title).
+ */
 export async function listChats(): Promise<ChatSummary[]> {
-  return (await loadAllChats()).map((c) => ({
+  return (await loadChatSummaries()).map((c) => ({
     id: c.id,
     createdAt: c.createdAt,
     updatedAt: c.updatedAt,
-    title: chatTitle(c.messages),
-    messageCount: c.messages.length,
+    title: chatTitle(c.firstMessage ? [c.firstMessage] : []),
+    messageCount: c.messageCount,
   }))
 }
 
+/** Soft-delete: the chat leaves every list; its events stay in the log. */
 export async function deleteChat(id: string): Promise<void> {
-  const db = await getDb()
-  await db.delete('chats', id)
-}
-
-/** Boot hydration: pick up where the user left off. */
-export async function loadMostRecentChat(): Promise<StoredChat | undefined> {
-  const [mostRecent] = await loadAllChats()
-  return mostRecent
+  await deleteChatStream(id)
 }

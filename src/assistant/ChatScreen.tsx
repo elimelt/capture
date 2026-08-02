@@ -24,9 +24,10 @@ import {
   useKeyboardInset,
 } from '../ui'
 import { ChatHistorySheet } from './ChatHistorySheet'
+import { appendChatMessage, createChat, messagesSince } from './chatSync'
 import { modelLabel } from './config'
 import { buildInstructions } from './context'
-import { loadMostRecentChat, saveChat, type StoredChat } from './history'
+import { loadMostRecentChat, type StoredChat } from './history'
 import { Markdown } from './Markdown'
 import * as sendQueue from './sendQueue'
 import { createAssistantTools } from './tools'
@@ -42,6 +43,10 @@ let cache: {
   model: string
   chatId: string
   createdAt: string
+  /** Whether the chat's capture event exists in the stream (lazily minted). */
+  persisted: boolean
+  /** How many of the live messages are already appended to the stream. */
+  persistedCount: number
   chat: Chat<UIMessage>
 } | null = null
 
@@ -58,6 +63,10 @@ function getChat(model: string, seed: ChatSeed): Chat<UIMessage> {
     model,
     chatId: seed.id,
     createdAt: carried?.createdAt ?? seed.createdAt,
+    // A stored chat exists in the stream with all its messages; a fresh seed
+    // has no capture event yet (minted on the first persisted turn).
+    persisted: carried?.persisted ?? seed.messages.length > 0,
+    persistedCount: carried?.persistedCount ?? seed.messages.length,
     chat: new Chat({
       messages: carried?.chat.messages ?? seed.messages,
       transport: createAssistantTransport(
@@ -244,15 +253,25 @@ function ChatView({
     }
   }, [messages, status, queued])
 
-  // Persist each settled turn (not per-delta; streaming would hammer idb).
+  // Persist each settled turn (not per-delta; streaming would hammer idb):
+  // append only the messages new since the last settle to the chats stream —
+  // one amend event per message. The chat's capture event is minted lazily on
+  // the first persisted turn, so an untouched "New chat" never hits the log.
+  // persistedCount advances synchronously before the async writes so a
+  // re-fired effect (StrictMode double-invoke) can't append duplicates.
   useEffect(() => {
     if ((status === 'ready' || status === 'error') && messages.length > 0 && cache) {
-      void saveChat({
-        id: cache.chatId,
-        createdAt: cache.createdAt,
-        updatedAt: new Date().toISOString(),
-        messages,
-      })
+      const active = cache
+      const fresh = messagesSince(active.persistedCount, messages)
+      if (fresh.length === 0) return
+      active.persistedCount += fresh.length
+      void (async () => {
+        if (!active.persisted) {
+          active.persisted = true
+          active.chatId = await createChat()
+        }
+        for (const m of fresh) await appendChatMessage(active.chatId, m)
+      })()
     }
   }, [status, messages])
 
