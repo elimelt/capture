@@ -44,7 +44,13 @@ export function formatDigest(items: readonly DigestItem[]): string {
   return lines.join('\n')
 }
 
-/** The system prompt: role + data model + tool usage + current time. */
+/**
+ * The system prompt: role + data model + tool usage + current time. The
+ * time is truncated to the hour so the prompt — the very start of the token
+ * stream — stays byte-identical across turns and tool-loop steps, keeping
+ * the server's prefix (KV) cache valid instead of re-prefilling the whole
+ * conversation every request.
+ */
 export function buildInstructions(now: Date = new Date()): string {
   return [
     'You are the assistant inside Timebox, a personal time and location log.',
@@ -55,6 +61,6 @@ export function buildInstructions(now: Date = new Date()): string {
     'Tool results use the user\u2019s local wall-clock time, grouped by day: "- HH:MM [@ place] \u2014 entry text [media]".',
     'Be concise and concrete.',
     '',
-    `Current local time: ${toLocalIso(now)} (${deviceTz()}).`,
+    `Current local time: ${toLocalIso(now).slice(0, 13)}:00 (${deviceTz()}).`,
   ].join('\n')
 }

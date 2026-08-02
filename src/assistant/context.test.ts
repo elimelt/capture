@@ -72,7 +72,14 @@ describe('buildInstructions', () => {
     expect(prompt).toContain('list_entries')
     expect(prompt).toContain('search_entries')
     expect(prompt).toContain('get_places')
-    expect(prompt).toContain(`Current local time: ${toLocalIso(NOW)} (${deviceTz()}).`)
+    const hour = `${toLocalIso(NOW).slice(0, 13)}:00`
+    expect(prompt).toContain(`Current local time: ${hour} (${deviceTz()}).`)
+  })
+
+  it('truncates the time to the hour so the prompt is prefix-cache-stable', () => {
+    const a = buildInstructions(new Date('2026-08-02T12:07:31-04:00'))
+    const b = buildInstructions(new Date('2026-08-02T12:54:09-04:00'))
+    expect(a).toBe(b)
   })
 
   it('no longer embeds a log digest', () => {
