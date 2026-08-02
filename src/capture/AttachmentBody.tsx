@@ -117,7 +117,7 @@ export function AttachmentBody({ attachments, onEditText }: AttachmentBodyProps)
  * Renders inline math ($...$) as styled text. A minimal no-dependency
  * approach per design-nit: "render $P(k)$ as *P(k)*".
  */
-function renderWithMath(text: string): React.ReactNode[] {
+export function renderWithMath(text: string): React.ReactNode[] {
   const parts: React.ReactNode[] = []
   let last = 0
   // Simple inline math: $content$ where content has no $ or newlines.
