@@ -21,9 +21,60 @@
       rel="stylesheet"
     />
     <title>Timebox</title>
+    <!-- Boot splash: pure HTML/CSS so it paints before the JS bundle loads.
+         App.tsx fades it out once the store is hydrated. -->
+    <style>
+      #splash {
+        position: fixed;
+        inset: 0;
+        z-index: 100;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
+        background: #f8f6f3;
+        transition: opacity 0.35s ease;
+      }
+      #splash.done {
+        opacity: 0;
+        pointer-events: none;
+      }
+      #splash p {
+        margin: 0;
+        font-family: 'Libertinus Serif', ui-serif, Georgia, serif;
+        font-size: 28px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+        color: #2c2b29;
+      }
+      #splash .dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 9999px;
+        background: #3a605b;
+        animation: splash-pulse 1.2s ease-in-out infinite;
+      }
+      @keyframes splash-pulse {
+        0%, 100% { opacity: 0.25; transform: scale(0.8); }
+        50% { opacity: 1; transform: scale(1); }
+      }
+      @media (prefers-color-scheme: dark) {
+        #splash { background: #1a1918; }
+        #splash p { color: #ebe9e4; }
+        #splash .dot { background: #5a8c85; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #splash .dot { animation: none; }
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>
+    <div id="splash" aria-hidden="true">
+      <p>Timebox</p>
+      <div class="dot"></div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

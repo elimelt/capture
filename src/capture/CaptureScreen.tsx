@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { GeoLocation } from '../contract/types'
 import { localDateOf, toLocalIso } from '../contract/time'
 import { useAppStore } from '../store/appStore'
-import { EmptyState, ScreenHeader, Toast } from '../ui'
+import { EmptyState, ScreenHeader, Toast, cx, motion } from '../ui'
 import { useRecorder, type RecordingResult } from './useRecorder'
 import { snapshotLocation } from './geo'
 import { usePendingDelete } from './usePendingDelete'
@@ -170,7 +170,7 @@ export default function CaptureScreen() {
         : undefined
 
   return (
-    <div className="flex flex-col gap-4 p-4">
+    <div className={cx('flex flex-col gap-4 p-4', motion.fadeIn)}>
       <ScreenHeader
         title="Capture"
         subtitle={`${todayEntries.length} ${todayEntries.length === 1 ? 'entry' : 'entries'} today`}

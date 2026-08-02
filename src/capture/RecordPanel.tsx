@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { Button, cx, tone, type_ } from '../ui'
+import { Button, cx, motion, tone, type_ } from '../ui'
 import type { Recorder } from './useRecorder'
 import { LevelMeter } from './LevelMeter'
 
@@ -35,7 +35,7 @@ export function RecordPanel({
 }: RecordPanelProps) {
   if (recorder.state === 'error') {
     return (
-      <div className="flex flex-col items-center gap-3 py-6 text-center">
+      <div className={cx('flex flex-col items-center gap-3 py-6 text-center', motion.fadeIn)}>
         <p className={cx(type_.body, 'font-medium', tone.textPrimary)}>
           Microphone unavailable
         </p>
@@ -61,7 +61,12 @@ export function RecordPanel({
   if (recorder.state === 'recording') {
     const remaining = maxClipSec - recorder.elapsedSec
     return (
-      <div className="flex flex-col items-center gap-4 rounded-3xl bg-clay px-6 py-6 shadow-lg shadow-clay/25 dark:bg-clay-dark">
+      <div
+        className={cx(
+          'flex flex-col items-center gap-4 rounded-3xl bg-clay px-6 py-6 shadow-lg shadow-clay/25 dark:bg-clay-dark',
+          motion.scaleIn,
+        )}
+      >
         <LevelMeter getLevel={recorder.getLevel} />
         <p className={cx('tabular-nums text-white', type_.title)}>
           {clock(recorder.elapsedSec)}
@@ -94,7 +99,7 @@ export function RecordPanel({
   }
 
   return (
-    <div className="flex flex-col items-center gap-3 py-4">
+    <div className={cx('flex flex-col items-center gap-3 py-4', motion.fadeIn)}>
       <div className="flex items-center gap-7">
         <SatelliteButton label="Take a photo" onClick={onCamera}>
           <CameraIcon />

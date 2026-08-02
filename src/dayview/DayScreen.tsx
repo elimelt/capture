@@ -5,7 +5,18 @@ import { useAppStore } from '../store/appStore'
 import { timeLabel } from '../capture/EntryCard'
 import { AttachmentBody } from '../capture/AttachmentBody'
 import { usePendingDelete } from '../capture/usePendingDelete'
-import { Button, Card, EmptyState, IconButton, ScreenHeader, Toast, cx, tone, type_ } from '../ui'
+import {
+  Button,
+  Card,
+  EmptyState,
+  IconButton,
+  ScreenHeader,
+  Toast,
+  cx,
+  motion,
+  tone,
+  type_,
+} from '../ui'
 
 function shiftDate(date: string, days: number): string {
   const d = new Date(`${date}T12:00:00`)
@@ -39,7 +50,7 @@ export default function DayScreen() {
     .sort((a, b) => a.capturedAt.localeCompare(b.capturedAt))
 
   return (
-    <div className="flex flex-col gap-4 p-4">
+    <div className={cx('flex flex-col gap-4 p-4', motion.fadeIn)}>
       <ScreenHeader
         title={dayTitle(date, today)}
         subtitle={`${dayEntries.length} ${dayEntries.length === 1 ? 'entry' : 'entries'}`}

@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import type { Entry } from '../contract/types'
-import { Button, Card, IconButton, cx, tone, type_ } from '../ui'
+import { Button, Card, IconButton, cx, motion, tone, type_ } from '../ui'
 import { TextSheet } from './TextSheet'
 import { AttachmentBody } from './AttachmentBody'
 import { useAudioPlayback } from './useAudioPlayback'
@@ -58,7 +58,7 @@ export function EntryCard({
   }
 
   return (
-    <Card>
+    <Card className={motion.riseIn}>
       <div className="flex items-center gap-2">
         <div className="min-w-0 flex-1">
           <div className={cx('flex items-baseline gap-2', type_.body)}>
@@ -128,7 +128,12 @@ export function EntryCard({
       />
 
       {rec.state === 'recording' ? (
-        <div className="mt-2 flex items-center gap-2 rounded-xl bg-clay px-3 py-2 dark:bg-clay-dark">
+        <div
+          className={cx(
+            'mt-2 flex items-center gap-2 rounded-xl bg-clay px-3 py-2 dark:bg-clay-dark',
+            motion.scaleIn,
+          )}
+        >
           <span className={cx('font-medium tabular-nums text-white', type_.ui)}>
             {Math.floor(rec.elapsedSec / 60)}:{String(rec.elapsedSec % 60).padStart(2, '0')}
           </span>

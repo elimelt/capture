@@ -18,6 +18,11 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
     return { error }
   }
 
+  componentDidCatch() {
+    // A crash during boot must not leave the HTML splash covering the fallback.
+    document.getElementById('splash')?.remove()
+  }
+
   render() {
     if (!this.state.error) return this.props.children
     return (

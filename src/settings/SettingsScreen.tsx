@@ -9,6 +9,7 @@ import {
   TextInput,
   Toggle,
   cx,
+  motion,
   tone,
   type_,
 } from '../ui'
@@ -95,7 +96,7 @@ export default function SettingsScreen() {
   }
 
   return (
-    <div className="flex flex-col gap-4 p-4">
+    <div className={cx('flex flex-col gap-4 p-4', motion.fadeIn)}>
       <ScreenHeader title="Settings" />
 
       <Section title="Google">

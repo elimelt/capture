@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { Attachment } from '../contract/types'
 import { getBlob } from '../store/events'
-import { IconButton, cx, tone, type_ } from '../ui'
+import { IconButton, cx, motion, tone, type_ } from '../ui'
 import { TextSheet } from './TextSheet'
 import { useAudioPlayback } from './useAudioPlayback'
 
@@ -96,7 +96,7 @@ function NoteText({
     <button
       onClick={() => onEdit({ file, text, derivedFrom })}
       aria-label={derivedFrom !== undefined ? 'Edit transcript' : 'Edit note'}
-      className="text-left"
+      className={cx('text-left', motion.fadeIn)}
     >
       <span
         className={cx(
@@ -158,7 +158,11 @@ function PhotoThumb({ file, onRemove }: { file: string; onRemove: () => void }) 
   if (!url) return null
   return (
     <>
-      <button onClick={() => setExpanded(true)} aria-label="View photo">
+      <button
+        onClick={() => setExpanded(true)}
+        aria-label="View photo"
+        className={motion.fadeIn}
+      >
         <img
           src={url}
           alt=""
@@ -167,13 +171,20 @@ function PhotoThumb({ file, onRemove }: { file: string; onRemove: () => void }) 
       </button>
       {expanded && (
         <div
-          className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-black/85 p-4"
+          className={cx(
+            'fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-black/85 p-4',
+            motion.fadeIn,
+          )}
           onClick={() => setExpanded(false)}
           role="dialog"
           aria-modal="true"
           aria-label="Photo"
         >
-          <img src={url} alt="" className="min-h-0 max-w-full flex-shrink rounded-lg object-contain" />
+          <img
+            src={url}
+            alt=""
+            className={cx('min-h-0 max-w-full flex-shrink rounded-lg object-contain', motion.scaleIn)}
+          />
           <button
             onClick={(e) => {
               e.stopPropagation()

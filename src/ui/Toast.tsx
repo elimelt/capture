@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { cx, shape, type_ } from './tokens'
+import { cx, motion, shape, type_ } from './tokens'
 
 interface ToastProps {
   children: ReactNode
@@ -17,6 +17,7 @@ export function Toast({ children, actionLabel, onAction }: ToastProps) {
         'border border-transparent bg-ink px-4 py-3 text-paper shadow-lg',
         'dark:border-line-dark dark:bg-card-dark dark:text-ink-dark',
         type_.ui,
+        motion.toastIn,
       )}
       style={{ bottom: 'calc(env(safe-area-inset-bottom) + 5.5rem)' }}
       role="status"

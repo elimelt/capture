@@ -64,6 +64,20 @@ export const type_ = {
   ui: 'font-sans text-[15px] leading-snug',
 } as const
 
+/** Entrance animations (keyframes live in src/index.css @theme). */
+export const motion = {
+  /** Backdrops, screens, content that arrives asynchronously. */
+  fadeIn: 'animate-fade-in',
+  /** Cards and list items. */
+  riseIn: 'animate-rise-in',
+  /** Panels that replace controls in place; modal content. */
+  scaleIn: 'animate-scale-in',
+  /** Bottom sheets. */
+  sheetIn: 'animate-sheet-in',
+  /** Toasts. */
+  toastIn: 'animate-toast-in',
+} as const
+
 /** Minimum tap target (Apple HIG 44pt). */
 export const tap = 'min-h-11 min-w-11'
 

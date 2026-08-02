@@ -17,8 +17,21 @@ export default function App() {
   const init = useAppStore((s) => s.init)
   const refresh = useAppStore((s) => s.refresh)
   const entries = useAppStore((s) => s.entries)
+  const ready = useAppStore((s) => s.ready)
   const lastError = useAppStore((s) => s.lastError)
   const clearError = useAppStore((s) => s.clearError)
+
+  // The HTML boot splash (index.html) covers the app until the store is
+  // hydrated, so the first paint is real content, never a flash of empty
+  // state. Fade it out, then drop it from the DOM.
+  useEffect(() => {
+    if (!ready) return
+    const splash = document.getElementById('splash')
+    if (!splash) return
+    splash.classList.add('done')
+    const t = setTimeout(() => splash.remove(), 400)
+    return () => clearTimeout(t)
+  }, [ready])
 
   useEffect(() => {
     void init()

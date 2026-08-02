@@ -22,6 +22,8 @@ import {
 import type { SyncStatusRow } from './db'
 
 interface AppState {
+  /** True once init() has settled; App dismisses the boot splash on it. */
+  ready: boolean
   currentStreamId: string
   entries: Entry[]
   syncStatuses: Map<number, SyncStatusRow>
@@ -71,6 +73,7 @@ export const useAppStore = create<AppState>()((set, get) => {
     }
 
   return {
+    ready: false,
     currentStreamId: 'timelog',
     entries: [],
     syncStatuses: new Map(),
@@ -101,7 +104,12 @@ export const useAppStore = create<AppState>()((set, get) => {
     },
 
     init: async () => {
-      await Promise.all([get().refresh(), get().loadPlaces(), get().loadSettings()])
+      try {
+        await Promise.all([get().refresh(), get().loadPlaces(), get().loadSettings()])
+      } finally {
+        // Even a failed boot must lift the splash so the error is visible.
+        set({ ready: true })
+      }
     },
 
     clearError: () => set({ lastError: null }),

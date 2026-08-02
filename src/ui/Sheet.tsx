@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { cx, tone, type_ } from './tokens'
+import { cx, motion, tone, type_ } from './tokens'
 
 /**
  * Height of the iOS software keyboard overlapping the layout viewport, so
@@ -35,14 +35,14 @@ export function Sheet({ title, onClose, children }: SheetProps) {
   const keyboardInset = useKeyboardInset()
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end bg-black/40"
+      className={cx('fixed inset-0 z-50 flex items-end bg-black/40', motion.fadeIn)}
       onClick={onClose}
       role="dialog"
       aria-modal="true"
       aria-label={title}
     >
       <div
-        className={cx('w-full rounded-t-3xl p-4', tone.surface)}
+        className={cx('w-full rounded-t-3xl p-4', tone.surface, motion.sheetIn)}
         style={{
           paddingBottom: `calc(max(env(safe-area-inset-bottom), 1rem) + ${keyboardInset}px)`,
         }}
