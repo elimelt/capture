@@ -9,7 +9,7 @@ import { toLocalIso } from '../contract/time'
 
 const ENDPOINT = 'https://nominatim.openstreetmap.org/reverse'
 // Identify the app per policy (stock UA / no identity may be blocked).
-const APP_REFERER = 'timebox-pwa'
+const APP_REFERER = 'capture-pwa'
 // ~4 decimals ≈ 11m: fine enough to distinguish addresses, coarse enough
 // that nearby captures share a cell and reuse one cached lookup.
 const CELL_DECIMALS = 4

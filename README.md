@@ -1,14 +1,14 @@
-# Timebox
+# Capture
 
 Voice-first, offline-first PWA for capturing what you did and when.
 
-Timebox is a mobile-first Progressive Web App (TypeScript/React) for logging
+Capture is a mobile-first Progressive Web App (TypeScript/React) for logging
 activity transitions throughout the day, with voice as the primary input. It is
 built around a few principles: **offline-first** (capture never needs a network
 or a token), **append-only** (nothing is edited or deleted in place — every
 change is a new event, and read state is always a deterministic fold over the
 log), **voice-first capture** (record now, interpret later; no AI runs at
-capture time), **Google Drive as the sync substrate** (there is no Timebox
+capture time), **Google Drive as the sync substrate** (there is no Capture
 backend — the user's own Drive holds the replicated log, and external
 chat-assistant "skills" read the same files), and **opt-in AI** (transcription,
 captioning, and a chat assistant are best-effort enrichments that degrade to

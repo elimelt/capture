@@ -3,7 +3,7 @@
 The opt-in AI chat assistant. It is entirely client-side: the PWA has no backend, so the
 AI SDK's agent loop runs in-process in the browser against an OpenAI-compatible endpoint
 (`https://llm.elimelt.com/v1`, an Ollama facade, no API key — access is origin-gated by
-CORS). The agent answers questions about the user's local Timebox log (entries, places)
+CORS). The agent answers questions about the user's local Capture log (entries, places)
 by calling **read-only tools** over the zustand store and IndexedDB; it never embeds the
 whole log in the prompt. Conversations are persisted to the IndexedDB `chats` store so
 they survive iOS killing the standalone PWA, and are browsable/searchable from a history

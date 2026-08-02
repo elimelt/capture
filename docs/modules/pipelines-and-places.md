@@ -305,7 +305,7 @@ Exports:
 - `reverseGeocode(lat: number, lng: number): Promise<string | undefined>` — checks the
   IndexedDB `geocache` store first; on a miss, fetches
   `…/reverse?format=jsonv2&zoom=18&addressdetails=1&lat=…&lon=…` (with a
-  `Referer: timebox-pwa` header to identify the app per Nominatim policy) and caches the
+  `Referer: capture-pwa` header to identify the app per Nominatim policy) and caches the
   result with a `cachedAt` local-ISO timestamp. Returns `undefined` on any failure
   (offline, non-OK response, cache errors).
 

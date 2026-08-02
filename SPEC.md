@@ -1,4 +1,4 @@
-# Timebox — Generic Capture Client with Drive + Chat-Assistant Processing
+# Capture — Generic Capture Client with Drive + Chat-Assistant Processing
 
 ## Specification v0.3
 
@@ -6,7 +6,7 @@
 
 ## 1. Overview
 
-Timebox is an installable Progressive Web App (PWA) built with React, used on iPhone as
+Capture is an installable Progressive Web App (PWA) built with React, used on iPhone as
 if it were a native app. At its core it is a **generic, offline-first capture client**:
 the user records **entries** — an envelope of attachments (audio, text, photo) plus
 timestamp and location snapshot — into named **streams**, and the app uploads them to a
@@ -103,7 +103,7 @@ subscription is the compute.
 ### 2.3 iOS standalone-mode constraints that shape this design
 
 1. **`SpeechRecognition` (Web Speech API) does not work in standalone PWAs on iOS** — the
-   object exists but recognition silently fails. Irrelevant here by design: Timebox does
+   object exists but recognition silently fails. Irrelevant here by design: Capture does
    not transcribe. Audio is recorded, not recognized.
 2. **`getUserMedia` + `MediaRecorder` do work in standalone mode** (iOS 14.5+), with two
    caveats: (a) iOS point releases have shipped mic/camera-in-PWA regressions (e.g. 18.0,
@@ -468,7 +468,7 @@ Generic header + a free-shape `skillConfig` body owned by the stream's skill:
   "schema": "capture.streamconfig.v1",
   "stream": "timelog",
   "skillConfig": {
-    "targetCalendar": { "id": "abc...@group.calendar.google.com", "name": "Timebox" },
+    "targetCalendar": { "id": "abc...@group.calendar.google.com", "name": "Capture" },
     "eventDefaults": { "colorId": null }
   },
   "userNotes": "I work from home Tuesdays; 'the office' means the Brooklyn office."
@@ -739,7 +739,7 @@ chat subscription instead of per-call API keys.
 
 ### 9.3 Privacy posture
 
-- Attachments never touch a Timebox server (none exists). They go to the user's own
+- Attachments never touch a Capture server (none exists). They go to the user's own
   Drive and are read by the assistant the user chose and authorized.
 - Location is captured per-entry only, stored locally + in the user's Drive.
 - No analytics, telemetry, or cookies in v1.

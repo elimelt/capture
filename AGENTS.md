@@ -1,6 +1,6 @@
 # AGENTS.md — guide for AI coding agents
 
-Timebox is a mobile-first, offline-first PWA (TypeScript + React, built with
+Capture is a mobile-first, offline-first PWA (TypeScript + React, built with
 Vite) for voice-first activity capture, with Google Drive as the sync
 substrate. Read [CONTRIBUTING.md](CONTRIBUTING.md) and
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before making non-trivial changes.

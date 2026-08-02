@@ -74,8 +74,8 @@ export default defineConfig({
         ],
       },
       manifest: {
-        name: 'Timebox',
-        short_name: 'Timebox',
+        name: 'Capture',
+        short_name: 'Capture',
         description: 'Voice-first capture for time tracking and more',
         display: 'standalone',
         orientation: 'portrait',

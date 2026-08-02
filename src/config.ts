@@ -5,7 +5,7 @@
 export const GOOGLE_CLIENT_ID =
   '1055328792781-3qp3rdol6ebq8idump3610qhebma30f8.apps.googleusercontent.com'
 
-export const APP_ORIGIN = 'https://time.elimelt.com'
+export const APP_ORIGIN = 'https://capture.elimelt.com'
 
 /**
  * OAuth scopes the app requests together at connect (SPEC §8.1). They live

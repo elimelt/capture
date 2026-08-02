@@ -1,11 +1,11 @@
-# Timebox — Architecture
+# Capture — Architecture
 
-Timebox is a mobile-first Progressive Web App (TypeScript/React) for capturing what
+Capture is a mobile-first Progressive Web App (TypeScript/React) for capturing what
 you did and when, with voice as the primary input. Its product principles shape every
 technical decision: **offline-first** (capture never needs a network or a token),
 **append-only** (nothing is ever edited or deleted in place — every change is a new
 event), **voice-first capture** (record now, interpret later; no AI runs at capture
-time), **Google Drive as the sync substrate** (there is no Timebox backend — the
+time), **Google Drive as the sync substrate** (there is no Capture backend — the
 user's own Drive holds the replicated log, and external chat-assistant "skills" read
 the same files), and **opt-in AI** (transcription, captioning, and a chat assistant
 are best-effort enrichments that degrade to no-ops when offline or disabled).
@@ -15,7 +15,7 @@ are best-effort enrichments that degrade to no-ops when offline or disabled).
 ```mermaid
 flowchart LR
     subgraph Browser["Browser (installed PWA)"]
-        APP["Timebox app<br/>(React + Zustand)"]
+        APP["Capture app<br/>(React + Zustand)"]
         IDB[("IndexedDB<br/>events, blobs, sync queue,<br/>settings, geocache, chats")]
         APP <--> IDB
     end
@@ -161,7 +161,7 @@ last-synced state so nothing waits invisibly). Enrichment drains return immediat
 OSM tiles and Nominatim responses, so maps work offline too. Offline is not an error
 state anywhere in the system.
 
-**Privacy posture.** There is no Timebox server. Data leaves the device only as:
+**Privacy posture.** There is no Capture server. Data leaves the device only as:
 the replicated log to the user's own Drive (`drive.file` scope — the app sees only
 files it created); audio blobs to the transcription endpoint and downscaled JPEGs to
 the captioning endpoint (automatic once entries exist, one attachment per request);
