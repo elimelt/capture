@@ -26,6 +26,15 @@ understanding that runs **after** capture, **on-device-initiated**, and writes b
 the same event log as any user edit would. Every feature here degrades to a no-op — the
 app is fully functional with all of it offline or failing.
 
+**Every AI/LLM feature is off by default and opt-in (owner policy, issue #89).** Nothing
+leaves the device to an AI endpoint unless the user explicitly turns it on in Settings:
+automatic transcription/captioning is gated by `AppSettings.enrichmentEnabled` (default
+`false`), and the chat assistant by `AppSettings.assistantEnabled` (default `false`, see
+below). Turning a toggle off never deletes anything already generated — transcripts and
+captions are ordinary amend attachments in the append-only log — and turning it back on
+backfills any backlog on the next drain with no special-casing, since planning
+(`pendingTranscriptions`/`pendingCaptions`) already scans the full event history.
+
 ## The plan / runner / api pipeline pattern
 
 Both media pipelines (`src/transcribe`, `src/vision`) are the same four-part machine:
@@ -97,16 +106,29 @@ machine transcripts exactly as it sees user notes — modulo `derivedFrom`.
 ## Drain triggers, backoff, and skip markers
 
 Runners are drained from a single `src/App.tsx` effect that fires **whenever the folded
-entries change** (initial load, capture, foreground refresh, sync pull). Both drains run
-in parallel; if either appended amends, the app refreshes the store, which re-runs the
-effect — the second pass finds nothing pending, a natural fixpoint. Returning to the
-foreground triggers a store refresh, so reopening the PWA indirectly re-drains the
-pipelines too (Drive sync itself is manual-only — "Sync now" in Settings).
+entries change** (initial load, capture, foreground refresh, sync pull) **and
+`AppSettings.enrichmentEnabled` is on** — off by default, so nothing drains until the
+user opts in. Both drains run in parallel; if either appended amends, the app refreshes
+the store, which re-runs the effect — the second pass finds nothing pending, a natural
+fixpoint. Returning to the foreground triggers a store refresh, so reopening the PWA
+indirectly re-drains the pipelines too (Drive sync itself is manual-only — "Sync now"
+in Settings). `enrichmentEnabled` is also in the effect's dependency array, so flipping
+the Settings toggle on immediately re-runs the effect and backfills any backlog that
+accumulated while it was off.
+
+The `src/App.tsx` check is defense in depth only: each runner (`transcribe/runner.ts`,
+`vision/runner.ts`) independently reads `AppSettings.enrichmentEnabled` via
+`getSettings()` and early-returns `0` before touching the network if it's off — through
+a pure, unit-tested `shouldDrain(online, enrichmentEnabled)` predicate — so a future
+caller that forgets the call-site check still can't reach `transcribe.elimelt.com` or
+`llm.elimelt.com`.
 
 Failure handling is identical in both runners:
 
 - **Offline** (`!navigator.onLine`): the drain returns 0 immediately; nothing is
   marked failed. Work simply waits for the next trigger.
+- **Enrichment disabled**: the drain returns 0 immediately, checked right after the
+  offline check and before any IndexedDB read.
 - **Transient failure** (API throws): in-memory per-file exponential backoff, 15 s base,
   max 5 attempts per session; the map resets on app relaunch.
 - **Permanent failure** (source blob missing locally, or the service returned empty
@@ -209,9 +231,11 @@ than transcription/captioning/the assistant do:
 
 None of these require an API key: the LLM/transcription hosts are CORS origin-gated,
 and Nominatim is public (identified via a `Referer`). There is no Capture server;
-beyond these calls, data goes only to the user's own Google Drive (SPEC §9.3). The
-assistant makes no request at all until the user sends a message; day-synthesis prose
-makes no request at all until the user taps "Generate summary" with the opt-in on;
-transcription and captioning run automatically once entries exist, but only send the
-specific attachment being processed. All results land back in local IndexedDB (log
-events, geocache, chats, `meta`).
+beyond these calls, data goes only to the user's own Google Drive (SPEC §9.3). Every
+AI/LLM feature here is opt-in and off by default (owner policy, issue #89): the
+assistant makes no request at all until the user both enables it *and* sends a
+message; day-synthesis prose makes no request at all until the user taps "Generate
+summary" with the opt-in on; transcription and captioning make no request until the
+user enables `enrichmentEnabled` in Settings, after which they run automatically once
+entries exist, sending only the specific attachment being processed. All results land
+back in local IndexedDB (log events, geocache, chats, `meta`).

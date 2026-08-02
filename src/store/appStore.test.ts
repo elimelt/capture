@@ -34,7 +34,12 @@ beforeEach(async () => {
     places: [],
     lastError: null,
     lastSyncAt: null,
-    appSettings: { locationEnabled: true, assistantEnabled: false, assistantModel: 'gpt-oss:20b' },
+    appSettings: {
+      locationEnabled: true,
+      enrichmentEnabled: false,
+      assistantEnabled: false,
+      assistantModel: 'gpt-oss:20b',
+    },
     streamSettings: { maxClipSec: 60, keepAudioLocally: true },
     localSpace: null,
     appSpace: null,
@@ -94,7 +99,12 @@ describe('refresh', () => {
 
 describe('settings actions', () => {
   it('updateSettings persists and updates state', async () => {
-    const next = { locationEnabled: false, assistantEnabled: true, assistantModel: 'gemma3:27b' }
+    const next = {
+      locationEnabled: false,
+      enrichmentEnabled: true,
+      assistantEnabled: true,
+      assistantModel: 'gemma3:27b',
+    }
     await useAppStore.getState().updateSettings(next)
     expect(useAppStore.getState().appSettings).toEqual(next)
     expect(await getSettings()).toEqual(next)

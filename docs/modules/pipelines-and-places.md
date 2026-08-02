@@ -200,27 +200,37 @@ Exports:
 - `drainTranscriptions(streamId: string): Promise<number>` — transcribes every eligible
   pending audio attachment; returns how many amend events were appended. Re-entrant
   calls coalesce onto the single in-flight drain promise (module-level `draining`).
+- `shouldDrain(online: boolean, enrichmentEnabled: boolean): boolean` — pure drain-gate
+  predicate (`online && enrichmentEnabled`), unit-tested without any I/O.
 
-Per-file drain logic (see the pattern section above for the shared failure model):
+Automatic transcription is fully opt-in (owner policy, issue #89): `AppSettings.enrichmentEnabled`
+defaults to `false`, and no audio reaches `transcribe.elimelt.com` until the user turns it
+on in Settings. Per-file drain logic (see the pattern section above for the shared failure model):
 
-1. Return `0` immediately when offline.
-2. Sweep `liveTranscripts` down to the currently-pending audio files (drops live text
+1. Return `0` immediately when offline (checked synchronously, before any IndexedDB read).
+2. Read `AppSettings.enrichmentEnabled` (`src/store/settings.ts`); return `0` if it is off.
+   This is a second, independent gate from the one `src/App.tsx` applies at the call site
+   (defense in depth — a future caller that forgets to check the setting still can't reach
+   the network), and it is also what makes the opt-in **backfill** work: `pendingTranscriptions`
+   already scans the full event history, so audio captured while enrichment was off is
+   picked up by the very next drain once the user turns it on, with no special-casing.
+3. Sweep `liveTranscripts` down to the currently-pending audio files (drops live text
    left by attempts that completed before this drain).
-3. For each `pendingTranscriptions(events)` item, skip files that are backing off
+4. For each `pendingTranscriptions(events)` item, skip files that are backing off
    (`eligible`) or have a `transcribe:skip:<file>` marker in the `meta` store.
-4. Missing blob (audio was never kept locally — `keepAudioLocally` off) → mark skipped
+5. Missing blob (audio was never kept locally — `keepAudioLocally` off) → mark skipped
    permanently, no API call. Empty transcript → clear live text, mark skipped
    permanently.
-5. While `transcribeAudio` streams, each partial is published to
+6. While `transcribeAudio` streams, each partial is published to
    `liveTranscripts.set(audio.file, partial)` for the entry card; a mid-stream failure
    lands in the catch, which clears the live text and backs off as before — partial
    text is never persisted.
-6. After `transcribeAudio` resolves, re-plan against the current log (fresh
+7. After `transcribeAudio` resolves, re-plan against the current log (fresh
    `listEvents` → `pendingTranscriptions`) and drop the result (clearing its live text)
    if the audio no longer needs a transcript — a sync pull may have imported another
    device's transcript while the API call was in flight (at-most-once transcription
    globally).
-7. Still pending → `appendAmend({ stream, targets: [entryId], attachments: [{ kind: 'text',
+8. Still pending → `appendAmend({ stream, targets: [entryId], attachments: [{ kind: 'text',
    blob, mimeType: 'text/plain', derivedFrom: audio.file }] })`. The final live text is
    left in place until the next drain's sweep, so the card never flashes empty before
    the store refresh reveals the persisted attachment.
@@ -228,7 +238,9 @@ Per-file drain logic (see the pattern section above for the shared failure model
 Constants: `MAX_ATTEMPTS_PER_SESSION = 5`, `BACKOFF_BASE_MS = 15_000`.
 
 Called from `src/App.tsx` in an effect that runs whenever the folded entries change,
-alongside `drainCaptions`; the app refreshes the store when either returns > 0.
+alongside `drainCaptions`, but only while `AppSettings.enrichmentEnabled` is on (the
+effect's own gate — belt-and-suspenders with the runner-level one above); the app
+refreshes the store when either drain returns > 0.
 
 ### src/transcribe/plan.test.ts
 
@@ -264,7 +276,13 @@ permanent skip markers for empty transcripts and missing blobs, backoff after fa
 the offline no-op, the two pull-race cases (audio whose transcript arrived via a pulled
 amend is never sent to the API; an in-flight result is dropped when a pull imports a
 remote transcript mid-drain), and coalescing of overlapping drains onto one promise.
-The streaming tests cover the live-text lifecycle: partials published to
+A separate `shouldDrain` describe block pins the pure gate predicate directly; a
+`drainTranscriptions — enrichment opt-in gate` describe block pins the runner-level
+early-return itself: no API call while `enrichmentEnabled` is off (the default), the
+backlog backfilling once it is turned on (`pendingTranscriptions` needs no
+special-casing since it already scans full history), and the gate holding even across
+repeated calls with no call-site check at all. The streaming tests cover the live-text
+lifecycle: partials published to
 `liveTranscripts` mid-flight, the final text lingering until the next drain's sweep,
 clearing on mid-stream failure (with nothing persisted) and on the mid-drain pull race.
 Resets the module registry per test because the runner keeps module-level state.
@@ -353,16 +371,19 @@ Exports:
 - `drainCaptions(streamId: string): Promise<number>` — captions every eligible pending
   photo attachment; returns how many amend events were appended; re-entrant calls
   coalesce onto the in-flight drain.
+- `shouldDrain(online: boolean, enrichmentEnabled: boolean): boolean` — same pure
+  drain-gate predicate as the transcribe runner.
 
 Differences from the transcribe runner are limited to: skip-marker prefix
 `caption:skip:<file>`, `pendingCaptions` as the plan, `captionPhoto(blob, onPartial)`
 (no mime type argument) as the API, and `liveCaptions` as the live-text store (same
 lifecycle: sweep to pending files at drain start, partials published mid-stream,
 cleared on failure/empty, final text left for the next sweep). Same constants (5
-attempts/session, 15 s backoff base), same offline check, same amend shape with
-`derivedFrom: photo.file`. Also invoked from the `src/App.tsx` effect. One structural
-gap: the transcribe runner's post-API re-plan (drop the result if a pull imported a
-transcript mid-flight) has no counterpart here yet.
+attempts/session, 15 s backoff base), same offline check, same `enrichmentEnabled` gate
+(reads `AppSettings` via `getSettings()`, independent of the `src/App.tsx` call-site
+check), same amend shape with `derivedFrom: photo.file`. Also invoked from the
+`src/App.tsx` effect. One structural gap: the transcribe runner's post-API re-plan
+(drop the result if a pull imported a transcript mid-flight) has no counterpart here yet.
 
 ### src/vision/plan.test.ts
 
@@ -385,7 +406,10 @@ blob, idempotent re-drains, permanent skips for empty captions and missing blobs
 failure backoff, offline no-op, and drain coalescing — with fresh module registry and
 IndexedDB per test. The streaming tests cover the `liveCaptions` lifecycle: partials
 published mid-flight, final text lingering until the next drain's sweep, and clearing
-on mid-stream failure with nothing persisted.
+on mid-stream failure with nothing persisted. Mirrors the transcribe runner's gate
+coverage too: `shouldDrain` pinned directly, plus a `drainCaptions — enrichment opt-in
+gate` block covering no-API-call while off, backfill of photos captured while off once
+turned on, and the runner-level gate holding with no call-site check at all.
 
 ### src/places/match.ts
 
@@ -440,6 +464,13 @@ Covers `haversineM` (zero distance, ~111,195 m per degree of latitude, symmetry)
 
 ## Key invariants & gotchas
 
+- **Enrichment is fully opt-in, off by default (owner policy, issue #89).**
+  `AppSettings.enrichmentEnabled` defaults to `false`; both runners early-return before
+  any network call unless it is on, independent of the `src/App.tsx` call-site check
+  (defense in depth). Turning the setting off never deletes existing transcripts or
+  captions — they are ordinary amend attachments in the append-only log. Turning it on
+  backfills the backlog on the very next drain with no special-casing, because
+  `pendingTranscriptions`/`pendingCaptions` already scan the full event history.
 - **`derivedFrom` is the machine/user boundary.** Text attachments with `derivedFrom`
   are machine output (transcript or caption); without it they are user-typed. Both
   pipelines and the UI (`src/capture/AttachmentBody.tsx`) rely on this.

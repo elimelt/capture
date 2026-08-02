@@ -23,6 +23,14 @@ import { appendCapture, getBlob, listEvents } from './events'
 
 export interface AppSettings {
   locationEnabled: boolean
+  /**
+   * Automatic media enrichment (audio transcription + photo captioning) is
+   * fully opt-in: off by default, the App.tsx drain effect and both runners
+   * (`transcribe/runner.ts`, `vision/runner.ts`) all gate on this — nothing
+   * leaves the device to transcribe.elimelt.com or llm.elimelt.com until the
+   * user turns it on (owner policy, issue #89).
+   */
+  enrichmentEnabled: boolean
   /** AI assistant is fully opt-in; the chat tab and code stay absent until enabled. */
   assistantEnabled: boolean
   /** Model id on the LLM endpoint (curated list in assistant/config.ts). */
@@ -67,6 +75,7 @@ export const LOCAL_ONLY_SETTINGS_KEYS: ReadonlySet<string> = new Set()
 
 export const APP_SETTINGS_DEFAULTS: AppSettings = {
   locationEnabled: true,
+  enrichmentEnabled: false,
   assistantEnabled: false,
   assistantModel: 'gpt-oss:20b',
 }
@@ -90,6 +99,7 @@ export function streamSettingsKey(stream: string, field: keyof StreamSettings): 
 export function appSettingsEntries(s: AppSettings): [string, SettingsValue][] {
   return [
     [appSettingsKey('locationEnabled'), s.locationEnabled],
+    [appSettingsKey('enrichmentEnabled'), s.enrichmentEnabled],
     [appSettingsKey('assistantEnabled'), s.assistantEnabled],
     [appSettingsKey('assistantModel'), s.assistantModel],
   ]
@@ -244,6 +254,11 @@ export async function getSettings(): Promise<AppSettings> {
       state,
       appSettingsKey('locationEnabled'),
       APP_SETTINGS_DEFAULTS.locationEnabled,
+    ),
+    enrichmentEnabled: pick(
+      state,
+      appSettingsKey('enrichmentEnabled'),
+      APP_SETTINGS_DEFAULTS.enrichmentEnabled,
     ),
     assistantEnabled: pick(
       state,

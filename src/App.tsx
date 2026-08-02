@@ -35,6 +35,7 @@ export default function App() {
   const lastError = useAppStore((s) => s.lastError)
   const clearError = useAppStore((s) => s.clearError)
   const assistantEnabled = useAppStore((s) => s.appSettings.assistantEnabled)
+  const enrichmentEnabled = useAppStore((s) => s.appSettings.enrichmentEnabled)
   const tabs = visibleTabs(TABS, assistantEnabled)
 
   // The HTML boot splash (index.html) covers the app until the store is
@@ -62,13 +63,17 @@ export default function App() {
 
   // Background media understanding: whenever entries change (capture,
   // foreground refresh), transcribe any audio still missing a transcript and
-  // caption any photo still missing a caption. Appending the amend refreshes
-  // entries, which re-runs this and finds nothing pending. If a drain
-  // completes while the app is hidden (user switched away mid-run), announce
-  // it — best-effort by design; see src/notify/local.ts.
+  // caption any photo still missing a caption. Fully opt-in (owner policy,
+  // issue #89) — nothing leaves the device to transcribe.elimelt.com or
+  // llm.elimelt.com unless enrichmentEnabled is on; this call-site check is
+  // defense in depth only, since both runners independently early-return when
+  // it's off. Appending the amend refreshes entries, which re-runs this and
+  // finds nothing pending. If a drain completes while the app is hidden (user
+  // switched away mid-run), announce it — best-effort by design; see
+  // src/notify/local.ts.
   const currentStreamId = useAppStore((s) => s.currentStreamId)
   useEffect(() => {
-    if (entries.length === 0) return
+    if (entries.length === 0 || !enrichmentEnabled) return
     Promise.all([drainTranscriptions(currentStreamId), drainCaptions(currentStreamId)])
       .then(([transcribed, captioned]) => {
         if (transcribed + captioned > 0) {
@@ -83,7 +88,7 @@ export default function App() {
         }
       })
       .catch(() => {}) // per-file errors back off in the runners; a drain-level failure just waits for the next trigger
-  }, [entries, currentStreamId, refresh])
+  }, [entries, currentStreamId, refresh, enrichmentEnabled])
 
   // Home Screen icon badge = entries waiting to sync (pending + failed sync
   // rows). setAppBadge persists after the app is backgrounded or closed, so

@@ -12,10 +12,16 @@
  * Failure handling: transient errors back off in memory (reset on app
  * relaunch); permanently uncaptionable photos (empty caption, missing blob)
  * get a local skip marker in the meta store so they are never retried.
+ *
+ * Enrichment is fully opt-in (owner policy, issue #89): this runner
+ * early-returns unless `AppSettings.enrichmentEnabled` is on, independent of
+ * whatever gate the caller (src/App.tsx) applies, so a future caller can't
+ * accidentally send a photo to llm.elimelt.com by skipping the check.
  */
 import { getDb } from '../store/db'
 import { appendAmend, getBlob, listEvents } from '../store/events'
 import { liveCaptions } from '../store/livetext'
+import { getSettings } from '../store/settings'
 import { captionPhoto } from './api'
 import { pendingCaptions } from './plan'
 
@@ -54,6 +60,15 @@ function recordFailure(file: string): void {
 }
 
 /**
+ * Pure drain-gate predicate: the drain may run only while online *and* the
+ * user has opted into automatic enrichment. Exported so the gate is testable
+ * without touching IndexedDB or the network.
+ */
+export function shouldDrain(online: boolean, enrichmentEnabled: boolean): boolean {
+  return online && enrichmentEnabled
+}
+
+/**
  * Captions every eligible pending photo attachment; returns how many amend
  * events were appended (caller refreshes the store if > 0). Re-entrant calls
  * coalesce onto the in-flight drain.
@@ -66,7 +81,11 @@ export function drainCaptions(streamId: string): Promise<number> {
 }
 
 async function drain(streamId: string): Promise<number> {
+  // Offline check first and synchronous, so an offline drain never touches
+  // IndexedDB at all — matches the "returns 0 immediately" contract.
   if (!navigator.onLine) return 0
+  const { enrichmentEnabled } = await getSettings()
+  if (!shouldDrain(navigator.onLine, enrichmentEnabled)) return 0
   const events = await listEvents(streamId)
   const pending = pendingCaptions(events)
   // Sweep live text from earlier attempts: anything no longer pending has
