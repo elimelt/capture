@@ -56,9 +56,12 @@ edit sheet, and overlay store live here.
 **Purpose:** Screen 1 — the capture screen. Default export `CaptureScreen()` (no props).
 
 **Composition:** renders `ScreenHeader`, `RecordPanel`, a hidden photo `<input
-type="file" accept="image/*" capture="environment">`, either an `EmptyState` or
-`EntryList` for today's entries, an optional `TextSheet`, and one of three toasts
-(captured-with-Undo, deleted-with-Undo, discarded).
+type="file" accept="image/*" capture="environment">` (the plain camera button, always a
+new capture), a second dedicated hidden photo input for the gesture accelerator's photo
+add-on (always an amend — see below), either an `EmptyState` or `EntryList` for today's
+entries, an optional `TextSheet` (plain text capture, and a second instance for the
+accelerator's note add-on), and one of three toasts (captured-with-Undo,
+deleted-with-Undo, discarded).
 
 **Key behaviors:**
 
@@ -74,9 +77,19 @@ type="file" accept="image/*" capture="environment">`, either an `EmptyState` or
   (`tapStartRef`), kicks off `snapshotLocation(...)` into `locationRef` (a
   `Promise<GeoLocation | undefined>` resolving concurrently with recording), and calls
   `recorder.start(maxClipSec, onAutoStop)`. When recording, `recorder.stop()` then
-  commits. Commit (`commitRef.current`) awaits the location promise and calls
+  commits. Commit (`commitRef.current`) awaits the location promise, calls
   `capture({ capturedAt: toLocalIso(tapStart), location, attachments: [audio] })` —
-  `capturedAt` is the moment the user tapped record, not when the clip ended.
+  `capturedAt` is the moment the user tapped record, not when the clip ended — and
+  **returns the `CaptureEvent`** so `handleCommitThen` (below) can target it.
+- **Gesture accelerator's commit-then-add-on (#77 req. 3, `handleCommitThen`):** called
+  by `RecordPanel.onCommitThen(kind)` only while actually recording. Stops the recorder
+  and, if `recorder.stop()` resolved a result (it can resolve `null` if a race — auto-stop,
+  background-commit — already finalized the recorder first; that's a no-op, matching req.
+  8), commits via the same `commitRef.current` as a plain tap-to-stop, then sets
+  `addOnTarget = { entryId, kind }`. An effect clicks the dedicated add-on photo input the
+  instant `kind === 'photo'`; `kind === 'text'` renders a second `TextSheet`. Both resolve
+  via a plain `amend({ targets: [entryId], attachments: [...] })` — the exact
+  `EntryList.onAddPhoto`/`onAddNote` wiring, never a second `capture` event.
 - **Background commit (A6):** iOS suspends backgrounded PWAs aggressively, so a
   `visibilitychange` → `hidden` listener stops an in-flight recording and commits it
   instead of losing it. `recordingRef`/`commitRef` are refs so the listener always sees
@@ -105,16 +118,66 @@ type="file" accept="image/*" capture="environment">`, either an `EmptyState` or
   `amend({ targets: [entryId], patch: { location } })`; skipping just closes the sheet —
   the entry is already saved.
 
+### src/capture/holdGesture.ts
+
+**Purpose:** Pure gesture state machine for the mic-button tap/hold/drag accelerator
+(#77) — pointer/time events in, a new state and an optional command out; no DOM, no
+timers, no `Date.now()` inside. `RecordPanel` owns the real `PointerEvent`s and a single
+`setTimeout(HOLD_MS)`, feeding this module the timestamps and coordinates it already has,
+which keeps every transition (including timing/threshold boundaries) testable without
+jsdom (`holdGesture.test.ts`).
+
+**Exports:**
+
+- `type GesturePhase = 'idle' | 'pressed' | 'holding' | 'dragging'`; `type GestureTarget
+  = 'photo' | 'text' | 'cancel'`; `interface GestureState { phase: GesturePhase; target?:
+  GestureTarget; pressedAt?: number }` (`pressedAt` is internal bookkeeping for
+  `tick`/`release`'s `HOLD_MS` check).
+- `type GestureCommand = 'tap' | 'commit' | 'commitThen:photo' | 'commitThen:text' |
+  'discard'`.
+- `HOLD_MS` (400) and `DRAG_PX` (40) — the hold-engage and drag-resolve thresholds,
+  exported so `RecordPanel` and tests share one source of truth.
+- `press(state, t)`: pointerdown → `'pressed'`, recording `pressedAt`.
+- `tick(state, t)`: the caller's `HOLD_MS` timer firing while still pressed with no
+  cancelling move → `'holding'`; a no-op everywhere else (already holding/dragging,
+  already cancelled back to idle, or already released).
+- `move(state, dx, dy)`: cumulative offset from the press point (not deltas). Before the
+  hold engages (`'pressed'`), any offset past `DRAG_PX` reads as scroll intent and resets
+  straight to idle — the whole candidacy is abandoned, so neither a tap nor a hold ever
+  fires for that pointer sequence and the page can scroll normally. Once holding, the
+  target is recomputed live from the current offset: the larger axis wins, horizontal
+  splits left → `'photo'` / right → `'text'`, vertical-up → `'cancel'` (the "slide up to
+  cancel" convention); vertical-down is deliberately unassigned (no location zone in v1)
+  and just keeps the hold engaged with no target.
+- `release(state, t)`: resolves to a `{ state; command? }`, always returning `state` to
+  idle — a fresh `press()` is required before another command can fire, which is the
+  invariant that rules out two commit-class commands from one press. `'pressed'` with
+  `t - pressedAt < HOLD_MS` → `'tap'`; held past `HOLD_MS` with no target → `'commit'`;
+  `'dragging'` with a target → the matching `'commitThen:*'`/`'discard'`.
+- `cancel(state)`: pointercancel/pointerleave — an unconditional reset to idle, no
+  command; the caller (`RecordPanel`) decides whether that requires discarding an
+  in-flight recording.
+
+**Tested invariants (`holdGesture.test.ts`, no jsdom):** tap/hold/drag-per-zone
+boundaries (including the `HOLD_MS`/`DRAG_PX` edges, inclusive at the threshold);
+pre-hold drift past `DRAG_PX` cancels candidacy and yields no command at all on release
+(not even `'tap'`); sub-threshold drift never breaks a tap; a drag can retarget live
+before release; releasing twice without an intervening `press()` is inert; and a fuzz
+sweep of random press/move/tick/release sequences asserting a commit-class command is
+never emitted without a preceding, still-armed `press()`.
+
 ### src/capture/RecordPanel.tsx
 
 **Purpose:** The capture control — a pure presentational component driven by a
 `Recorder` (from `useRecorder`).
 
-**Export:** `RecordPanel({ recorder, maxClipSec, onTap, onDiscard,
-onCamera, onText, prompt, todayCount }: RecordPanelProps)` — a pure
-presentational component; `prompt` and `todayCount` are computed by
-`CaptureScreen` (`prompt` via `capturePrompt`, `todayCount` from the same
-today-filtered `entries` array), never inside this component.
+**Export:** `RecordPanel({ recorder, maxClipSec, onTap, onDiscard, onCamera, onText,
+onCommitThen, prompt, todayCount }: RecordPanelProps)` — a pure presentational
+component; `prompt` and `todayCount` are computed by `CaptureScreen` (`prompt` via
+`capturePrompt`, `todayCount` from the same today-filtered `entries` array), never
+inside this component. `onCommitThen(kind: 'photo' | 'text')` is the gesture
+accelerator's drag-to-satellite outcome (#77): commit the in-flight recording, then open
+the matching add-on for the just-created entry.
 
 **Behavior by recorder state:**
 
@@ -122,19 +185,56 @@ today-filtered `entries` array), never inside this component.
   `'denied'` points to iOS Settings (no "Try again" button, since retrying a denied mic
   is futile), `'failed'` offers "Try again" (`recorder.resetError`). Both offer "Type an
   entry" (`onText`), so capture never dead-ends.
-- `recording`: focused panel with `LevelMeter` (fed `recorder.getLevel`), an m:ss timer,
-  an "Ns left" countdown once `maxClipSec - elapsedSec <= 10`, and Discard / Done
-  buttons (`onDiscard` / `onTap`). Unchanged by #76.
-- idle (#76 hierarchy pass): the large mic button (`onTap`) is the sole dominant
-  affordance, top-centered; directly below it, the contextual `prompt` line
-  (`type_.sub`/`tone.textSecondary` — chrome, not content) and, once
-  `todayCount > 0`, a compact "N moments today" line (`type_.caption`/
-  `tone.textFaint`) reclaim the space a static layout used to leave empty.
-  Camera and text render as smaller (44px, `tap`-sized), visually subordinate
-  `SatelliteButton`s offset below the mic (`tone.surface`/`tone.textMuted`,
-  a plain hairline border) — still plain, individually tappable `<button>`s
-  with unchanged `aria-label`s and `onCamera`/`onText` wiring. No visible
-  labels beyond the aria-labels, for visual consistency with the mic.
+- `recording` **and the gesture is idle**: focused panel with `LevelMeter` (fed
+  `recorder.getLevel`), an m:ss timer, an "Ns left" countdown once `maxClipSec -
+  elapsedSec <= 10`, and Discard / Done buttons (`onDiscard` / `onTap`). Unchanged by
+  #76 — this is what a plain tap-to-start still shows.
+- idle, **or an active hold/drag regardless of `recorder.state`** (#76 hierarchy pass,
+  extended by #77): the large mic button is the sole dominant affordance, top-centered;
+  directly below it, the contextual `prompt` line (`type_.sub`/`tone.textSecondary` —
+  chrome, not content) and, once `todayCount > 0` and no gesture is active, a compact "N
+  moments today" line (`type_.caption`/`tone.textFaint`) reclaim the space a static
+  layout used to leave empty. Camera and text render as smaller (44px, `tap`-sized),
+  visually subordinate `SatelliteButton`s offset below the mic (`tone.surface`/
+  `tone.textMuted`, a plain hairline border) — still plain, individually tappable
+  `<button>`s with unchanged `aria-label`s and `onCamera`/`onText` wiring, unaffected by
+  whether the gesture ever engages.
+
+**Tap/hold/drag accelerator (#77):** the mic button drives `holdGesture.ts` via
+`onPointerDown`/`onPointerMove`/`onPointerUp`/`onPointerCancel` plus a React
+`onPointerLeave` on the *wrapper* div (not the button — pointer-capture boundary events
+aren't retargeted, so binding it to the small button would fire mid-drag the instant the
+finger physically crosses its bounds and kill the feature). `touch-action: none`
+(`touch-none`) is scoped to the mic button alone, so page scroll outside the capture
+panel is unaffected (req. 7). The mic/satellite layout stays mounted for the entire
+press→hold→drag→release sequence — it never unmounts into the full recording panel
+mid-gesture, which would drop pointer capture — and only switches to that panel once
+released back to idle with `recorder.state === 'recording'` (a plain tap-start).
+Wiring:
+
+- Pointerdown arms a single `setTimeout(HOLD_MS)`; if it fires before release/cancel,
+  `tick()` transitions to `'holding'` and `RecordPanel` calls `onTap()` — the same
+  state-aware handler a plain tap uses, so a hold starts recording exactly the tap-start
+  way (never a separate code path, never a double-start).
+- Pointerup resolves `release()`'s command: `'tap'` always calls `onTap()`;
+  `'commit'`/`'commitThen:photo'`/`'commitThen:text'`/`'discard'` call
+  `onTap()`/`onCommitThen(kind)`/`onDiscard()` **only if `recorder.state === 'recording'`**
+  — the no-op guard for #77 req. 8 (a pointerup racing the iOS background-commit handler
+  or `maxClipSec` auto-stop, both of which already claimed the recorder, must do
+  nothing, never double-commit).
+- Pointercancel/the wrapper's pointerleave call `cancel()` and, only if the gesture had
+  reached `'holding'`/`'dragging'` and `recorder.state === 'recording'`, `onDiscard()` —
+  same effect as the plain Discard button (req. 5).
+- The button keeps a plain `onClick` (`onMicClick`) for keyboard/AT activation, which
+  never fires a pointer event; a `suppressClickRef` set on every pointerup/pointercancel
+  and cleared on the next macrotask stops the browser's trailing synthetic click (after
+  a real pointer tap) from calling `onTap()` a second time, without ever disabling the
+  button's native keyboard affordance (req. 7 — every gesture outcome the mic button can
+  produce stays reachable without ever touching the gesture).
+- Visual affordance (req. 6, tokens only): the live drag target highlights its
+  `SatelliteButton` (`tone.accentWash`/`tone.accent`, `motion.scaleIn`); while holding
+  still (no target), the elapsed timer replaces the prompt line; targeting `'cancel'`
+  swaps that line to "Release to cancel" in `tone.danger`.
 
 Private helpers: `SatelliteButton`, `clock()`. The mic/camera/text-cursor glyphs come from
 the shared `captureIcon` mapping in `src/ui` (icons.tsx), which entry cards reuse so
@@ -1103,7 +1203,17 @@ re-throw, matching the appStore `guard` convention.
   recomposition with `entry.deviceTz`), and both land in `patch.capturedAt`.
 - **Recorder races are resolved by claiming:** `finalize()` nulls `recorderRef` before
   stopping, so a user tap racing the auto-stop timer (or the background-commit handler)
-  yields exactly one committed clip.
+  yields exactly one committed clip. The gesture accelerator (#77) rides the same
+  invariant rather than re-solving it: every hold-class command in `RecordPanel` is
+  gated on `recorder.state === 'recording'` at the moment of pointerup, so a release
+  racing auto-stop/background-commit (which already flipped the recorder out of
+  `'recording'`) is a no-op, never a second commit.
+- **The gesture accelerator is additive, never load-bearing (#77):** `holdGesture.ts`'s
+  commands only ever call the same handlers a plain button already calls (`onTap`,
+  `onDiscard`, and an `onCommitThen` that resolves to the exact `EntryList.onAddPhoto`/
+  `onAddNote` amend shape). Every outcome it can reach stays fully reachable without it —
+  removing the gesture wiring entirely would leave tap-to-record, Discard, and the entry
+  card's "+ photo"/"+ note" fully intact.
 - **Never hardcode the audio container:** iOS Safari records `audio/mp4`; the mime type
   is negotiated per device in `useRecorder`.
 - **Geolocation is fire-and-forget:** `snapshotLocation` never rejects and resolves

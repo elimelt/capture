@@ -1,6 +1,6 @@
 /** Screen 1 — Capture (SPEC §4.1). Tap to record, tap to stop; never dead-ends. */
 import { useEffect, useRef, useState } from 'react'
-import type { GeoLocation } from '../contract/types'
+import type { CaptureEvent, GeoLocation } from '../contract/types'
 import { localDateOf, toLocalIso } from '../contract/time'
 import { reverseGeocode } from '../places/geocode'
 import { useAppStore } from '../store/appStore'
@@ -19,6 +19,15 @@ type ToastState = { kind: 'captured'; entryId: string } | { kind: 'discarded' }
 /** A just-captured entry at a location the user has never named. */
 type PendingPlace = { entryId: string; location: GeoLocation }
 
+/**
+ * The gesture accelerator's drag-to-satellite outcome (#77 req. 3): commit
+ * the in-flight recording, then target the just-created entry for exactly
+ * the add-on the drag pointed at. Resolved by a plain `amend` — the same
+ * one `EntryList.onAddPhoto`/`onAddNote` would append from the entry card's
+ * labelled buttons, never a second `capture` event.
+ */
+type AddOnTarget = { entryId: string; kind: 'photo' | 'text' }
+
 export default function CaptureScreen() {
   const entries = useAppStore((s) => s.entries)
   const places = useAppStore((s) => s.places)
@@ -34,7 +43,12 @@ export default function CaptureScreen() {
   const [textOpen, setTextOpen] = useState(false)
   const [toast, setToast] = useState<ToastState | null>(null)
   const [pendingPlace, setPendingPlace] = useState<PendingPlace | null>(null)
+  // Gesture accelerator's drag-to-satellite outcome (#77): which just-committed
+  // entry, if any, is waiting for its photo/note add-on. View-local only —
+  // resolved into an `amend` on save, never its own event.
+  const [addOnTarget, setAddOnTarget] = useState<AddOnTarget | null>(null)
   const photoInputRef = useRef<HTMLInputElement>(null)
+  const addOnPhotoInputRef = useRef<HTMLInputElement>(null)
   const tapStartRef = useRef<Date>(new Date())
   const locationRef = useRef<Promise<GeoLocation | undefined>>(Promise.resolve(undefined))
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -79,7 +93,14 @@ export default function CaptureScreen() {
     })
   }
 
-  const commitRef = useRef<(result: RecordingResult) => Promise<void>>(async () => {})
+  // Returns the CaptureEvent so onCommitThen (#77) can target the just-made
+  // entry for its add-on; every other caller (tap-to-stop, auto-stop,
+  // background-commit) already ignores the return value.
+  const commitRef = useRef<(result: RecordingResult) => Promise<CaptureEvent>>(
+    async () => {
+      throw new Error('commitRef called before mount')
+    },
+  )
   commitRef.current = async (result: RecordingResult) => {
     const location = await locationRef.current
     const event = await capture({
@@ -96,6 +117,7 @@ export default function CaptureScreen() {
     })
     showToast({ kind: 'captured', entryId: event.id })
     maybePromptPlace(event)
+    return event
   }
 
   // A6: iOS suspends backgrounded PWAs aggressively — commit the in-flight
@@ -129,6 +151,29 @@ export default function CaptureScreen() {
     recorder.cancel()
     showToast({ kind: 'discarded' })
   }
+
+  /**
+   * Gesture accelerator (#77 req. 3): commit the in-flight recording, then
+   * target the just-created entry for the photo/note add-on the drag
+   * pointed at. `RecordPanel` only calls this while `recorder.state ===
+   * 'recording'`, but `recorder.stop()` can still resolve `null` if a race
+   * (auto-stop, iOS background-commit) already finalized the recorder first
+   * — that's a no-op, not a second commit, matching #77 req. 8.
+   */
+  async function handleCommitThen(kind: 'photo' | 'text') {
+    const result = await recorder.stop()
+    if (!result) return
+    const event = await commitRef.current(result)
+    setAddOnTarget({ entryId: event.id, kind })
+  }
+
+  // Kicks the native file picker the instant a photo add-on is targeted;
+  // the input itself (below, in the JSX) is dedicated to this flow so it
+  // never collides with the plain camera button's photoInputRef (that one
+  // always starts a brand-new capture, this one always amends).
+  useEffect(() => {
+    if (addOnTarget?.kind === 'photo') addOnPhotoInputRef.current?.click()
+  }, [addOnTarget])
 
   async function submitText(text: string) {
     const location = await snapshotLocation(places, appSettings.locationEnabled)
@@ -207,6 +252,7 @@ export default function CaptureScreen() {
         onDiscard={handleDiscard}
         onCamera={() => photoInputRef.current?.click()}
         onText={() => setTextOpen(true)}
+        onCommitThen={(kind) => void handleCommitThen(kind)}
         prompt={prompt}
         todayCount={todayEntries.length}
       />
@@ -220,6 +266,29 @@ export default function CaptureScreen() {
         onChange={(e) => {
           const file = e.target.files?.[0]
           if (file) void submitPhoto(file)
+          e.target.value = ''
+        }}
+      />
+
+      {/* Gesture accelerator's photo add-on (#77 req. 3): dedicated input so
+          a hold+drag-left never collides with the plain camera button above,
+          which always starts a new capture rather than amending one. */}
+      <input
+        ref={addOnPhotoInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0]
+          const target = addOnTarget
+          setAddOnTarget(null)
+          if (file && target?.kind === 'photo') {
+            void amend({
+              targets: [target.entryId],
+              attachments: [{ kind: 'photo', blob: file, mimeType: file.type || 'image/jpeg' }],
+            })
+          }
           e.target.value = ''
         }}
       />
@@ -245,6 +314,25 @@ export default function CaptureScreen() {
           cta="Log entry"
           onSave={(text) => void submitText(text)}
           onClose={() => setTextOpen(false)}
+        />
+      )}
+
+      {/* Gesture accelerator's note add-on (#77 req. 3): same amend
+          `EntryList.onAddNote` would append from the entry card. */}
+      {addOnTarget?.kind === 'text' && (
+        <TextSheet
+          title="Add note"
+          placeholder="Type a note…"
+          cta="Save note"
+          onSave={(text) =>
+            void amend({
+              targets: [addOnTarget.entryId],
+              attachments: [
+                { kind: 'text', blob: new Blob([text], { type: 'text/plain' }), mimeType: 'text/plain' },
+              ],
+            })
+          }
+          onClose={() => setAddOnTarget(null)}
         />
       )}
 
