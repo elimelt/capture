@@ -33,9 +33,9 @@ orders events, and builds the local-day query window.
 Key exports:
 
 - `interface CalendarSummary { id: string; summary: string; primary: boolean }` — a calendar-list entry for the Settings picker.
-- `interface CalEvent { id: string; summary: string; htmlLink?: string; startMs: number; endMs: number; allDay: boolean }` — a normalized event; `startMs` is the ordering + render key.
-- `interface RawEventTime { dateTime?: string; date?: string }` and `interface RawEvent { id?; summary?; htmlLink?; status?; start?; end? }` — the subset of the API resource that is read.
-- `parseEvent(raw: RawEvent): CalEvent | null` — `null` for unusable events: cancelled (`status === 'cancelled'`), id-less, or missing a parseable start/end. `allDay` is true when `start.date` is present; summary is trimmed with a `'(no title)'` fallback; `htmlLink` is omitted (not `undefined`-valued) when absent.
+- `interface CalEvent { id: string; summary: string; htmlLink?: string; startMs: number; endMs: number; allDay: boolean; updated?: string; recurringEventId?: string }` — a normalized event; `startMs` is the ordering + render key. `updated` (the API's last-modification stamp) and `recurringEventId` (parent series id of an expanded instance) exist for the overlay layer (SPEC §3.6).
+- `interface RawEventTime { dateTime?: string; date?: string }` and `interface RawEvent { id?; summary?; htmlLink?; status?; start?; end?; updated?; recurringEventId? }` — the subset of the API resource that is read.
+- `parseEvent(raw: RawEvent): CalEvent | null` — `null` for unusable events: cancelled (`status === 'cancelled'`), id-less, or missing a parseable start/end. `allDay` is true when `start.date` is present; summary is trimmed with a `'(no title)'` fallback; `htmlLink`, `updated`, and `recurringEventId` are omitted (not `undefined`-valued) when absent. (Note: `client.ts`'s `fields` filter does not request `updated`/`recurringEventId` yet — that wiring belongs to the day-view overlay workstream.)
 - `parseEvents(raw: RawEvent[]): CalEvent[]` — maps + drops nulls; does **not** reorder (the API is asked to sort).
 - `sortEvents(events: CalEvent[]): CalEvent[]` — stable copy ordered by `startMs`, then `endMs`.
 - `dayRange(date: string): { timeMin: string; timeMax: string }` — the `[timeMin, timeMax)` RFC-3339 window covering one local calendar date, rendered with the device UTC offset via `contract/time#toLocalIso` so the API returns that day's events in the user's zone.
@@ -73,9 +73,85 @@ Key exports:
 - `mergeTargetCalendar(stream: string, currentText: string | undefined, target: TargetCalendar): string` — **pure** read-modify-write of a `config.json` body, exported for testing without Drive: sets `skillConfig.targetCalendar` while preserving every other `skillConfig` field and `userNotes`. A missing, corrupt, or wrong-schema body falls back to a fresh stub for the stream. Output goes through `contract/files#serializeStreamConfig` (fixed key order, trailing newline).
 - `setTargetCalendar(token: string, target: TargetCalendar): Promise<void>` — saves locally **first** (the pick is never lost), then best-effort mirrors into Drive: `ensureTree` (shared idempotent bootstrap, so `config.json` exists) → `findFile('config.json')` → `readFileText` → `mergeTargetCalendar` → `updateFileContent`. A missing stream folder or file returns quietly after the local save; a Drive error propagates **after** the local save so the UI can warn ("Saved on this device; will sync to Drive later") while the Day view still works.
 
+### src/gcal/overlay/ — calendar-overlay pseudo-entries (SPEC §3.6, §5.6)
+
+Local annotations over the read-only calendar events: a third append-only log (stream
+`calendar-overlay`, schema `capture.calendar-overlay.v1`) that lets the Day view
+retitle, annotate, re-time, or hide a calendar event without ever writing to Google
+(SPEC §1.2 — the scope stays `calendar.readonly`). Deliberately **not** part of
+`capture.event.v1` (contract/ stays domain-free and skill-facing) and **never read by
+any skill**. The log is **local-only** today: no sync rows are written, it is not in
+`allSyncStreams()`, and Drive wiring is deferred — unlike the system streams, it does
+not reuse the `capture.event.v1` envelope/stores, so the multi-stream sync engine
+needs overlay-aware wiring before it can carry it. The Day view UI for
+pseudo-entries is a follow-up workstream; nothing in `dayview/` consumes this yet.
+
+- `overlay/types.ts` — `OVERLAY_SCHEMA` / `OVERLAY_STREAM`; `CalendarEventRef`
+  (instance-level `{calendarId, eventId, recurringEventId?}` — `singleEvents=true`
+  means occurrence ids arrive pre-expanded); `OverlayBaseSnapshot` (field-level
+  copy-on-write base `{summary, startMs, endMs, allDay, updated?}` — not a hash,
+  because dirty detection must say *which* field moved; `updated` is the Calendar API
+  stamp used as an equality fast path); `OverlayPatch` (`title`/`note`/`startAt`/
+  `endAt`/`hidden`, each value with a `clearX` sibling mirroring
+  `AmendPatch.clearLocation`; times are local-offset ISO-8601); the three event types
+  `OverlayCreateEvent` (`type: 'overlay'`, freezes the snapshot + first patch),
+  `OverlayAmendEvent`, `OverlayRevokeEvent`, union `OverlayLogEvent`; and the folded
+  `OverlayState` (never serialized; its accumulated `patch` never carries `clearX`).
+- `overlay/fold.ts` — `foldOverlay(events, {includeRevoked?})` with the same
+  seq → loggedAt → id total order as `contract/fold.ts` (`compareOverlayEvents` is
+  deliberately a local duplicate — the contract-critical comparator is not
+  imported/widened). Amends merge **field-by-field** into the accumulated patch (a
+  later "add note" never clobbers an earlier "override title"); a value beats its
+  `clearX` within the same amend; `clearTime` is ignored when `startAt`/`endAt` is
+  present; amend/revoke on a revoked overlay and unknown targets are no-ops. Also
+  `overlayKey(ref)` (`` `${calendarId}::${eventId}` ``) and
+  `indexOverlaysByTarget(states)` (later state wins duplicate targets).
+- `overlay/serialize.ts` — `serializeOverlayEvent` / `parseOverlayEvent`, same wire
+  conventions as `contract/serialize.ts` (fixed key order — envelope, then
+  `target`/`baseSnapshot`/`patch` — 2-space indent, trailing newline, optional fields
+  omitted, `clearX` omitted when its value is present). Byte-pinned by golden-file
+  tests now so nothing changes when the log starts syncing.
+- `overlay/pseudoEntry.ts` — `mergePseudoEntry(calendarId, base?, overlay?)`: the
+  **pure, read-only** merge of one live `CalEvent` with its `OverlayState` into a
+  `PseudoEntry` (id = overlay id when materialized, else `cal:<calendarId>:<eventId>`).
+  THE rule: the patch value wins per field, otherwise the **live** base wins — never
+  the frozen snapshot — so upstream calendar edits auto-merge for free. `dirtyFields`
+  (`'title' | 'time'`) = fields the patch touches where the live base moved off the
+  snapshot; any ⇒ `dirty: 'conflict'` (informational — the user's edit still renders),
+  base movement only on untouched fields ⇒ `'auto-merged'`, else `'clean'`. A revoked
+  overlay is treated as absent; overlay-without-base renders from the snapshot as
+  `orphaned` (and classifies clean — nothing to diff).
+- `overlay/buildPseudoEntries.ts` — `buildPseudoEntries(calendarId, calEvents,
+  overlays, date)`: matches overlays to events by `eventId` within `calendarId`
+  (overlays for other calendars are ignored; recurring instances are independent),
+  includes unmatched overlays as orphans only when their effective date equals `date`,
+  drops `hidden` entries, sorts by effective start. **Callers must only pass real
+  data when the fetch state is `'ready'`** — orphan detection against a loading/error
+  state would be all false positives.
+- `overlay/overlayPlan.ts` — pure edit-sheet planning: `OverlayDraft`,
+  `draftFromPseudoEntry(entry)`, `overlayPatchFromDraft(original, edited)` (minimal
+  diff; **`undefined` = the no-op guard** — an unedited draft never materializes an
+  empty overlay; emptied title/note map to `clearTitle`/`clearNote`), and
+  `toggleHidden(entry)`.
+- `overlay/store.ts` — the only writer of the overlay log, mirroring
+  `src/store/events.ts` in miniature but living under `gcal/` (store/ must never
+  import gcal/): `appendOverlayCreate` / `appendOverlayAmend` / `appendOverlayRevoke`
+  (atomic append: `meta` counter `nextSeq:calendar-overlay` — the same per-stream
+  mechanism as capture streams, its own seq space — plus the event row in one
+  transaction against the `overlayEvents` store), `listOverlayEvents()` (log order),
+  `listOverlayStates()` (the fold). Rows are opaque to `store/db.ts`
+  (`OverlayEventRow`); this module owns the strong typing. `wipeAll()`
+  (`src/store/events.ts`) clears `overlayEvents` too.
+
 ### Test files
 
-- `src/gcal/events.test.ts` — covers `parseEvent` normalization (epoch-ms conversion, all-day at local midnight, `(no title)` fallback, `htmlLink` omission), the dropping of cancelled/id-less/time-less events, `sortEvents` ordering, and `dayRange`'s local-midnight boundaries.
+- `src/gcal/events.test.ts` — covers `parseEvent` normalization (epoch-ms conversion, all-day at local midnight, `(no title)` fallback, `htmlLink` omission), the dropping of cancelled/id-less/time-less events, threading + omission of `updated`/`recurringEventId`, `sortEvents` ordering, and `dayRange`'s local-midnight boundaries.
+- `src/gcal/overlay/fold.test.ts` — create/amend/revoke folding, field-wise merge across amends, per-field `clearX`-vs-value precedence (alone and combined), amend/revoke-after-revoke and unknown-target no-ops, `includeRevoked`, and seq/loggedAt/id tiebreak determinism under adversarial permutations (mirrors `contract/fold.edge-cases.test.ts`).
+- `src/gcal/overlay/serialize.test.ts` — golden-byte fixtures for all three types, round-trips (including optional-field omission and `clearX` suppression), and validation errors (mirrors `contract/serialize.test.ts`).
+- `src/gcal/overlay/pseudoEntry.test.ts` — the full `{base present/absent} × {overlay present/absent} × {patch touches title/time/both/neither} × {base moved on touched vs untouched fields}` dirty-classification matrix, user-value-always-wins, the `updated` fast path, orphans, and day-grouping (patched date wins; untouched time follows the live date).
+- `src/gcal/overlay/buildPseudoEntries.test.ts` — eventId matching, recurring-instance independence, hidden exclusion, orphan date-matching, multi-calendar filtering, effective-start ordering.
+- `src/gcal/overlay/overlayPlan.test.ts` — draft round-trip, the no-op guard (including whitespace-only edits), per-field diffs, emptied-field → `clearX`, `toggleHidden`.
+- `src/gcal/overlay/store.test.ts` — fake-indexeddb append/list/fold round-trips, independent `calendar-overlay` seq allocation, the v8 migration (existing stores intact, `overlayEvents` empty), and `wipeAll` clearing the log + counter.
 - `src/gcal/client.test.ts` — with stubbed `fetch`, verifies the query parameters and Bearer header of both endpoints, `calendarId` path-encoding, dropped id-less calendar entries, and `CalendarError` status classification (`isAuth` / `isRetryable`).
 - `src/gcal/config.test.ts` — exercises the pure `mergeTargetCalendar` (preservation of sibling `skillConfig` fields and `userNotes`, overwrite of a prior `targetCalendar`, fresh-stub fallback on missing/corrupt bodies, and the fixed-key/trailing-newline serialization convention) and the pure `resolveTargetSelection` (auto-pick of primary on first load, stored target selected without re-persisting — including when absent from the list — and no auto-pick without a primary).
 
@@ -105,7 +181,14 @@ Key exports:
 
 - **Strictly read-only.** The app requests no calendar write scope of any kind (SPEC
   §8.1) and never creates, edits, or deletes events. "Fixing" an event means opening
-  it in Google Calendar via the deep link.
+  it in Google Calendar via the deep link. Calendar overlays (SPEC §3.6) do not bend
+  this: they are local annotations rendered over the events and are never pushed to
+  Google.
+- **The overlay log is app-only and skill-free.** No skill ever reads
+  `capture.calendar-overlay.v1` events, and the log has no config/checkpoint/results
+  protocol (SPEC §5.6). It is also local-only — not in `allSyncStreams()`, and the
+  multi-stream sync engine needs overlay-aware wiring (its own store + schema) before
+  it can carry it — so treat `overlay/store.ts` appends as device-local state for now.
 - **One token, combined scopes.** There is no separate calendar auth. A 401/403 from
   the Calendar API usually means the stored token predates the calendar scope (or
   expired); the fix is always a reconnect, surfaced by Settings and the Day view copy.

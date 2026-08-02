@@ -44,7 +44,8 @@ Defines the IndexedDB schema (via the `idb` package) and owns the singleton conn
 Key exports:
 
 - `getDb(): Promise<TimeboxDatabase>` — opens (once, memoized in a module-level promise)
-  the `timebox` database at **version 5** and runs versioned upgrades.
+  the `timebox` database at **version 8** and runs versioned upgrades (versions 6 and 7
+  are reserved for the in-flight settings and chats stream migrations).
 - `resetDbCache(): void` — test hook; forgets the cached connection promise.
 - `type TimeboxDatabase = IDBPDatabase<TimeboxDB>`.
 - `type SyncStatus = 'queued' | 'uploaded' | 'error'` — user-facing rollup.
@@ -62,6 +63,11 @@ Key exports:
   a rounded `"lat,lng"` cell (SPEC §7).
 - `interface StoredChatRow { id; createdAt; updatedAt; messages: unknown[] }` — persisted
   assistant conversation; message typing lives in `assistant/history.ts`.
+- `interface OverlayEventRow { id; stream; seq }` — a calendar-overlay log event
+  (`capture.calendar-overlay.v1`, SPEC §3.6/§5.6), stored opaquely beyond the key +
+  index fields because the event shape belongs to `gcal/overlay` and `store/` must
+  never import `gcal/`; `src/gcal/overlay/store.ts` is the store's only reader/writer
+  and owns the strong typing.
 
 Object stores (schema `TimeboxDB`):
 
@@ -74,6 +80,7 @@ Object stores (schema `TimeboxDB`):
 | `geocache` | rounded `"lat,lng"` | `GeocacheRow` |
 | `meta` | string (out-of-line) | `unknown` — settings + per-stream seq counters |
 | `chats` | `id` | `StoredChatRow` |
+| `overlayEvents` | event `id` (+ `by-stream` index) | `OverlayEventRow` — the calendar-overlay log, **owned by `gcal/overlay`**; local-only until wired into sync |
 
 `events` and `sync` are keyed by the event `id` — the identity (SPEC §3.3): two
 devices appending offline can mint the same per-stream `seq`, so `seq` is only a
@@ -86,7 +93,11 @@ re-uploads are idempotent by filename); v3 adds `chats` and migrates the legacy 
 conversation from `meta['assistant:chat']` into a chat row; v4 adds `geocache`; v5
 re-keys `events` and `sync` by `id` instead of `[stream, seq]` — by **dropping and
 recreating** both stores rather than migrating rows, since the local log is a replica
-of Drive and a pull rebuilds it.
+of Drive and a pull rebuilds it; v8 adds `overlayEvents` (id-keyed, `by-stream` index —
+SPEC §3.6/§5.6). v6/v7 are reserved for the in-flight settings and chats stream
+migrations, so the v8 body is self-contained, additive, and guarded by a
+`contains('overlayEvents')` check — it composes with those migrations landing in
+either order.
 
 ### src/store/events.ts
 
@@ -135,8 +146,9 @@ Key exports:
   per-stream seq counter is bumped past every imported seq so the next local append
   extends the merged log instead of colliding. Idempotent: re-importing a known id
   overwrites it with itself.
-- `wipeAll(): Promise<void>` — clears all seven object stores in one transaction
-  (including `meta`, so seq counters restart at 1).
+- `wipeAll(): Promise<void>` — clears all eight object stores in one transaction
+  (including `meta`, so seq counters restart at 1, and `overlayEvents` — the
+  calendar-overlay log goes with everything else).
 
 Invariants and edge cases: seq counters are per-stream and monotonic per device
 (`importEvents` keeps them ahead of everything pulled); `capture` events
@@ -397,8 +409,10 @@ per-stream independence of stream settings.
   migration — but saved objects are stored whole, so `saveSettings` expects a complete
   `AppSettings`.
 - **`store/` stays stream- and app-agnostic**: chat messages are `unknown[]` here
-  (typing owned by `assistant/history.ts`), and nothing imports from `gcal/`,
-  `dayview/`, or `assistant/` (SPEC §10 layering rule).
+  (typing owned by `assistant/history.ts`), calendar-overlay rows are the opaque
+  `OverlayEventRow` (typing and all reads/writes owned by `gcal/overlay/store.ts`),
+  and nothing imports from `gcal/`, `dayview/`, or `assistant/` (SPEC §10 layering
+  rule).
 - **`guard` re-throws.** Store write actions surface `lastError` *and* reject; callers
   that `await` them must be prepared for the rejection. `drainSync` never throws.
 - **`livetext.ts` is display-only.** Live partial transcripts/captions never touch
