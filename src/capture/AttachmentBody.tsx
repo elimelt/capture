@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { Attachment } from '../contract/types'
 import { getBlob } from '../store/events'
 import { IconButton, cx, motion, tone, type_ } from '../ui'
+import { isCaption, isPhotoFile } from '../vision/plan'
 import { TextSheet } from './TextSheet'
 import { useAudioPlayback } from './useAudioPlayback'
 
@@ -18,19 +19,24 @@ interface AttachmentBodyProps {
  * (tap to edit), extra audio clips as playback rows, photos as thumbnails
  * that expand to a viewer with removal. Machine transcripts (derivedFrom
  * set) are the spoken content of the entry, so they render first and as
- * primary text; user notes stay secondary. Edited transcripts keep their
- * derivedFrom link so they are never re-transcribed.
+ * primary text; user notes stay secondary, and machine photo captions render
+ * secondary below their photos. Edited transcripts/captions keep their
+ * derivedFrom link so they are never re-derived.
  */
 export function AttachmentBody({ attachments, onEditText, onRemoveAttachment }: AttachmentBodyProps) {
   const [edit, setEdit] = useState<{ file: string; text: string; derivedFrom?: string } | null>(
     null,
   )
-  const transcripts = attachments.filter((a) => a.kind === 'text' && a.derivedFrom !== undefined)
+  const captions = attachments.filter(isCaption)
+  const transcripts = attachments.filter(
+    (a) => a.kind === 'text' && a.derivedFrom !== undefined && !isCaption(a),
+  )
   const notes = attachments.filter((a) => a.kind === 'text' && a.derivedFrom === undefined)
   // The first clip plays from the card header; later ones render here.
   const extraAudio = attachments.filter((a) => a.kind === 'audio').slice(1)
   const photos = attachments.filter((a) => a.kind === 'photo')
   if (
+    captions.length === 0 &&
     transcripts.length === 0 &&
     notes.length === 0 &&
     extraAudio.length === 0 &&
@@ -57,9 +63,18 @@ export function AttachmentBody({ attachments, onEditText, onRemoveAttachment }: 
           ))}
         </div>
       )}
+      {captions.map((a) => (
+        <NoteText key={a.file} attachment={a} onEdit={setEdit} />
+      ))}
       {edit && (
         <TextSheet
-          title={edit.derivedFrom !== undefined ? 'Edit transcript' : 'Edit note'}
+          title={
+            edit.derivedFrom === undefined
+              ? 'Edit note'
+              : isPhotoFile(edit.derivedFrom)
+                ? 'Edit caption'
+                : 'Edit transcript'
+          }
           placeholder="Type a note…"
           cta="Save"
           initial={edit.text}

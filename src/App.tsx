@@ -5,6 +5,7 @@ import DayScreen from './dayview/DayScreen'
 import SettingsScreen from './settings/SettingsScreen'
 import { useAppStore } from './store/appStore'
 import { drainTranscriptions } from './transcribe/runner'
+import { drainCaptions } from './vision/runner'
 import { ReconnectPill } from './drive/ReconnectPill'
 import { Toast, cx, tone, type_ } from './ui'
 
@@ -61,17 +62,18 @@ export default function App() {
     }
   }, [init, refresh, drainSync])
 
-  // Background transcription: whenever entries change (capture, foreground
-  // refresh), transcribe any audio still missing a transcript. Appending the
-  // amend refreshes entries, which re-runs this and finds nothing pending.
+  // Background media understanding: whenever entries change (capture,
+  // foreground refresh), transcribe any audio still missing a transcript and
+  // caption any photo still missing a caption. Appending the amend refreshes
+  // entries, which re-runs this and finds nothing pending.
   const currentStreamId = useAppStore((s) => s.currentStreamId)
   useEffect(() => {
     if (entries.length === 0) return
-    drainTranscriptions(currentStreamId)
-      .then((appended) => {
-        if (appended > 0) void refresh()
+    Promise.all([drainTranscriptions(currentStreamId), drainCaptions(currentStreamId)])
+      .then(([transcribed, captioned]) => {
+        if (transcribed + captioned > 0) void refresh()
       })
-      .catch(() => {}) // per-file errors back off in the runner; a drain-level failure just waits for the next trigger
+      .catch(() => {}) // per-file errors back off in the runners; a drain-level failure just waits for the next trigger
   }, [entries, currentStreamId, refresh])
 
   useEffect(() => {
