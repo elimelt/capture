@@ -4,6 +4,7 @@
  */
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
 import type { LogEvent } from '../contract/types'
+import { migrateChatsV1 } from './migrateChatsV1'
 import { migrateSettingsV1 } from './migrateSettingsV1'
 
 export type SyncStatus = 'queued' | 'uploaded' | 'error'
@@ -145,7 +146,7 @@ export type TimeboxDatabase = IDBPDatabase<TimeboxDB>
 let dbPromise: Promise<TimeboxDatabase> | undefined
 
 export function getDb(): Promise<TimeboxDatabase> {
-  dbPromise ??= openDB<TimeboxDB>('timebox', 9, {
+  dbPromise ??= openDB<TimeboxDB>('timebox', 10, {
     async upgrade(db, oldVersion, _newVersion, tx) {
       if (oldVersion < 1) {
         const events = db.createObjectStore('events', { keyPath: ['stream', 'seq'] })
@@ -204,10 +205,9 @@ export function getDb(): Promise<TimeboxDatabase> {
         if (db.objectStoreNames.contains('sync')) db.deleteObjectStore('sync')
         db.createObjectStore('sync', { keyPath: 'id' })
       }
-      // Version 7 is reserved for the in-flight chats stream migration,
-      // which may land before or after v8/v9 — so this body is
-      // self-contained and additive (guarded by a contains check) and
-      // composes with them in either order.
+      // Versions 6–7 were reserved while the sync-everything workstreams were
+      // in flight; the migrations below are self-contained and additive so
+      // they compose regardless of landing order.
       if (oldVersion < 8 && !db.objectStoreNames.contains('overlayEvents')) {
         // v8: the calendar-overlay append-only log (SPEC §3.6, §5.6), owned
         // by gcal/overlay and stored opaquely here. Keyed by event id with a
@@ -218,15 +218,19 @@ export function getDb(): Promise<TimeboxDatabase> {
       // v9: settings become an event-sourced system stream; legacy meta
       // settings are seeded into `settings`-stream events. Deliberately NOT
       // `if (oldVersion < 9)`: parallel workstreams claim their own version
-      // numbers and can land in any order (v8 above shipped first; v7 is
-      // still in flight), so a device may already sit at a higher version
-      // without this migration having run. The call is state-guarded
-      // instead — migrateSettingsV1 no-ops once its meta marker exists (and
-      // on fresh installs, where there is nothing to migrate) — so running
-      // it on every upgrade is idempotent. Any branch adding a migration
-      // must raise the version above the current max so upgrade() fires;
-      // each state-guarded block then self-selects.
+      // numbers and can land in any order, so a device may already sit at a
+      // higher version without this migration having run. The call is
+      // state-guarded instead — migrateSettingsV1 no-ops once its meta marker
+      // exists (and on fresh installs, where there is nothing to migrate) —
+      // so running it on every upgrade is idempotent. Any branch adding a
+      // migration must raise the version above the current max so upgrade()
+      // fires; each state-guarded block then self-selects.
       await migrateSettingsV1(tx)
+      // v10: legacy `chats` rows become events in the 'assistant-chats'
+      // stream. Same pattern as v9: runs on every version change and guards
+      // itself by "has it been applied" (meta marker + stream-state check
+      // inside migrateChatsV1) — never by oldVersion. Idempotent.
+      await migrateChatsV1(tx)
     },
   })
   return dbPromise
