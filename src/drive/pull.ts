@@ -67,7 +67,7 @@ export interface PullResult {
   outcome: PullOutcome
   /** Events imported into the local replica. */
   pulled: number
-  /** Present when outcome is 'error'. */
+  /** Present when outcome is 'error' or 'retry-later'. */
   error?: string
 }
 
@@ -155,7 +155,9 @@ export async function pullStream(
   } catch (err) {
     // Partitions already imported stay imported; only the count reflects that.
     if (err instanceof DriveError && err.isAuth) return { outcome: 'reconnect', pulled }
-    if (err instanceof DriveError && err.isRetryable) return { outcome: 'retry-later', pulled }
+    if (err instanceof DriveError && err.isRetryable) {
+      return { outcome: 'retry-later', pulled, error: err.message }
+    }
     const message = err instanceof Error ? err.message : String(err)
     return { outcome: 'error', pulled, error: message }
   }

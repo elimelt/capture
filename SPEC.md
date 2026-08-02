@@ -1013,7 +1013,12 @@ user's assistant, authorized separately by the user in that product.
    **every registered stream** (system streams first, then capture streams — §3.1);
    this is intentional: system streams are never the on-screen stream, and it is a
    strict improvement for any future second capture stream. A stream with nothing
-   queued costs no upload-side Drive calls at all. Per stream: sequential uploads
+   queued costs no upload-side Drive calls at all. Concurrent calls are serialized by
+   a Web Locks lock spanning every tab/window on the origin, not just in-memory state
+   (prevents two overlapping cycles from minting divergent pre-generated file ids for
+   the same contract filename); a call that finds the lock held reports a distinct
+   "busy" outcome immediately rather than queuing or running alongside the holder. Per
+   stream: sequential uploads
    into the event's stream/date partition, following the atomic append protocol
    (§5.2): attachments first (resumable upload for anything > 5 MB — rare for audio;
    possible for photos), the event record `.json` last — the record is the commit.
@@ -1031,10 +1036,15 @@ user's assistant, authorized separately by the user in that product.
    `appProperties` at creation time; tags are advisory (older files carry none)
    and invisible to other readers.
 4. Success → status `uploaded`; local audio blob retained or pruned per Settings.
-5. Failures: 429/5xx → keep queued, stop the drain; the next manual "Sync now"
-   retries immediately (no persisted backoff — sync has no automatic trigger, so a
-   retry window could only swallow the user's explicit ask). 401/403 → keep queued +
-   reconnect pill; storage-quota errors surface explicitly (Drive full).
+5. Failures: 429/5xx, or a 403 whose reason is Drive-side rate limiting
+   (`rateLimitExceeded`/`userRateLimitExceeded`/`dailyLimitExceeded`) → keep queued,
+   stop the drain; the next manual "Sync now" retries immediately (no persisted
+   backoff — sync has no automatic trigger, so a retry window could only swallow the
+   user's explicit ask). 401, or a 403 with no reason (or an unrecognized one) → keep
+   queued + reconnect pill. A 403 with reason `storageQuotaExceeded` (Drive full)
+   surfaces explicitly as its own outcome — kept queued like the retryable case, but
+   never prompting reconnect (the token is fine; only Drive's storage is full, so
+   reconnecting can never resolve it).
 
 ### 8.5 Pull engine (Drive → local; bidirectional sync)
 

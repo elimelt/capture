@@ -400,8 +400,18 @@ const CONNECTION_LABEL: Record<string, string> = {
   disconnected: 'Not connected',
 }
 
-/** Human summary of a manual "Sync now" outcome; null when there's nothing
- * to say (the reconnect case is already covered by the connection pill). */
+/**
+ * Human summary of a manual "Sync now" outcome; null when there's nothing to
+ * say (the reconnect case is already covered by the connection pill).
+ *
+ * `'busy'` and `'retry-later'` used to share one label ("A sync is already
+ * in progress") even though only `'busy'` means that — `'retry-later'` is a
+ * real Drive-side 429/5xx outage after streams *did* run (issue #64), which
+ * that message actively misled the owner about (nothing was in progress;
+ * double-tapping right after could even no-op silently). They're split here,
+ * and `'retry-later'`/`'quota'` both surface the row-level error Drive gave,
+ * when the drainer captured one (`src/drive/queue.ts`, `pull.ts`).
+ */
 function syncResultLabel(result: SyncResult): string | null {
   switch (result.outcome) {
     case 'drained': {
@@ -416,8 +426,12 @@ function syncResultLabel(result: SyncResult): string | null {
     }
     case 'idle':
       return 'Already up to date'
-    case 'retry-later':
+    case 'busy':
       return 'A sync is already in progress'
+    case 'retry-later':
+      return `Drive is busy or temporarily unavailable — will retry${result.error ? ` (${result.error})` : ''}`
+    case 'quota':
+      return `Google Drive storage is full — free up space, then Sync now${result.error ? ` (${result.error})` : ''}`
     case 'error':
       return `Sync failed${result.error ? `: ${result.error}` : ''}`
     case 'reconnect':
@@ -568,6 +582,7 @@ function CalendarPicker() {
 
 function GoogleSection() {
   const connection = useAppStore((s) => s.driveConnection)
+  const quotaExceeded = useAppStore((s) => s.driveQuotaExceeded)
   const syncing = useAppStore((s) => s.syncing)
   const syncProgress = useAppStore((s) => s.syncProgress)
   const connectDrive = useAppStore((s) => s.connectDrive)
@@ -597,6 +612,16 @@ function GoogleSection() {
         {connected && <span className={cx('ml-1', tone.textFaint)}>· Drive file access</span>}
       </p>
       <SyncStatusLine />
+      {connected && quotaExceeded && (
+        // Persists across remounts (unlike syncNote below, which is local
+        // component state) until a cycle that doesn't hit quota runs again —
+        // SPEC §8.4.5 requires this to surface explicitly rather than as the
+        // reconnect pill, which a full-but-authorized Drive can never clear
+        // (issue #88).
+        <p className={cx(type_.sub, tone.danger)}>
+          Google Drive storage is full — free up space, then Sync now.
+        </p>
+      )}
       <div className="flex gap-2">
         {connected ? (
           <>

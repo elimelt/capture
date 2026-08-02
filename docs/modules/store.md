@@ -391,7 +391,12 @@ The single Zustand store (`useAppStore = create<AppState>()(...)`) the UI reads.
 completed; null = never synced), `globalSyncSummary: GlobalSyncSummary` (aggregate
 across all registered streams — see below), `places: Place[]`, `appSettings`,
 `streamSettings`, `lastError: string | null` (toast channel), `driveConnection:
-DriveConnection` (`src/drive/token`; drives the reconnect pill, SPEC §8.2), `syncing`
+DriveConnection` (`src/drive/token`; drives the reconnect pill, SPEC §8.2),
+`driveQuotaExceeded: boolean` (true when the most recent cycle stopped on a
+`'quota'` outcome — Drive full, SPEC §8.4.5; distinct from `driveConnection`
+since the token is fine and the reconnect pill must never show for this,
+issue #88 — reset at the start of every cycle so it self-clears once a later
+cycle doesn't hit quota again), `syncing`
 (sync cycle in flight), `syncProgress: SyncProgress | null` (live detail for the cycle
 in flight — see `syncProgress.ts` below; null whenever `syncing` is false, and never
 persisted), and the storage-space snapshot — `localSpace:
@@ -402,7 +407,13 @@ Also exports:
 
 - `interface StreamSyncResult { stream; outcome: DrainOutcome; uploaded; pulled:
   number; error? }` — one stream's slice of a sync cycle.
-- `interface SyncResult { outcome: DrainOutcome; uploaded; pulled: number; error?;
+- `type SyncOutcome = DrainOutcome | 'busy'` — the aggregate cycle result's outcome
+  space. `'busy'` is cycle-level only (no stream ever reports it itself): it means
+  the re-entrancy guard rejected the call outright before any stream ran, distinct
+  from `'retry-later'` (a real Drive-side 429/5xx backoff *after* streams ran) —
+  issue #64, so Settings can tell "you double-tapped" from "Drive is having an
+  outage".
+- `interface SyncResult { outcome: SyncOutcome; uploaded; pulled: number; error?;
   perStream: StreamSyncResult[] }` — the aggregate result of one cycle over every
   registered stream (worst-of outcome, summed counts), consumed by the Settings
   "Sync now" label.
@@ -431,28 +442,42 @@ Actions:
   refresh connection; does **not** sync), `disconnectDrive()` (revokes the stored
   token), and `drainSync(): Promise<SyncResult>` — one full sync cycle over
   **every registered stream** (SPEC §8.4/§8.5), manual-only: the sole caller is
-  the "Sync now" button in Settings. No-op (`'retry-later'`) if already `syncing`;
-  without a valid token it only refreshes connection state (so the reconnect pill
-  can appear) and returns `'reconnect'`; with one it loops over
-  `allSyncStreams()` and, per stream, runs **pull then push** —
-  `pullStream(token, stream)` from `src/drive/pull` first (so local appends land
-  after everything other devices committed), then `drainStream(token, stream)`
-  from `src/drive/queue`. Failure isolation: any `'reconnect'` flips the pill and
-  aborts the remaining streams (marked `'reconnect'` in `perStream` — the token
-  is dead for all of them), while `'retry-later'`/`'error'` on one stream never
-  blocks the rest. Each stream's outcomes merge worst-of (`idle < drained <
-  retry-later < reconnect < error`) and the per-stream outcomes merge worst-of
-  into the aggregate; an aggregate `'error'` sets `lastError`; a stream's own
-  clean cycle (`idle`/`drained`) persists *its* `lastSyncAt` via
-  `setLastSyncAt(stream, …)`. Afterwards state is refreshed (`refresh()` +
-  `loadSettings()`, since pulled system-stream events can change settings) and
-  `syncing` is cleared in a `finally`. Throughout the loop, a local
-  `emitProgress` helper feeds `SyncProgressEvent`s (`cycle-start` once,
-  `stream-start`/`stream-done` around each stream's pull+push pair, passed
-  straight through to `pullStream`/`drainStream` as their `onProgress`
-  callback for the granular `pull-progress`/`upload-start`/`upload-progress`
-  events) through `reduceSyncProgress` (`syncProgress.ts`) into `syncProgress`;
-  the `finally` clears it back to null alongside `syncing`.
+  the "Sync now" button in Settings.
+  - **Re-entrancy (issue #50).** A cheap `syncing` check short-circuits the
+    common case, but the actual guard is a `navigator.locks.request('capture:sync',
+    { ifAvailable: true }, …)` lock wrapping the whole cycle (token lookup
+    through the final `refresh()`), serializing every tab/window on the origin
+    with no gap between "is it free" and "claim it" the way the bare flag had
+    (an `await` used to sit between checking `syncing` and setting it). A call
+    that finds the lock held — from another tab, or a same-tab re-entry that
+    slipped past the flag check — resolves immediately with `'busy'` rather
+    than queuing behind the holder or running alongside it. Where
+    `navigator.locks` is unavailable, the flag alone is the (best-effort,
+    same-tab-only) fallback.
+  - Without a valid token the cycle only refreshes connection state (so the
+    reconnect pill can appear) and returns `'reconnect'`; with one it loops over
+    `allSyncStreams()` and, per stream, runs **pull then push** —
+    `pullStream(token, stream)` from `src/drive/pull` first (so local appends land
+    after everything other devices committed), then `drainStream(token, stream)`
+    from `src/drive/queue`. Failure isolation: any `'reconnect'` or `'quota'`
+    aborts the remaining streams (marked with that same outcome in
+    `perStream` — the token is dead, or Drive is full, for all of them alike),
+    while `'retry-later'`/`'error'` on one stream never blocks the rest. Only
+    `'reconnect'` flips `driveConnection`; `'quota'` sets `driveQuotaExceeded`
+    instead (see above) — a full Drive must never present as an auth problem
+    (issue #88). Each stream's outcomes merge worst-of (`idle < drained <
+    retry-later < quota < reconnect < error`) and the per-stream outcomes merge
+    worst-of into the aggregate; an aggregate `'error'` sets `lastError`; a
+    stream's own clean cycle (`idle`/`drained`) persists *its* `lastSyncAt` via
+    `setLastSyncAt(stream, …)`. Afterwards state is refreshed (`refresh()` +
+    `loadSettings()`, since pulled system-stream events can change settings) and
+    `syncing` is cleared in a `finally`. Throughout the loop, a local
+    `emitProgress` helper feeds `SyncProgressEvent`s (`cycle-start` once,
+    `stream-start`/`stream-done` around each stream's pull+push pair, passed
+    straight through to `pullStream`/`drainStream` as their `onProgress`
+    callback for the granular `pull-progress`/`upload-start`/`upload-progress`
+    events) through `reduceSyncProgress` (`syncProgress.ts`) into `syncProgress`;
+    the `finally` clears it back to null alongside `syncing`.
 - Places/settings/data — `addPlace`, `removePlace`, `updateSettings`,
   `updateStreamSettings`, `wipe()` (`wipeAll()` then reload, including
   `refreshSpace()` so the Settings storage line never shows the pre-wipe number),
@@ -537,16 +562,22 @@ after `wipeAll`).
 ### src/store/appStore.drive.test.ts
 
 Mocks `src/drive/{auth,queue,pull,token}` to test only the store's Drive wiring:
-`drainSync`'s no-token and re-entrant branches, the multi-stream loop (every
-registered stream pulled-then-pushed in registry order, counts summed, per-stream
-results reported), failure isolation (a pull or drain `'reconnect'` aborts the
-remaining streams — their mocks are never invoked — and marks them `'reconnect'`;
-`'retry-later'`/`'error'` on one stream never short-circuits the rest),
-worst-of aggregation, per-stream `lastSyncAt` stamping (only streams whose own
-cycle was clean; idle streams stamped too; nothing stamped on an initial
-reconnect), the `globalSyncSummary` rollup (summed pending/errors, oldest
-`lastSyncAt`, `null` while any stream never synced), plus the connect (no
-post-connect sync) and disconnect flows. A `syncProgress` describe block
+`drainSync`'s no-token and re-entrant branches (the same-tab `syncing` flag
+returns `'busy'`, and — separately — a concurrent call that finds the
+cross-tab `navigator.locks` lock already held returns `'busy'` even while the
+flag itself hasn't been set yet, closing the pre-fix TOCTOU window), the
+multi-stream loop (every registered stream pulled-then-pushed in registry
+order, counts summed, per-stream results reported), failure isolation (a pull
+or drain `'reconnect'` aborts the remaining streams — their mocks are never
+invoked — and marks them `'reconnect'`; a drain `'quota'` aborts the same way
+but marks them `'quota'` and sets `driveQuotaExceeded` **without** touching
+`driveConnection`; `'retry-later'`/`'error'` on one stream never
+short-circuits the rest), worst-of aggregation, per-stream `lastSyncAt`
+stamping (only streams whose own cycle was clean; idle streams stamped too;
+nothing stamped on an initial reconnect), `driveQuotaExceeded` clearing itself
+on a later clean cycle, the `globalSyncSummary` rollup (summed pending/errors,
+oldest `lastSyncAt`, `null` while any stream never synced), plus the connect
+(no post-connect sync) and disconnect flows. A `syncProgress` describe block
 covers the live-detail wiring: null before/after a cycle (including the
 no-token/re-entrant early returns), and — by having the `pullStream`/
 `drainStream` mocks call their `onProgress` callback and stall on a deferred
@@ -643,12 +674,32 @@ and wrong-typed legacy fields ignored.
   `phase` field mirrors the attachments-first/record-last commit protocol (SPEC §5.2).
 - **Pull before push, per stream.** `drainSync` loops over `allSyncStreams()` and
   always runs `pullStream` before `drainStream` for each; pulled events arrive
-  `uploaded`/`done` so the drainer never re-pushes them. A `'reconnect'` anywhere
-  aborts the remaining streams; `'retry-later'`/`'error'` stays stream-local.
+  `uploaded`/`done` so the drainer never re-pushes them. A `'reconnect'` or
+  `'quota'` anywhere aborts the remaining streams; `'retry-later'`/`'error'`
+  stays stream-local.
 - **Sync is manual-only.** `drainSync`'s sole caller is the "Sync now" button in
   Settings — no foreground/online/capture triggers — and each stream's `lastSyncAt`
   is stamped only when that stream's own pull+push cycle completes cleanly
   (`idle`/`drained`).
+- **At most one cycle at a time, enforced by a real lock, not just a flag
+  (issue #50).** `drainSync` wraps the whole cycle in a `navigator.locks` lock
+  (`ifAvailable: true`) spanning every tab/window on the origin; a call that
+  can't acquire it returns `'busy'` immediately rather than running
+  concurrently. This closes a real defect: the old guard was the in-memory
+  `syncing` flag alone, checked and set with an `await` in between (a TOCTOU
+  window), and per-tab besides, so two overlapping drains could mint two
+  different pre-generated Drive file ids for the same contract filename and
+  both upload — permanent duplicate files, since the app never deletes from
+  Drive. `assignFileIds`/`mergeFileIds` (`src/drive/queue.ts`,
+  `src/store/events.ts`) add a second, cheaper layer of defense at the single
+  sync-row level for whenever the lock is unavailable or bypassed.
+- **`'busy'` and `'quota'` are not `'retry-later'` (issue #64/#88).** `'busy'`
+  (the re-entrancy guard) and `'quota'` (Drive full, 403 `storageQuotaExceeded`)
+  used to both either share `'retry-later'`'s label or, for quota, misclassify
+  as `'reconnect'` and loop the reconnect pill forever (reconnecting can't fix
+  a full Drive). All three are now distinguishable outcomes with their own
+  Settings copy, and `'quota'` sets `driveQuotaExceeded` instead of touching
+  `driveConnection`.
 - **`syncProgress` is live-only, never persisted.** It exists purely so a long
   manual sync (many attachments/records/batched segments across multiple
   streams) has visible feedback; `drainSync` builds it up via
