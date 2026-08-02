@@ -293,8 +293,48 @@ text block.
 - `AudioRow` is a playback row (via `useAudioPlayback`) with the same progress-fill
   toggle button plus "Recording · Ns" caption.
 - `PhotoThumb` loads a blob object URL (revoked on unmount), shows a 64px thumbnail, and
-  expands to a full-screen viewer (`role="dialog"`) on tap; the viewer's "Remove photo"
-  button calls `onRemove` (→ `onRemoveAttachment`). Tapping the backdrop closes it.
+  expands to the full-screen `PhotoViewer` on tap, passing the photo's caption
+  attachment file (if any) for alt text; the viewer's "Remove photo" button closes it
+  and calls `onRemove` (→ `onRemoveAttachment`).
+
+### src/capture/PhotoViewer.tsx
+
+**Purpose:** Full-screen zoomable photo viewer (B7) opened from `PhotoThumb`.
+
+- Edge-to-edge on a black backdrop (`fixed inset-0`), image fit-contained; mounts via
+  `OverlayPortal` on `layer.overlay` and locks body scroll with `useBodyScrollLock`.
+  The entrance animation lives on a wrapper div, never on the `<img>` — the fill-`both`
+  keyframes would pin the img's `transform` and fight the gesture transform.
+- **Gestures** (hand-rolled pointer events, `touch-action: none`, no dependencies):
+  pinch-to-zoom around the pinch midpoint, double-tap toggling fit ↔ 2.5× at the tap
+  point, one-finger pan while zoomed (clamped to the image, never dismisses), and
+  non-passive wheel/trackpad zoom anchored at the cursor. Releasing a two-finger pinch
+  hands off to a pan when one finger stays down.
+- **Dismissal:** safe-area-aware close button (top right, high-contrast on any image),
+  backdrop tap at fit zoom, swipe-down at fit zoom (the image follows the finger and
+  the backdrop fades; release past `shouldDismiss` closes, otherwise it springs back),
+  and Escape.
+- **Accessibility:** `role="dialog"`/`aria-modal`, alt text loaded from the caption
+  attachment (`getBlob`), focus moves to the close button on open and returns on close,
+  and Tab cycles within the dialog's controls.
+- All geometry is delegated to `photoViewerMath.ts`; the component only wires pointer
+  events (pointer positions are translated to container-center coordinates first).
+
+### src/capture/photoViewerMath.ts
+
+**Purpose:** Pure, DOM-free geometry for `PhotoViewer` (tested hard in
+`photoViewerMath.test.ts`).
+
+- Model: `scale` is relative to the fitted image (1 = fit, clamped to `[1, 4]`);
+  `offsetX/offsetY` translate the image center from the container center in screen px,
+  applied after scaling. Anchors (taps, pinch midpoints, cursors) use the same frame.
+- The invariant every zoom preserves: content under the anchor stays under the anchor
+  (`offset′ = A − (A − offset)·s′/s`), then `clampOffset` pins the image so an edge
+  never crosses into the container (centered on any axis where it is smaller).
+- Exports `fitContain` (upscales small images — full-screen viewer), `zoomAt`, `pan`,
+  `pinch`, `doubleTapTarget` (any zoomed state returns to fit), `wheelZoom`
+  (exponential in deltaY so steps compose), `shouldDismiss` (distance or flick
+  velocity), `dismissBackdropOpacity`, and `midpoint`/`distance` helpers.
 
 ### src/capture/TextSheet.tsx
 

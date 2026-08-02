@@ -3,9 +3,10 @@ import { useEffect, useState, useSyncExternalStore } from 'react'
 import type { Attachment } from '../contract/types'
 import { getBlob } from '../store/events'
 import { liveCaptions, liveTranscripts, type LiveTextStore } from '../store/livetext'
-import { IconButton, OverlayPortal, cx, layer, motion, tone, type_ } from '../ui'
+import { IconButton, cx, motion, tone, type_ } from '../ui'
 import { isPhotoFile } from '../vision/plan'
 import { groupAttachments } from './attachmentGroups'
+import { PhotoViewer } from './PhotoViewer'
 import { TextSheet } from './TextSheet'
 import { useAudioPlayback } from './useAudioPlayback'
 
@@ -93,7 +94,11 @@ export function AttachmentBody({ attachments, onEditText, onRemoveAttachment }: 
         const live = streamingCaptions.find((s) => s.file === photo.file)
         return (
           <div key={photo.file} className="flex items-start gap-3">
-            <PhotoThumb file={photo.file} onRemove={() => onRemoveAttachment(photo.file)} />
+            <PhotoThumb
+              file={photo.file}
+              captionFile={captions[0]?.file}
+              onRemove={() => onRemoveAttachment(photo.file)}
+            />
             {(captions.length > 0 || live) && (
               <div className="flex min-w-0 flex-1 flex-col gap-1 pt-0.5">
                 {captions.map((c) => (
@@ -259,7 +264,15 @@ function AudioRow({ file, durationSec }: { file: string; durationSec?: number })
   )
 }
 
-function PhotoThumb({ file, onRemove }: { file: string; onRemove: () => void }) {
+function PhotoThumb({
+  file,
+  captionFile,
+  onRemove,
+}: {
+  file: string
+  captionFile?: string
+  onRemove: () => void
+}) {
   const [url, setUrl] = useState<string | null>(null)
   const [expanded, setExpanded] = useState(false)
 
@@ -292,41 +305,16 @@ function PhotoThumb({ file, onRemove }: { file: string; onRemove: () => void }) 
           className={cx('h-16 w-16 rounded-lg border object-cover', tone.border)}
         />
       </button>
-      {/* Portaled: rendered inside the entry card (a stacking context via its
-          entrance animation) the lightbox would paint under the tab bar. */}
       {expanded && (
-        <OverlayPortal>
-          <div
-            className={cx(
-              'fixed inset-0 flex flex-col items-center justify-center gap-4 bg-black/85 p-4',
-              layer.overlay,
-              motion.fadeIn,
-            )}
-            onClick={() => setExpanded(false)}
-            role="dialog"
-            aria-modal="true"
-            aria-label="Photo"
-          >
-            <img
-              src={url}
-              alt=""
-              className={cx(
-                'min-h-0 max-w-full flex-shrink rounded-lg object-contain',
-                motion.scaleIn,
-              )}
-            />
-            <button
-              onClick={(e) => {
-                e.stopPropagation()
-                setExpanded(false)
-                onRemove()
-              }}
-              className={cx('rounded-xl bg-white/15 px-5 py-2.5 font-medium text-white', type_.ui)}
-            >
-              Remove photo
-            </button>
-          </div>
-        </OverlayPortal>
+        <PhotoViewer
+          src={url}
+          captionFile={captionFile}
+          onClose={() => setExpanded(false)}
+          onRemove={() => {
+            setExpanded(false)
+            onRemove()
+          }}
+        />
       )}
     </>
   )
