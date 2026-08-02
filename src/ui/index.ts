@@ -15,6 +15,7 @@ export { ScreenHeader } from './ScreenHeader'
 export {
   CalendarIcon,
   CameraIcon,
+  ChevronDownIcon,
   EyeOffIcon,
   MicIcon,
   PinIcon,
