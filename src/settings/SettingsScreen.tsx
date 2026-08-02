@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { modelLabel } from '../assistant/config'
 import { DEFAULT_PLACE_RADIUS_M, coerceRadiusM } from '../capture/geo'
 import type { SyncResult } from '../store/appStore'
+import { fetchDriveSpace, type DriveSpace } from '../drive/space'
 import { getValidAccessToken } from '../drive/token'
 import { CalendarError, listCalendars } from '../gcal/client'
 import { getTargetCalendar, setTargetCalendar } from '../gcal/config'
@@ -10,6 +11,7 @@ import type { CalendarSummary } from '../gcal/events'
 import { reverseGeocode } from '../places/geocode'
 import { useAppStore } from '../store/appStore'
 import { summarizeSyncStatuses } from '../store/events'
+import { formatBytes } from '../store/space'
 import {
   Button,
   FieldRow,
@@ -42,17 +44,6 @@ export default function SettingsScreen() {
   const [placeRadius, setPlaceRadius] = useState(String(DEFAULT_PLACE_RADIUS_M))
   const [locating, setLocating] = useState(false)
   const [locateError, setLocateError] = useState<string | null>(null)
-  const [usage, setUsage] = useState<string | null>(null)
-
-  useEffect(() => {
-    if (navigator.storage?.estimate) {
-      void navigator.storage.estimate().then((est) => {
-        if (est.usage !== undefined) {
-          setUsage(`${(est.usage / 1_048_576).toFixed(1)} MB used`)
-        }
-      })
-    }
-  }, [])
 
   function addCurrentLocation() {
     setLocateError(null)
@@ -260,7 +251,7 @@ export default function SettingsScreen() {
       </Section>
 
       <Section title="Data">
-        {usage && <p className={cx('mb-2', type_.sub, tone.textMuted)}>{usage}</p>}
+        <StorageLines />
         <Button
           variant={wipeArmed ? 'danger' : 'dangerGhost'}
           block
@@ -275,6 +266,89 @@ export default function SettingsScreen() {
           </p>
         )}
       </Section>
+    </div>
+  )
+}
+
+/**
+ * Local + Drive storage usage (SPEC §4.3, Data section). Local numbers come
+ * from the store — the origin-level `storage.estimate()` plus the app's own
+ * IndexedDB breakdown — refreshed on entry and by `wipe()`, so the display
+ * never goes stale. Drive numbers are fetched only on demand (a tap), never
+ * polled: Settings entry stays network-free like the rest of the screen.
+ * Degrades gracefully: no estimate support hides the device line; no Drive
+ * connection hides the Drive line entirely.
+ */
+function StorageLines() {
+  const localSpace = useAppStore((s) => s.localSpace)
+  const appSpace = useAppStore((s) => s.appSpace)
+  const refreshSpace = useAppStore((s) => s.refreshSpace)
+  const connection = useAppStore((s) => s.driveConnection)
+  const [drive, setDrive] = useState<DriveSpace | null>(null)
+  const [driveStatus, setDriveStatus] = useState<'idle' | 'loading' | 'error'>('idle')
+
+  useEffect(() => {
+    void refreshSpace()
+  }, [refreshSpace])
+
+  async function checkDrive() {
+    setDriveStatus('loading')
+    setDrive(null)
+    try {
+      const token = await getValidAccessToken()
+      if (token === undefined) {
+        setDriveStatus('error')
+        return
+      }
+      setDrive(await fetchDriveSpace(token))
+      setDriveStatus('idle')
+    } catch {
+      setDriveStatus('error')
+    }
+  }
+
+  return (
+    <div className="mb-2 flex flex-col gap-1">
+      {localSpace?.usageBytes !== undefined && (
+        <p className={cx(type_.sub, tone.textMuted)}>
+          On this device: {formatBytes(localSpace.usageBytes)} used
+          {localSpace.quotaBytes !== undefined && <> of {formatBytes(localSpace.quotaBytes)}</>}
+        </p>
+      )}
+      {appSpace !== null && appSpace.totalBytes > 0 && (
+        <p className={cx(type_.caption, tone.textFaint)}>
+          App data {formatBytes(appSpace.totalBytes)} — log {formatBytes(appSpace.eventBytes)} ·
+          attachments {formatBytes(appSpace.blobBytes)}
+          {appSpace.chatBytes > 0 && <> · chats {formatBytes(appSpace.chatBytes)}</>}
+        </p>
+      )}
+      {connection === 'connected' &&
+        (drive !== null ? (
+          <p className={cx(type_.sub, tone.textMuted)}>
+            Drive: {formatBytes(drive.usageBytes)} used
+            {drive.limitBytes !== undefined && <> of {formatBytes(drive.limitBytes)}</>}
+            <span className={cx('ml-1', tone.textFaint)}>
+              · this app {formatBytes(drive.appBytes)}
+            </span>
+          </p>
+        ) : (
+          <div className="flex flex-col gap-1">
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={driveStatus === 'loading'}
+              onClick={() => void checkDrive()}
+              className="self-start"
+            >
+              {driveStatus === 'loading' ? 'Checking…' : 'Check Drive storage'}
+            </Button>
+            {driveStatus === 'error' && (
+              <p className={cx(type_.caption, tone.danger)}>
+                Couldn’t check Drive storage — try again or reconnect.
+              </p>
+            )}
+          </div>
+        ))}
     </div>
   )
 }

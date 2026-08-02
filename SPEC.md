@@ -354,7 +354,9 @@ the folded entry list with results annotations, §3.5).
 - **Skill setup** (per stream): a guided page that (a) shows the skill install
   instructions per provider, (b) renders the stream's canonical skill prompt (§6.2) with
   the user's folder path and calendar choice substituted in, with a copy button.
-- **Data**: open Drive folder link; wipe local data; storage usage.
+- **Data**: open Drive folder link; wipe local data; storage usage — local device
+  usage/quota (`storage.estimate()`) with an app-data breakdown, plus Drive account
+  usage/quota and the app's Drive footprint, checked on demand (never polled).
 
 ### 4.4 First-run flow
 

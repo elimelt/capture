@@ -5,7 +5,8 @@
 `src/store` is the local persistence layer plus the single Zustand store the UI reads.
 It has two halves:
 
-- **IndexedDB repositories** (`db.ts`, `events.ts`, `places.ts`, `settings.ts`): the
+- **IndexedDB repositories** (`db.ts`, `events.ts`, `places.ts`, `settings.ts`,
+  plus the read-only `space.ts` accounting): the
   on-device replica of the append-only event log (SPEC §3.2), the upload-queue state,
   attachment blobs, places, the reverse-geocode cache, settings, and persisted assistant
   chats. All data is keyed by stream so adding a stream is configuration, not a schema
@@ -162,6 +163,29 @@ Both getters spread stored values over defaults (`{ ...DEFAULTS, ...stored }`), 
 partial or missing stored object yields complete settings — this is the forward-migration
 path when new settings fields are added.
 
+### src/store/space.ts
+
+Local storage-space accounting for the Settings "Data" section (SPEC §4.3). Two
+complementary measurements plus a formatter:
+
+- `formatBytes(bytes): string` — adaptive decimal-unit formatting (1 KB = 1000 B,
+  matching how Drive and desktop OSes report storage): one decimal below 10 so small
+  values never collapse to "0.0 MB", whole numbers above, rounding carried into the
+  next unit ("1 MB", never "1000 KB"); non-finite/negative input renders "0 B".
+- `estimateLocalSpace(): Promise<LocalSpaceEstimate | null>` — origin-level
+  `{ usageBytes?, quotaBytes? }` from `navigator.storage.estimate()`. Covers
+  everything the origin stores (IndexedDB *including* overhead, service-worker caches
+  like OSM tiles), but browsers pad it and it can't be broken down. `null` when the
+  API is unavailable or the call rejects — never throws.
+- `measureAppSpace(): Promise<AppSpace>` — the app's own IndexedDB data in one
+  read-only transaction: log events at their canonical `serializeEvent` byte size
+  (their exact size as Drive files), attachment blobs at `Blob.size`, and persisted
+  assistant chats as JSON bytes, with counts and a `totalBytes` sum. The pure
+  aggregation is exported separately as `summarizeAppSpace(events, blobs, chats)`.
+
+(Drive-side accounting lives in `src/drive/space.ts` — see
+[drive.md](drive.md).)
+
 ### src/store/appStore.ts
 
 The single Zustand store (`useAppStore = create<AppState>()(...)`) the UI reads. State:
@@ -170,7 +194,9 @@ The single Zustand store (`useAppStore = create<AppState>()(...)`) the UI reads.
 null` (when the last full pull+push cycle completed cleanly; null = never synced),
 `places: Place[]`, `appSettings`, `streamSettings`, `lastError: string | null` (toast
 channel), `driveConnection: DriveConnection` (`src/drive/token`; drives the reconnect
-pill, SPEC §8.2), and `syncing` (sync cycle in flight).
+pill, SPEC §8.2), `syncing` (sync cycle in flight), and the storage-space snapshot —
+`localSpace: LocalSpaceEstimate | null` (null = unsupported or not yet loaded) and
+`appSpace: AppSpace | null` (both from `space.ts`, set by `refreshSpace`).
 
 Also exports `interface SyncResult { outcome: DrainOutcome; uploaded; pulled: number;
 error? }` — the combined result of one pull-then-push cycle, consumed by the Settings
@@ -180,7 +206,9 @@ Actions:
 
 - Loaders — `refresh(streamId?)` (re-lists entries, sync statuses, and `lastSyncAt`,
   also switches `currentStreamId` when given), `loadPlaces()`, `loadSettings()`,
-  `refreshConnection()`, and `init()` which runs all four in parallel — a local-only
+  `refreshConnection()`, `refreshSpace()` (re-measures `localSpace` + `appSpace`;
+  local-only, called by the Settings Data section on entry and by `wipe`), and
+  `init()` which runs the first four in parallel — a local-only
   status computation (entries, sync rows, `lastSyncAt`, stored-token expiry) that never
   syncs — and sets `ready: true` in a `finally` so even a failed boot lifts the splash.
 - Log writes — `capture(input): Promise<CaptureEvent>`, `revoke(targets)`,
@@ -202,7 +230,9 @@ Actions:
   `lastSyncAt` via `setLastSyncAt`, and entries are refreshed and `syncing`
   cleared in a `finally`.
 - Places/settings/data — `addPlace`, `removePlace`, `updateSettings`,
-  `updateStreamSettings`, `wipe()` (`wipeAll()` then reload), `clearError()`.
+  `updateStreamSettings`, `wipe()` (`wipeAll()` then reload, including
+  `refreshSpace()` so the Settings storage line never shows the pre-wipe number),
+  `clearError()`.
 
 All write actions are wrapped in a local `guard(label, fn)` helper: on failure it sets
 `lastError` to `"<label>: <message>"` **and re-throws** so awaiting callers still see the
@@ -212,8 +242,19 @@ in its returned `SyncResult` without throwing.
 ### src/store/appStore.test.ts
 
 Covers the store's write→refresh loop against real (fake-indexeddb) repos:
-capture/amend/revoke updating folded entries, settings persistence, wipe, and the
-`guard` behavior of setting `lastError` while rejecting.
+capture/amend/revoke updating folded entries, settings persistence, wipe, the
+`guard` behavior of setting `lastError` while rejecting, and space accounting
+(`refreshSpace` snapshots, null-estimate degradation, and the wipe → re-measure
+regression).
+
+### src/store/space.test.ts
+
+Covers `formatBytes` (unit scaling, the "0.0 MB" and MiB-mislabeled-as-MB
+regressions, rounding carry, non-finite input), `estimateLocalSpace` graceful
+degradation (missing API / rejection → `null`), the pure `summarizeAppSpace`
+aggregation (canonical event bytes, blob bytes vs characters, chat JSON bytes),
+and `measureAppSpace` end-to-end against fake-indexeddb (after `appendCapture`,
+after `wipeAll`).
 
 ### src/store/appStore.drive.test.ts
 
