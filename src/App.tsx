@@ -1,6 +1,7 @@
 import { Suspense, lazy, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom'
 import CaptureScreen from './capture/CaptureScreen'
+import ContextScreen from './context/ContextScreen'
 import DayScreen from './dayview/DayScreen'
 import SettingsScreen from './settings/SettingsScreen'
 import { applyAppBadge, badgeCount } from './notify/badge'
@@ -159,6 +160,7 @@ export default function App() {
             <Route path="/" element={<CaptureScreen />} />
             <Route path="/day" element={<DayScreen />} />
             <Route path="/day/:date" element={<DayScreen />} />
+            <Route path="/context" element={<ContextScreen />} />
             <Route
               path="/chat"
               element={assistantEnabled ? <ChatRoute /> : <Navigate to="/" replace />}
