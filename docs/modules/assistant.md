@@ -5,9 +5,11 @@ AI SDK's agent loop runs in-process in the browser against an OpenAI-compatible 
 (`https://llm.elimelt.com/v1`, an Ollama facade, no API key — access is origin-gated by
 CORS). The agent answers questions about the user's local Capture log (entries, places)
 by calling **read tools** over the zustand store and IndexedDB — it never embeds the
-whole log in the prompt — and, on explicit user request, can **create or update entries**
-through two narrow write tools that append ordinary capture/amend events via the store's
-own actions (the single write path; the append-only log is never mutated). Conversations
+whole log in the prompt — and, on explicit user request, can **create, update, or delete
+entries** through three narrow write tools that append ordinary capture/amend/revoke
+events via the store's own actions (the single write path; the append-only log is never
+mutated — deleting an entry is a soft-delete revoke tombstone, never a real erasure).
+Conversations
 are event-sourced in the `assistant-chats` system stream (SPEC §3.1, §10.1) — so they
 survive iOS killing the standalone PWA *and* sync to Drive through the same manual
 multi-stream cycle as everything else — and are browsable/searchable from a history
@@ -21,7 +23,8 @@ Responsibilities by file:
 - `config.ts` — endpoint URL, curated model list, default model.
 - `context.ts` — system-prompt builder and the shared plain-text log rendering.
 - `tools.ts` — the three read tools (`list_entries`, `search_entries`, `get_places`) and
-  the two write tools (`create_entry`, `update_entry`), plus the `EntryWriter` boundary.
+  the three write tools (`create_entry`, `update_entry`, `delete_entry`), plus the
+  `EntryWriter` boundary.
 - `transport.ts` — `ChatTransport` that runs a `ToolLoopAgent` in-process and streams UI chunks.
 - `chatSync.ts` — chats as events in the `assistant-chats` stream: create/append/revoke
   writers over `store/events.ts` and fold-based readers.
@@ -54,9 +57,9 @@ System prompt and shared log rendering. Everything here is pure formatting (no b
 that lives in `tools.ts`), so it tests without IndexedDB.
 
 - `interface DigestItem` — one entry's digest view: `capturedAt` (local ISO with offset),
-  optional `id` (the entry id, so `update_entry` has something to target), optional
-  `place`, `texts: string[]` (transcripts + notes in display order), `audioCount`,
-  `photoCount`.
+  optional `id` (the entry id, so `update_entry`/`delete_entry` have something to
+  target), optional `place`, `texts: string[]` (transcripts + notes in display order),
+  `audioCount`, `photoCount`.
 - `formatDigest(items: readonly DigestItem[]): string` — renders items grouped by day
   (`YYYY-MM-DD:` headers, blank line between days), one line per entry:
   `- HH:MM [@ place] — text1 | text2 [1 audio, 2 photos] (id …)` (the id suffix only
@@ -67,7 +70,13 @@ that lives in `tools.ts`), so it tests without IndexedDB.
 - `buildInstructions(now: Date = new Date()): string` — the system prompt: role, data
   model, tool usage guidance (which tool for which question, "ground answers in tool
   results; say so instead of guessing", and that write tools run **only when the user
-  explicitly asks**), and the current local time. The time is
+  explicitly asks**), and the current local time. The write-tool guidance enumerates
+  trigger verbs for all three writes (add/create/log/note/record → `create_entry`;
+  change/fix/correct/move → `update_entry`; delete/remove/undo → `delete_entry`,
+  explicitly called out as a **soft delete, recoverable in the log**) and forbids
+  recovering from a failed `update_entry`/`delete_entry` call (e.g. a mistargeted id) by
+  calling `create_entry` instead — that would silently leave the user with an unwanted
+  duplicate entry rather than the correction they asked for. The time is
   **truncated to the hour** (`toLocalIso(now).slice(0, 13) + ':00'`, plus `deviceTz()`)
   so the prompt — the very start of the token stream — stays byte-identical across turns
   and tool-loop steps, keeping the server's prefix (KV) cache valid.
@@ -77,19 +86,22 @@ Uses `deviceTz`/`toLocalIso` from `../contract/time`. `formatDigest` is consumed
 
 ### src/assistant/tools.ts
 
-The tools the agent calls over the local log: three reads and two narrow writes. Data
+The tools the agent calls over the local log: three reads and three narrow writes. Data
 access is injected — `createAssistantTools` takes getters plus an `EntryWriter` — so
 `ChatScreen` wires the zustand store while tests inject fixtures. Only text-blob reads
 (`getBlob` from `../store/events`) touch IndexedDB directly; writes go through the
 injected store actions. Read tools return plain text in the `formatDigest` rendering;
-write tools return a terse factual line (`Created entry <id>.` / `Updated entry <id>.`)
-or an `(error: …)` line — they never throw out of `execute`.
+write tools return a terse factual line (`Created entry <id>.` / `Updated entry <id>.` /
+`Deleted entry <id>: <summary>`) or an `(error: …)` line — they never throw out of
+`execute`.
 
 - `LIST_ENTRIES_MAX = 300`, `SEARCH_ENTRIES_MAX = 50` — output caps; the rendered text
   appends an explicit `(truncated: …)` note when a cap is hit.
-- `interface EntryWriter` — `{ capture(input), amend(input) }`, the **only** writes the
-  assistant can perform. `ChatScreen` injects the store's `capture`/`amend` actions (the
-  single write path); revoke, settings, sync and wipe are not injected and therefore
+- `interface EntryWriter` — `{ capture(input), amend(input), revoke(targets) }`, the
+  **only** writes the assistant can perform. `ChatScreen` injects the store's
+  `capture`/`amend`/`revoke` actions (the single write path); `revoke` is the same
+  append-only soft-delete tombstone the chat-history "delete" action uses (SPEC §11) —
+  it never erases anything. Settings, sync and wipe are not injected and therefore
   unreachable from any tool call.
 - `toDigestItem(entry: Entry): Promise<DigestItem>` — builds an entry's digest: loads
   each `text` attachment's blob, trims it, keeps non-empty texts; counts `audio` and
@@ -121,13 +133,29 @@ or an `(error: …)` line — they never throw out of `execute`.
     would silently move cross-timezone entries. Validation happens before any write:
     unknown or revoked id, empty text, malformed time, or no fields at all each return an
     `(error: …)` line and append nothing.
+  - `delete_entry({ id })` — appends **one** revoke event targeting an existing entry
+    (soft delete; SPEC §3.3, §11) via `writer.revoke([id])`. Uses the same id-resolution
+    scheme as `update_entry` (`getEntries().find`) inside the same write chain. Before
+    revoking, it reads the entry's content through `toDigestItem` and returns
+    `Deleted entry <id>: <one-line summary>` — the summary (date, time, place, texts,
+    media counts; no id) exists so the model can tell the user *what* was removed
+    without re-querying or showing a raw id in prose. An unknown id or an
+    already-revoked entry returns a terse `(error: …)` line instead of writing anything;
+    a write failure surfaces the same way rather than throwing.
 
 The AI SDK executes all tool calls of one model step **concurrently**, so the write
 tools serialize through a per-toolset promise chain (`enqueueWrite`): each write task —
-including `update_entry`'s `getEntries()` read — starts only after the previous write
-has fully landed. Without this, two updates to the same entry would both remove the same
-note file and the fold would keep both replacement notes. Two concurrent `create_entry`
-calls still create two entries — that is the intended meaning of two create calls.
+including `update_entry`'s/`delete_entry`'s `getEntries()` read — starts only after the
+previous write has fully landed. Without this, two updates to the same entry would both
+remove the same note file and the fold would keep both replacement notes, and a delete
+racing an update on the same id could read a stale snapshot. Two concurrent
+`create_entry` calls still create two entries — that is the intended meaning of two
+create calls. (Regression note: a product report once described `update_entry` as
+"duplicating entries"; the write path itself does not — an amend is never folded as a
+new entry, verified against the real store/fold in `tools.realstore.test.ts` — so any
+apparent duplication traces back to model behavior, not this code, which is why the
+system prompt now explicitly forbids recovering from a failed `update_entry`/
+`delete_entry` call by calling `create_entry`.)
 
 Read results are re-sorted by `capturedAt` before rendering so `formatDigest`'s day
 grouping stays coherent regardless of store order.
@@ -265,7 +293,7 @@ active stream. Instead, mid-turn submits queue FIFO and flush **one per settled 
 The chat UI (default export `ChatScreen()`, lazily loaded and opt-in). Wires the model
 from settings, `buildInstructions`, `createAssistantTools` (getters over
 `useAppStore.getState().entries` / `.places`, plus an `EntryWriter` delegating to the
-store's `capture`/`amend` actions — the only writes handed to the agent), and
+store's `capture`/`amend`/`revoke` actions — the only writes handed to the agent), and
 `createAssistantTransport` into an `@ai-sdk/react` `Chat` consumed via `useChat`.
 Because writes run through the store actions, the entry list refreshes immediately and
 the events queue for the normal manual sync.
@@ -320,8 +348,8 @@ Rendering details:
   text through `Markdown`.
 - `toolActivityLabel(part)` maps tool-invocation parts (both `dynamic-tool` and typed
   `tool-<name>` shapes) to captions: `Read log <from> – <to>`, `Searched the log for
-  "<query>"`, `Looked up saved places`, `Added a log entry`, `Updated entry <id>`, or a
-  generic fallback; returns `null` for other part types.
+  "<query>"`, `Looked up saved places`, `Added a log entry`, `Updated entry <id>`,
+  `Deleted entry <id>`, or a generic fallback; returns `null` for other part types.
 - `awaitingResponse(status, messages)` drives the `ThinkingDots` placeholder: `true` when
   submitted, or when streaming but the last assistant message has no non-empty text or
   reasoning yet (tool calls can run for seconds before visible content).
@@ -410,7 +438,7 @@ unknown-id no-op. Input states are frozen, so transitions are verified non-mutat
 
 ### src/assistant/tools.test.ts
 
-Covers all five tools with injected fixture getters, a recording `EntryWriter` mock, and
+Covers all six tools with injected fixture getters, a recording `EntryWriter` mock, and
 fake-indexeddb blobs. Reads: inclusive local-date range filtering, revoked-entry
 exclusion, text-blob reads, the `(id …)` suffix, empty-result messages, and both
 truncation caps with their notes. Writes: create happy path (one capture event, trimmed
@@ -419,9 +447,42 @@ replacement preserving derived transcripts, time-of-day patch in the entry's own
 including a cross-timezone Asia/Tokyo entry — both combined in a single amend event);
 a concurrency test that fires two simultaneous `update_entry` calls at one entry against
 a writer that folds a real event log, asserting the fold converges to exactly one note;
-and every rejection — unknown id, revoked entry, empty text, malformed time, no fields —
-asserting that **nothing** is appended; plus write failures surfacing as `(error: …)`
-text rather than throws.
+every rejection — unknown id, revoked entry, empty text, malformed time, no fields —
+asserting that **nothing** is appended; write failures surfacing as `(error: …)` text
+rather than throws; and `delete_entry`: one revoke call with a content summary in the
+result, unknown-id and already-revoked (double-delete) rejections without revoking,
+write failures as `(error: …)`, and a delete racing a concurrent `update_entry` on the
+same id resolving deterministically through the shared `enqueueWrite` chain.
+
+### src/assistant/tools.realstore.test.ts
+
+The same write-tool invariants as `tools.test.ts`, but wired exactly the way
+`ChatScreen` wires them — `createAssistantTools` over `useAppStore.getState()`'s
+real `capture`/`amend`/`revoke` actions, against real fake-indexeddb, so the *actual*
+store/`events.ts`/`fold.ts` stack is exercised rather than a hand-rolled `EntryWriter`
+mock that could quietly assume the answer. Covers: one `update_entry` call amending a
+captured entry in place (the log stays at one entry — the failing-test-first repro for
+a "duplicate entries" report would show a second entry here); three repeated updates
+never accumulating extra entries; two concurrent `update_entry` calls on the same id
+serializing to one entry with exactly one surviving note; `delete_entry` emitting a
+revoke that the real fold tombstones (the entry disappears from `useAppStore`'s folded
+`entries`); a second delete on the same id and a delete of an unknown id both resolving
+to a clear `(error: …)` result rather than throwing; and that deleting never removes
+events from the log — `listEvents('timelog')` still shows both the `capture` and the
+`revoke` afterward.
+
+### src/assistant/transport.wiring.test.ts
+
+Regression test for the "assistant is read-only" report (PR #72): pins that the write
+tools survive the whole client wiring — `createAssistantTools` (built exactly the way
+`ChatScreen` builds it) → `createAssistantTransport` → `ToolLoopAgent` — and actually
+execute, by mocking the OpenAI-compatible provider at the module boundary and scripting
+a `MockLanguageModelV3`. Asserts (a) all six tool definitions, including all three write
+tools, reach the model request and the system prompt affirms both write capability and
+the `delete_entry` guidance, and (b) a scripted step that calls `create_entry`,
+`update_entry`, and `delete_entry` together executes all three against a mocked
+`EntryWriter`, with their terse confirmation text streaming back as
+`tool-output-available` UI chunks before the loop continues to a final text answer.
 
 ### src/assistant/transport.integration.test.ts
 
@@ -439,17 +500,32 @@ targets just this file.
 - **No server**: the agent loop (`ToolLoopAgent` + `DirectChatTransport`) runs in the
   browser. Tools execute client-side against local data; nothing but the chat request
   ever leaves the device, and the endpoint needs no API key (CORS origin gating).
-- **Write boundary**: the agent's only writes are `EntryWriter.capture`/`amend` — the
-  store actions `ChatScreen` injects. Each successful write tool call appends exactly one
-  ordinary `capture`/`amend` event through the store's single write path (append-only log
-  preserved, UI refreshed, event queued for manual sync); revoke, settings, sync and wipe
-  are never injected. Write tools validate first and return `(error: …)` text — never
-  throw, never append on invalid input. `update_entry` never removes machine-derived
-  attachments (`derivedFrom` set), mirroring the UI edit path.
+- **Write boundary**: the agent's only writes are `EntryWriter.capture`/`amend`/`revoke`
+  — the store actions `ChatScreen` injects. Each successful write tool call appends
+  exactly one ordinary `capture`/`amend`/`revoke` event through the store's single write
+  path (append-only log preserved, UI refreshed, event queued for manual sync); settings,
+  sync and wipe are never injected. Write tools validate first and return `(error: …)`
+  text — never throw, never append on invalid input. `update_entry` never removes
+  machine-derived attachments (`derivedFrom` set), mirroring the UI edit path.
+  `delete_entry` is a soft delete — it appends a `revoke` tombstone (SPEC §3.3, §11), the
+  same mechanism `ChatHistorySheet`'s conversation delete uses; the entry's events and
+  blobs stay in the local log and, once synced, in Drive.
 - **Writes are serialized**: tool calls in one model step run concurrently in the SDK,
   so write executions queue through `enqueueWrite` — each reads the log state the
   previous write produced. Time edits recompose `capturedAt` in the entry's own
   `deviceTz` (`zonedIso`), never the device zone.
+- **"Duplicate entries" report, investigated**: a product report described `update_entry`
+  as duplicating entries. The write path does not — `update_entry` only ever calls
+  `writer.amend` (never `writer.capture`), the fold (`contract/fold.ts`) only creates a
+  new `Entry` from a `capture` event, and `db.ts` keys `events` by event `id` (not
+  `[stream, seq]`), so an amend can't collide with or shadow a capture. This was
+  re-verified against the real store/fold (`tools.realstore.test.ts`) for a single
+  update, repeated updates, and concurrent same-id updates — never more than one entry.
+  The most likely real-world cause is model behavior, not this code: `update_entry`
+  (like `delete_entry`) returns a terse `(error: …)` on a mistargeted id, and nothing
+  previously told the model not to recover from that error by calling `create_entry` —
+  which *would* add a genuine second entry and look, from the outside, exactly like "the
+  edit duplicated the entry". `buildInstructions` now says so explicitly.
 - **Prefix-cache stability**: `buildInstructions` truncates the current time to the hour
   so the system prompt is byte-identical across turns within an hour; changing the prompt
   invalidates the server's KV cache and forces a full re-prefill.
