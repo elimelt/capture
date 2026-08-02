@@ -26,6 +26,7 @@ no-ops when offline or disabled).
   cycle pulls events other devices committed before pushing local ones, and the
   deterministic fold converges every replica to identical state
 - Day view of folded entries, with undo-able delete (a delayed `revoke`)
+- Context export screen with date-range selection and offline Markdown/plaintext clipboard copy
 - Read-only Google Calendar overlay on the Day view: pick a target calendar in
   Settings and see its events alongside your entries, deep-linking into Google
   Calendar (`calendar.readonly` scope; the app never writes calendar events)
