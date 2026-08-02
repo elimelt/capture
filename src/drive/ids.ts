@@ -23,7 +23,10 @@ export async function allocateIds(token: string, count: number): Promise<string[
   return pool.splice(0, count)
 }
 
-/** Test hook: forget any pooled ids. */
+/**
+ * Forget any pooled ids. Called on a Google-account switch (account.ts) —
+ * pooled ids were minted with the old account's token — and by tests.
+ */
 export function resetIdPool(): void {
   pool = []
 }

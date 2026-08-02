@@ -145,6 +145,12 @@ Key exports:
   the `meta` store (key `lastSyncAt:<stream>`); unset = never synced.
 - `getEventById(id): Promise<LogEvent | undefined>` / `putSyncStatus(row)` — used
   by the drive queue to read the event being uploaded and record progress.
+- `stripPendingFileIds(): Promise<void>` — drops `fileIds` from every row with
+  `status !== 'uploaded'` (uploaded rows untouched). Called by `src/drive/account.ts`
+  on a Google-account switch: ids minted under the old account must not be reused
+  (Drive ids are globally unique, so a retried create could 409 against the old
+  account's file and be miscounted as success); stripped rows fall back to the
+  drainer's legacy find-before-upload probe.
 - `importEvents(stream, events, blobs): Promise<void>` — the pull-side writer
   (SPEC §8.5): commits events pulled from Drive plus their eagerly-fetched attachment
   blobs in **one transaction**. Pulled events get sync rows with `status: 'uploaded'`

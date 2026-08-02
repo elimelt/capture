@@ -4,13 +4,15 @@
  * the IndexedDB `meta` store — one key per stream, since each stream's pull
  * consumes the account-wide feed independently. Like the tree cache, the
  * cursor is advisory and self-healing: a missing, expired (410), or
- * otherwise unusable cursor (e.g. after switching Google accounts — the
- * cursor is account-bound) just means one full listing walk, after which a
- * fresh cursor is minted and persisted.
+ * otherwise unusable cursor just means one full listing walk, after which a
+ * fresh cursor is minted and persisted. Cursors are account-bound, so a
+ * Google-account switch clears them all up front (account.ts) rather than
+ * waiting for Drive to reject them.
  */
 import { getDb } from '../store/db'
 
-const CHANGES_KEY = (stream: string) => `drive:changes:${stream}`
+const CHANGES_PREFIX = 'drive:changes:'
+const CHANGES_KEY = (stream: string) => `${CHANGES_PREFIX}${stream}`
 
 /** The persisted changes.list cursor for a stream, if one exists. */
 export async function getChangesToken(stream: string): Promise<string | undefined> {
@@ -26,4 +28,17 @@ export async function saveChangesToken(stream: string, token: string): Promise<v
 export async function clearChangesToken(stream: string): Promise<void> {
   const db = await getDb()
   await db.delete('meta', CHANGES_KEY(stream))
+}
+
+/**
+ * Drop every stream's cursor at once — the account-switch discard
+ * (account.ts). Cursors from the old account would be rejected by Drive and
+ * self-heal anyway; clearing them here makes the cold start deliberate rather
+ * than dependent on a 4xx round trip.
+ */
+export async function clearAllChangesTokens(): Promise<void> {
+  const db = await getDb()
+  for (const key of await db.getAllKeys('meta')) {
+    if (key.startsWith(CHANGES_PREFIX)) await db.delete('meta', key)
+  }
 }

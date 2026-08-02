@@ -48,6 +48,7 @@ import {
   readFileText,
   type DriveChange,
 } from './client'
+import { ensureAccountBound } from './account'
 import { ensureTree } from './bootstrap'
 import { getTree, saveTree, type DriveTree, type StreamTree } from './tree'
 import { clearChangesToken, getChangesToken, saveChangesToken } from './changes'
@@ -89,6 +90,9 @@ function attachmentsOf(event: LogEvent): Attachment[] {
 export async function pullStream(token: string, stream: string): Promise<PullResult> {
   let pulled = 0
   try {
+    // Account-bound caches (tree, cursor) are only readable once the token is
+    // verified to belong to the account that minted them (account.ts).
+    await ensureAccountBound(token)
     const tree = (await getTree()) ?? (await ensureTree(token, [stream]))
     const st = tree.streams[stream] ?? (await ensureTree(token, [stream])).streams[stream]
     const known = new Set((await listEvents(stream)).map((e) => e.id))

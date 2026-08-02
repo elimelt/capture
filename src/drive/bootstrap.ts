@@ -4,9 +4,11 @@
  * config.json + checkpoint.json app-created stubs, an immutable log/ folder,
  * and a results/ folder. Safe to re-run: every step finds-before-creates and
  * mutable stubs are only created when absent (never clobbering skill edits,
- * §5.5). Minted ids are cached in meta (tree.ts) to short-circuit later drains.
- * Everything created here is tagged with appProperties (tags.ts) at creation
- * time — free, app-private metadata for future single-query discovery.
+ * §5.5). Minted ids are cached in meta (tree.ts) to short-circuit later
+ * drains; the cache is account-bound (account.ts), so a Google-account switch
+ * discards it here before any cached ids are merged or reused. Everything
+ * created here is tagged with appProperties (tags.ts) at creation time —
+ * free, app-private metadata for future single-query discovery.
  */
 import { toLocalIso } from '../contract/time'
 import {
@@ -17,6 +19,7 @@ import {
   streamConfigStub,
 } from '../contract/files'
 import { FOLDER_MIME, createFolder, findFile, uploadFile } from './client'
+import { ensureAccountBound } from './account'
 import { tags, type TagKind } from './tags'
 import { emptyStreamTree, getTree, saveTree, type DriveTree, type StreamTree } from './tree'
 
@@ -90,9 +93,13 @@ async function ensureStream(token: string, rootId: string, stream: string): Prom
 /**
  * Ensure the whole tree for the given streams and persist the id cache.
  * Returns the up-to-date DriveTree. Re-running merges: streams already cached
- * keep their partition ids; newly requested streams are added.
+ * keep their partition ids; newly requested streams are added. The cache is
+ * bound to the Google account (account.ts): after an account switch it is
+ * discarded before the merge, so stale wrong-account ids never survive into
+ * the fresh tree.
  */
 export async function ensureTree(token: string, streams: string[]): Promise<DriveTree> {
+  await ensureAccountBound(token)
   const rootId = await ensureFolder(token, ROOT_FOLDER, 'root', 'root')
   const cached = await getTree()
   const tree: DriveTree = { rootId, streams: { ...cached?.streams } }

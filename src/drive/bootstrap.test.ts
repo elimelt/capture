@@ -37,7 +37,20 @@ function fakeDrive() {
       return id
     },
   )
-  return { nodes, find, findFile, createFolder, uploadFile }
+  let user = 'user-A'
+  const getAboutUser = vi.fn(async (_t: string) => ({ permanentId: user }))
+  return {
+    nodes,
+    find,
+    findFile,
+    createFolder,
+    uploadFile,
+    getAboutUser,
+    /** Simulate a Google-account switch for subsequent tokens. */
+    setUser(id: string) {
+      user = id
+    },
+  }
 }
 
 let drive: ReturnType<typeof fakeDrive>
@@ -49,6 +62,7 @@ vi.mock('./client', async () => {
     findFile: (...args: unknown[]) => drive.findFile(...(args as [string, never])),
     createFolder: (...args: unknown[]) => drive.createFolder(...(args as [string, string, string])),
     uploadFile: (...args: unknown[]) => drive.uploadFile(...(args as [string, never])),
+    getAboutUser: (...args: unknown[]) => drive.getAboutUser(...(args as [string])),
   }
 })
 
@@ -147,5 +161,60 @@ describe('ensureTree', () => {
 
     const tree = await ensureTree('tok', ['timelog'])
     expect(tree.streams.timelog.partitions['2026-08-02']).toBe('part-xyz')
+  })
+})
+
+describe('ensureTree account binding', () => {
+  it('discards cached partition ids after an account switch', async () => {
+    const { ensureTree } = await load()
+    await ensureTree('tok-a', ['timelog'])
+    const { getTree, saveTree } = await import('./tree')
+    const t = (await getTree())!
+    t.streams.timelog.partitions['2026-08-02'] = 'stale-part-from-account-a'
+    await saveTree(t)
+
+    drive.setUser('user-B')
+    const tree = await ensureTree('tok-b', ['timelog'])
+    // The stale wrong-account partition id must NOT be merged into the tree.
+    expect(tree.streams.timelog.partitions).toEqual({})
+    expect((await getTree())!.streams.timelog.partitions).toEqual({})
+    const { getStoredAccountId } = await import('./account')
+    expect(await getStoredAccountId()).toBe('user-B')
+  })
+
+  it('a reconnect on the same account keeps cached ids (no extra bootstrap cost)', async () => {
+    const { ensureTree } = await load()
+    await ensureTree('tok-1', ['timelog'])
+    const { getTree, saveTree } = await import('./tree')
+    const t = (await getTree())!
+    t.streams.timelog.partitions['2026-08-02'] = 'part-xyz'
+    await saveTree(t)
+    const createsAfterFirst = drive.createFolder.mock.calls.length
+    const uploadsAfterFirst = drive.uploadFile.mock.calls.length
+
+    // A fresh token (reconnect) for the same account: cache kept, nothing recreated.
+    const tree = await ensureTree('tok-2', ['timelog'])
+    expect(tree.streams.timelog.partitions['2026-08-02']).toBe('part-xyz')
+    expect(drive.createFolder.mock.calls.length).toBe(createsAfterFirst)
+    expect(drive.uploadFile.mock.calls.length).toBe(uploadsAfterFirst)
+    // One identity check per token; the memo makes repeats with a token free.
+    expect(drive.getAboutUser).toHaveBeenCalledTimes(2)
+    await ensureTree('tok-2', ['timelog'])
+    expect(drive.getAboutUser).toHaveBeenCalledTimes(2)
+  })
+
+  it('a first-ever grant (no stored identity) binds without discarding', async () => {
+    // Upgrade path: a tree cache from an app version predating the binding.
+    const { emptyStreamTree, saveTree } = await import('./tree')
+    const st = emptyStreamTree('folder-old', 'log-old', 'results-old')
+    st.partitions['2026-08-02'] = 'part-legacy'
+    await saveTree({ rootId: 'root-old', streams: { timelog: st } })
+    const { getStoredAccountId } = await import('./account')
+    expect(await getStoredAccountId()).toBeUndefined()
+
+    const { ensureTree } = await load()
+    const tree = await ensureTree('tok', ['timelog'])
+    expect(tree.streams.timelog.partitions['2026-08-02']).toBe('part-legacy')
+    expect(await getStoredAccountId()).toBe('user-A')
   })
 })

@@ -3,7 +3,10 @@
  * only see files it created, so we remember the ids we mint to skip repeated
  * `findFile` lookups on every drain. The cache is advisory: bootstrap always
  * tolerates a miss by re-finding or re-creating, so a cleared cache or a
- * user-deleted folder self-heals on the next bootstrap.
+ * user-deleted folder self-heals on the next bootstrap. The cache is bound to
+ * the Google account that minted the ids: account.ts clears it (via
+ * `clearTree`) when a token from a different account shows up, so stale
+ * wrong-account ids never reach ensurePartition/pull.
  */
 import { getDb } from '../store/db'
 
