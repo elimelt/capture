@@ -819,8 +819,12 @@ separable by construction.
   no chat backend. The system prompt embeds a plain-text digest of the last 7
   days of folded entries — transcript/note text, place labels and media counts,
   never raw audio or photos.
-- The assistant is read-only over the log: it answers questions; it never
-  appends events. The current conversation persists locally (IndexedDB) so it
+- The assistant reads the log through tools and, only when the user explicitly
+  asks, can create a note entry or update an existing entry's note text/time.
+  Writes go through the store's normal capture/amend actions, appending
+  ordinary events to the append-only log (never mutating it) that sync through
+  the usual manual queue; it can never revoke entries, change settings, or
+  trigger sync. The current conversation persists locally (IndexedDB) so it
   survives app restarts; "New chat" or a data wipe clears it. Nothing is
   stored server-side.
 

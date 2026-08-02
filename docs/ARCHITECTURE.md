@@ -119,8 +119,10 @@ the external service; a `runner.ts` appends the result as an ordinary `amend`, w
 the normal queue syncs — zero pipeline-specific sync code. `places` does synchronous
 point-in-radius matching at capture time and throttled, cached Nominatim reverse
 geocoding that never throws. The chat assistant is an opt-in, lazy-loaded,
-client-side agent loop over the local log with strictly read-only tools; nothing is
-stored server-side. Module docs:
+client-side agent loop over the local log: read tools plus two narrow write tools
+(create/update entry) that append ordinary capture/amend events through the store's
+single write path — never revoke, settings, or sync; nothing is stored server-side.
+Module docs:
 [pipelines-and-places](modules/pipelines-and-places.md),
 [assistant](modules/assistant.md).
 
