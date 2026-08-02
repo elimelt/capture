@@ -4,7 +4,9 @@
  * create/update entries via the store's own capture/amend actions (nothing
  * else is injected — see EntryWriter in tools.ts). Editorial voice:
  * assistant replies are serif markdown on the page itself; user turns are
- * quiet spruce-washed bubbles.
+ * quiet spruce-washed bubbles. Submitting while a turn is in flight queues
+ * the message (dashed pending bubble; sent when the turn settles) with a
+ * "Send now" steer action that interrupts the stream — see sendQueue.ts.
  */
 import { useEffect, useRef, useState } from 'react'
 import { Chat, useChat } from '@ai-sdk/react'
@@ -25,6 +27,7 @@ import { modelLabel } from './config'
 import { buildInstructions } from './context'
 import { loadMostRecentChat, saveChat, type StoredChat } from './history'
 import { Markdown } from './Markdown'
+import * as sendQueue from './sendQueue'
 import { createAssistantTools } from './tools'
 import { createAssistantTransport } from './transport'
 
@@ -189,6 +192,29 @@ function ChatView({
 
   const busy = status === 'submitted' || status === 'streaming'
 
+  // Mid-turn submits queue instead of racing the stream (the SDK starts a
+  // second concurrent request if sendMessage runs while one is in flight).
+  // The machine is pure (sendQueue.ts); dispatch applies a transition and
+  // runs its commands. The ref is the authority — event handlers must see
+  // the post-transition state immediately, not the next render's snapshot —
+  // and `queued` mirrors it for rendering the pending bubbles. Seeding from
+  // `busy` covers mounting while an earlier stream (module-scope Chat) runs.
+  const machineRef = useRef(sendQueue.initialSendQueue(busy))
+  const [queued, setQueued] = useState<readonly sendQueue.QueuedMessage[]>([])
+
+  function dispatch(t: sendQueue.SendQueueTransition) {
+    machineRef.current = t.state
+    setQueued(t.state.queue)
+    for (const c of t.commands) {
+      if (c.type === 'stop') {
+        void stop()
+      } else {
+        pinnedRef.current = true
+        void sendMessage({ text: c.message.text })
+      }
+    }
+  }
+
   useEffect(() => {
     const onScroll = () => {
       const doc = document.documentElement
@@ -198,9 +224,15 @@ function ChatView({
     return () => window.removeEventListener('scroll', onScroll)
   }, [])
 
-  // Switching conversations always lands at the latest turn.
+  // Switching conversations always lands at the latest turn — and drops any
+  // queued drafts: they belong to the composer session, not the thread.
   useEffect(() => {
     pinnedRef.current = true
+    machineRef.current = sendQueue.initialSendQueue(
+      status === 'submitted' || status === 'streaming',
+    )
+    setQueued([])
+    // Deps: [chat] only — status merely seeds the reset.
   }, [chat])
 
   useEffect(() => {
@@ -209,7 +241,7 @@ function ChatView({
       // composer and the last message stays fully visible.
       window.scrollTo({ top: document.documentElement.scrollHeight })
     }
-  }, [messages, status])
+  }, [messages, status, queued])
 
   // Persist each settled turn (not per-delta; streaming would hammer idb).
   useEffect(() => {
@@ -223,16 +255,44 @@ function ChatView({
     }
   }, [status, messages])
 
+  // Flush the send queue once per settled turn — on the status *transition*
+  // (ready/error, including after stop()), never on re-renders where status
+  // merely stays settled, so one settle sends exactly one queued message.
+  // Declared after the persist effect: the settled turn's snapshot saves
+  // before the next turn starts (each save upserts the full message array,
+  // so interleaved queued turns can't drop persistence either way).
+  const prevStatusRef = useRef(status)
+  useEffect(() => {
+    const prev = prevStatusRef.current
+    prevStatusRef.current = status
+    if (
+      (prev === 'submitted' || prev === 'streaming') &&
+      (status === 'ready' || status === 'error')
+    ) {
+      dispatch(sendQueue.settled(machineRef.current))
+    }
+  }, [status])
+
   function send(text: string) {
     const trimmed = text.trim()
-    if (!trimmed || busy) return
+    if (!trimmed) return
     setInput('')
     pinnedRef.current = true
-    void sendMessage({ text: trimmed })
+    dispatch(sendQueue.submit(machineRef.current, { id: crypto.randomUUID(), text: trimmed }))
+  }
+
+  /** Drop queued drafts *before* stop(): the abort settles the turn, and a
+   * settle flushes the queue — into the conversation being abandoned. The
+   * machine ref is authoritative, so clearing it here is race-free; the
+   * [chat] effect re-seeds turnInFlight after the swap. */
+  function dropQueue() {
+    machineRef.current = sendQueue.initialSendQueue(machineRef.current.turnInFlight)
+    setQueued([])
   }
 
   // The old conversation stays in history; just start a fresh one.
   function newChat() {
+    dropQueue()
     stop()
     onReset()
   }
@@ -319,6 +379,46 @@ function ChatView({
           ),
         )}
         {awaitingResponse(status, messages) && <ThinkingDots />}
+        {queued.map((q, i) => (
+          <div
+            key={q.id}
+            className={cx('flex min-w-0 max-w-[85%] flex-col items-end gap-1 self-end', motion.riseIn)}
+          >
+            <div
+              className={cx(
+                'whitespace-pre-wrap rounded-2xl rounded-br-md border border-dashed px-3.5 py-2 [overflow-wrap:anywhere]',
+                tone.borderStrong,
+                type_.ui,
+                tone.textSecondary,
+              )}
+            >
+              {q.text}
+            </div>
+            <p className={cx(type_.caption, tone.textMuted)}>
+              Queued
+              {i === 0 && busy && (
+                <>
+                  {' · '}
+                  <button
+                    type="button"
+                    className="underline"
+                    onClick={() => dispatch(sendQueue.steer(machineRef.current, q.id))}
+                  >
+                    Send now (interrupts)
+                  </button>
+                </>
+              )}
+              {' · '}
+              <button
+                type="button"
+                className="underline"
+                onClick={() => dispatch(sendQueue.discard(machineRef.current, q.id))}
+              >
+                Remove
+              </button>
+            </p>
+          </div>
+        ))}
         {error && (
           <p className={cx(type_.sub, tone.danger)}>
             {'Something went wrong reaching the assistant. '}
@@ -359,9 +459,24 @@ function ChatView({
             className="min-w-0 flex-1"
           />
           {busy ? (
-            <RoundButton label="Stop" onClick={() => void stop()}>
-              <rect x="7" y="7" width="10" height="10" rx="1.5" />
-            </RoundButton>
+            <>
+              {/* Muted while a Queue button is present so exactly one action
+                  reads primary; submitting mid-turn queues instead of racing
+                  the in-flight stream. */}
+              <RoundButton
+                label="Stop"
+                type="button"
+                muted={input.trim() !== ''}
+                onClick={() => void stop()}
+              >
+                <rect x="7" y="7" width="10" height="10" rx="1.5" />
+              </RoundButton>
+              {input.trim() !== '' && (
+                <RoundButton label="Queue message" type="submit">
+                  <path d="M12 19V6M6 12l6-6 6 6" fill="none" strokeWidth="2.2" />
+                </RoundButton>
+              )}
+            </>
           ) : (
             <RoundButton label="Send" type="submit" disabled={!input.trim()}>
               <path d="M12 19V6M6 12l6-6 6 6" fill="none" strokeWidth="2.2" />
@@ -375,11 +490,13 @@ function ChatView({
           activeChatId={cache?.chatId}
           onClose={() => setHistoryOpen(false)}
           onSelect={(stored) => {
+            dropQueue()
             stop()
             onLoadChat(stored)
             setHistoryOpen(false)
           }}
           onDeleteActive={() => {
+            dropQueue()
             stop()
             onReset()
           }}
@@ -391,17 +508,19 @@ function ChatView({
 
 function RoundButton({
   label,
+  muted = false,
   children,
   ...rest
-}: React.ButtonHTMLAttributes<HTMLButtonElement> & { label: string }) {
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & { label: string; muted?: boolean }) {
   return (
     <button
       {...rest}
       aria-label={label}
       className={cx(
-        'inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-white transition-colors disabled:opacity-40',
-        tone.accentBg,
-        tone.accentBgActive,
+        'inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-40',
+        muted
+          ? cx('border', tone.borderStrong, tone.textSecondary, tone.pressWash)
+          : cx('text-white', tone.accentBg, tone.accentBgActive),
       )}
     >
       <svg
