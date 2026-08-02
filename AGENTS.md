@@ -24,6 +24,9 @@ npm run preview            # serve the production build locally
   (`src/assistant/transport.integration.test.ts`) is excluded unless
   `VITEST_INTEGRATION=1`; run it only when touching the assistant transport
   and network access is available.
+- **CI:** every pull request and push to `main` runs
+  `.github/workflows/ci.yml` (`npm ci`, `npm test`, `npx tsc -b`,
+  `npm run lint`, `npm run build`).
 - **Deploy model:** every push to `main` triggers
   `.github/workflows/deploy.yml`, which runs `npm ci`, `npm test`,
   `npm run build`, then deploys to GitHub Pages. Never push to `main` with

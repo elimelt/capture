@@ -1,5 +1,8 @@
 # Capture
 
+[![CI](https://github.com/elimelt/capture/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/elimelt/capture/actions/workflows/ci.yml)
+[![Deploy to GitHub Pages](https://github.com/elimelt/capture/actions/workflows/deploy.yml/badge.svg?branch=main)](https://github.com/elimelt/capture/actions/workflows/deploy.yml)
+
 Voice-first, offline-first PWA for capturing what you did and when.
 
 Capture is a mobile-first Progressive Web App (TypeScript/React) for logging
@@ -86,7 +89,11 @@ or API keys. A fork needs to change:
 - `vite.config.ts` — `base` path and PWA manifest, if deploying somewhere other
   than a domain root.
 
-## Deployment
+## CI and deployment
+
+The `CI` workflow (`.github/workflows/ci.yml`) runs on every pull request and
+push to `main`: `npm ci`, `npm test`, `npx tsc -b`, `npm run lint`, and
+`npm run build`.
 
 Deployment is GitHub Pages via `.github/workflows/deploy.yml`. On every push to
 `main` (or manual dispatch), CI runs `npm ci`, `npm test`, and `npm run build`,
