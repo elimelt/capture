@@ -5,12 +5,17 @@
  * a derivedFrom text attachment (append-only — the transcript flows to
  * Drive with everything else once M2 lands).
  *
+ * While a transcription streams, partial text is published to the transient
+ * `liveTranscripts` store (keyed by source audio file) for the entry card;
+ * only the final, complete transcript is ever appended to the log.
+ *
  * Failure handling: transient errors back off in memory (reset on app
  * relaunch); permanently untranscribable clips (empty transcript, missing
  * blob) get a local skip marker in the meta store so they are never retried.
  */
 import { getDb } from '../store/db'
 import { appendAmend, getBlob, listEvents } from '../store/events'
+import { liveTranscripts } from '../store/livetext'
 import { transcribeAudio } from './api'
 import { pendingTranscriptions } from './plan'
 
@@ -63,8 +68,13 @@ export function drainTranscriptions(streamId: string): Promise<number> {
 async function drain(streamId: string): Promise<number> {
   if (!navigator.onLine) return 0
   const events = await listEvents(streamId)
+  const pending = pendingTranscriptions(events)
+  // Sweep live text from earlier attempts: anything no longer pending has
+  // its persisted transcript visible by now (or was dropped), so the
+  // transient copy is stale.
+  liveTranscripts.sweep(new Set(pending.map((p) => p.audio.file)))
   let appended = 0
-  for (const { entryId, stream, audio } of pendingTranscriptions(events)) {
+  for (const { entryId, stream, audio } of pending) {
     if (!eligible(audio.file) || (await isSkipped(audio.file))) continue
     try {
       const blob = await getBlob(audio.file)
@@ -74,8 +84,15 @@ async function drain(streamId: string): Promise<number> {
         await markSkipped(audio.file)
         continue
       }
-      const text = await transcribeAudio(blob, audio.mimeType)
+      // Partial text streams into the live store for the entry card; it is
+      // display-only and never persisted. Only the resolved final text
+      // reaches the log below — a mid-stream failure lands in the catch,
+      // which clears the partial and backs off exactly as before.
+      const text = await transcribeAudio(blob, audio.mimeType, (partial) =>
+        liveTranscripts.set(audio.file, partial),
+      )
       if (text === '') {
+        liveTranscripts.clear(audio.file)
         await markSkipped(audio.file)
         continue
       }
@@ -84,6 +101,7 @@ async function drain(streamId: string): Promise<number> {
       // result if this audio no longer needs one (at-most-once globally).
       const stillPending = pendingTranscriptions(await listEvents(streamId))
       if (!stillPending.some((p) => p.audio.file === audio.file)) {
+        liveTranscripts.clear(audio.file)
         retryState.delete(audio.file)
         continue
       }
@@ -99,9 +117,13 @@ async function drain(streamId: string): Promise<number> {
           },
         ],
       })
+      // The final text stays in the live store until the next drain sweeps
+      // it, so the card never flashes empty between the amend landing and
+      // the store refresh that reveals the persisted attachment.
       retryState.delete(audio.file)
       appended++
     } catch {
+      liveTranscripts.clear(audio.file)
       recordFailure(audio.file)
     }
   }

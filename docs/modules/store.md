@@ -15,6 +15,10 @@ It has two halves:
   settings in memory, delegates every write to the repositories, and wires Drive
   auth state and the manual sync action (`src/drive`) into state the components render.
 
+One small module sits outside both halves: `livetext.ts`, a transient in-memory
+pub/sub store (nothing touches IndexedDB) that carries streaming transcript/caption
+partials from the enrichment runners to the entry cards.
+
 State flows one way: a UI action calls a store action → the action writes through a repo
 (one IndexedDB transaction) → the action re-reads (`refresh`/`loadPlaces`/`loadSettings`)
 and `set()`s the new snapshot → components re-render. The store never mutates cached
@@ -189,6 +193,31 @@ complementary measurements plus a formatter:
 (Drive-side accounting lives in `src/drive/space.ts` — see
 [drive.md](drive.md).)
 
+### src/store/livetext.ts
+
+Transient in-memory "live text" stores for the streaming enrichment pipelines. While a
+transcript or caption streams in, the runner (`src/transcribe/runner.ts` /
+`src/vision/runner.ts`) publishes the partial text here keyed by the **source**
+attachment filename; `src/capture/AttachmentBody.tsx` subscribes (via
+`useSyncExternalStore`) and renders it growing on the entry card. Nothing is persisted —
+the append-only log only ever stores the final text via the runner's single
+`appendAmend`, and a failed stream's key is cleared by the runner.
+
+- `interface LiveTextStore { subscribe(listener): () => void; snapshot():
+  ReadonlyMap<string, string>; set(file, text); clear(file); sweep(keep:
+  ReadonlySet<string>) }` — snapshots are immutable maps replaced on every change
+  (stable reference otherwise), so React can consume them directly. `set` with an
+  unchanged value, `clear` of an absent key, and a no-op `sweep` do not notify.
+- `createLiveTextStore(): LiveTextStore` — the (pure, tested) factory.
+- `liveTranscripts` / `liveCaptions` — the two app singletons, keyed by source audio /
+  photo filename respectively. They live here (not in the pipelines) so the dependency
+  graph stays one-way: pipelines and UI both import `store/`.
+
+`sweep(keep)` exists for lifecycle, not correctness: runners call it with the
+currently-pending source files at the start of each drain, dropping text left behind by
+completed attempts (kept until then so the card never flashes empty between stream end
+and the store refresh that reveals the persisted attachment).
+
 ### src/store/appStore.ts
 
 The single Zustand store (`useAppStore = create<AppState>()(...)`) the UI reads. State:
@@ -286,6 +315,13 @@ filename, `listPendingSync` ordering by seq, exclusion of uploaded events from p
 queue, cross-device merge scenarios with seq collisions, and sequential multi-import
 handling.
 
+### src/store/livetext.test.ts
+
+Covers the `createLiveTextStore` factory: snapshot exposure, notification on
+set/clear/sweep, snapshot reference replacement on change (and stability otherwise),
+the silent no-ops (same value, absent key, sweep that keeps everything), sweep
+filtering, and unsubscribe.
+
 ### src/store/places.test.ts
 
 Verifies the places repo CRUD round-trip, `put` overwrite semantics on duplicate ids,
@@ -334,3 +370,6 @@ per-stream independence of stream settings.
   `dayview/`, or `assistant/` (SPEC §10 layering rule).
 - **`guard` re-throws.** Store write actions surface `lastError` *and* reject; callers
   that `await` them must be prepared for the rejection. `drainSync` never throws.
+- **`livetext.ts` is display-only.** Live partial transcripts/captions never touch
+  IndexedDB or the event log; the single write path is unaffected. Keys are source
+  attachment filenames, and each pipeline sweeps only its own singleton.

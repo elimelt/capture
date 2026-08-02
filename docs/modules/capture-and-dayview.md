@@ -237,11 +237,22 @@ AttachmentBodyProps)`.
 audio **transcripts** (text with `derivedFrom`, not a caption), user **notes** (text
 without `derivedFrom`), **extra audio** (`kind === 'audio'` beyond the first, which plays
 from the card header), and **photos**. Render order: transcripts (primary text styling —
-they are the spoken content), notes (secondary), extra audio rows, photo thumbnails,
-captions (secondary, below their photos). Returns `null` if every group is empty.
+they are the spoken content), then any still-**streaming** transcripts, notes
+(secondary), extra audio rows, photo thumbnails, captions (secondary, below their
+photos), then any still-streaming captions. Returns `null` if every group is empty
+(streaming transcripts count — a fresh audio-only entry shows its transcript growing).
 
 **Key behaviors:**
 
+- **Streaming machine text.** The component subscribes (one `useSyncExternalStore`
+  per store) to the transient live-text stores `liveTranscripts`/`liveCaptions`
+  (`src/store/livetext.ts`), where the enrichment runners publish partial text keyed by
+  source file while a transcription/caption request streams. For each audio/photo
+  attachment with **no persisted derived text yet**, non-empty live text renders as a
+  read-only `StreamingText` — same tokens and position as the final `NoteText`, plus a
+  pulsing cursor tick, `aria-live="polite"`, and nothing to tap (there is no attachment
+  to edit until the amend lands). Once a derived attachment exists it always wins over
+  live text.
 - `NoteText` loads its text asynchronously via `getBlob(file)` (renders nothing until
   loaded; guards against stale sets on unmount). Tapping opens the shared edit
   `TextSheet`, titled "Edit note" / "Edit caption" / "Edit transcript" based on
