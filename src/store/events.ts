@@ -161,6 +161,21 @@ export async function getBlob(file: string): Promise<Blob | undefined> {
   return (await db.get('blobs', file))?.blob
 }
 
+/**
+ * Cached waveform peaks for an audio attachment (#86), keyed by contract
+ * filename like `blobs` — so `Waveform.tsx` decodes each clip's audio at
+ * most once ever. Purely derived data: never synced, never an event.
+ */
+export async function getWaveform(file: string): Promise<number[] | undefined> {
+  const db = await getDb()
+  return (await db.get('waveforms', file))?.peaks
+}
+
+export async function putWaveform(file: string, peaks: number[]): Promise<void> {
+  const db = await getDb()
+  await db.put('waveforms', { file, peaks })
+}
+
 /** Sync status by event id for one stream (id is the identity — SPEC §3.3). */
 export async function getSyncStatuses(stream: string): Promise<Map<string, SyncStatusRow>> {
   const db = await getDb()
@@ -302,7 +317,7 @@ export async function deleteBlob(file: string): Promise<void> {
 export async function wipeAll(): Promise<void> {
   const db = await getDb()
   const tx = db.transaction(
-    ['events', 'blobs', 'sync', 'places', 'geocache', 'meta', 'chats', 'overlayEvents'],
+    ['events', 'blobs', 'sync', 'places', 'geocache', 'meta', 'chats', 'overlayEvents', 'waveforms'],
     'readwrite',
   )
   await Promise.all([
@@ -314,6 +329,7 @@ export async function wipeAll(): Promise<void> {
     tx.objectStore('meta').clear(),
     tx.objectStore('chats').clear(),
     tx.objectStore('overlayEvents').clear(),
+    tx.objectStore('waveforms').clear(),
   ])
   await tx.done
 }

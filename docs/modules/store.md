@@ -44,7 +44,7 @@ Defines the IndexedDB schema (via the `idb` package) and owns the singleton conn
 Key exports:
 
 - `getDb(): Promise<TimeboxDatabase>` — opens (once, memoized in a module-level promise)
-  the `timebox` database at **version 10** and runs versioned upgrades. Handles the
+  the `timebox` database at **version 11** and runs versioned upgrades. Handles the
   full `openDB` lifecycle — `blocked`/`blocking`/`terminated` plus open failures —
   see "Connection lifecycle" below.
 - `resetDbCache(): void` — test hook; forgets the cached connection promise.
@@ -78,6 +78,10 @@ Key exports:
   never import `gcal/`; `src/gcal/overlay/store.ts` is the store's only reader/writer
   and owns the strong typing.
 
+The `waveforms` store's value type (`{ file; peaks: number[] }`) is declared inline in
+`TimeboxDB` rather than as a named interface — it has no reader/writer outside
+`events.ts`'s `getWaveform`/`putWaveform`.
+
 Object stores (schema `TimeboxDB`):
 
 | Store | Key | Value |
@@ -90,6 +94,7 @@ Object stores (schema `TimeboxDB`):
 | `meta` | string (out-of-line) | `unknown` — per-stream seq counters, sync stamps, migration markers, legacy settings |
 | `chats` | `id` | `StoredChatRow` (legacy; migrated to the `assistant-chats` stream, kept for rollback) |
 | `overlayEvents` | event `id` (+ `by-stream` index) | `OverlayEventRow` — the calendar-overlay log, **owned by `gcal/overlay`**; local-only until wired into sync |
+| `waveforms` | contract filename | `{ file, peaks: number[] }` — cached per-clip waveform fingerprint (#86), derived/rebuildable, never synced |
 
 `events` and `sync` are keyed by the event `id` — the identity (SPEC §3.3): two
 devices appending offline can mint the same per-stream `seq`, so `seq` is only a
@@ -107,7 +112,9 @@ SPEC §3.6/§5.6), self-contained, additive, and guarded by a `contains('overlay
 check so it composes with the parallel stream migrations landing in either order; v9
 seeds legacy flat settings into `settings`-stream events via `migrateSettingsV1(tx)`;
 v10 turns legacy `chats` rows into `assistant-chats` stream events via
-`migrateChatsV1(tx)`. The v9 and v10 migrations are called on **every** upgrade
+`migrateChatsV1(tx)`; v11 adds `waveforms` (the cached per-clip waveform fingerprint,
+#86), self-contained, additive, and guarded by a `contains('waveforms')` check —
+mirroring the v8 pattern. The v9 and v10 migrations are called on **every** upgrade
 rather than under an `oldVersion` check, because parallel workstreams claimed their
 own version numbers and landed in arbitrary order, so a device may already sit at a
 higher version without a given migration having run; each call is state-guarded by a
@@ -196,6 +203,10 @@ Key exports:
   folded view (SPEC §3.3).
 - `getBlob(file): Promise<Blob | undefined>` / `deleteBlob(file): Promise<void>` —
   the latter supports `keepAudioLocally=false` pruning after upload (SPEC §8.4).
+- `getWaveform(file): Promise<number[] | undefined>` / `putWaveform(file, peaks):
+  Promise<void>` — the `waveforms` cache, keyed by contract filename like `blobs`, so
+  `Waveform.tsx` (#86) decodes each clip's audio at most once ever. Purely derived data:
+  never synced, never an event.
 - `getSyncStatuses(stream): Promise<Map<string, SyncStatusRow>>` — status by event id.
 - `listPendingSync(stream): Promise<SyncStatusRow[]>` — rows with `status !== 'uploaded'`
   sorted by seq ascending (id as tiebreak); the order `src/drive/queue` must upload in
@@ -223,9 +234,10 @@ Key exports:
   per-stream seq counter is bumped past every imported seq so the next local append
   extends the merged log instead of colliding. Idempotent: re-importing a known id
   overwrites it with itself.
-- `wipeAll(): Promise<void>` — clears all eight object stores in one transaction
-  (including `meta`, so seq counters restart at 1, and `overlayEvents` — the
-  calendar-overlay log goes with everything else).
+- `wipeAll(): Promise<void>` — clears all nine object stores in one transaction
+  (including `meta`, so seq counters restart at 1; `overlayEvents` — the
+  calendar-overlay log — and `waveforms` — the cached fingerprints, #86 — go with
+  everything else).
 
 Invariants and edge cases: seq counters are per-stream and monotonic per device
 (`importEvents` keeps them ahead of everything pulled); `capture` events

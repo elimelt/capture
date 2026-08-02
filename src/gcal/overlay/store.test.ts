@@ -142,7 +142,8 @@ describe('db migration to v8 (overlayEvents added)', () => {
 
     const db = await getDb()
     // ≥ 8 rather than a pin: later state-guarded migrations (settings v9,
-    // chats) raise the version without affecting the overlay store.
+    // chats, waveform cache v11) raise the version without affecting the
+    // overlay store.
     expect(db.version).toBeGreaterThanOrEqual(8)
     expect([...db.objectStoreNames].sort()).toEqual([
       'blobs',
@@ -153,6 +154,7 @@ describe('db migration to v8 (overlayEvents added)', () => {
       'overlayEvents',
       'places',
       'sync',
+      'waveforms',
     ])
     // Existing data untouched…
     expect(await db.get('events', 'aaaaaa')).toEqual({ id: 'aaaaaa', stream: 'timelog', seq: 1 })

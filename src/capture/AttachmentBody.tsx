@@ -9,6 +9,7 @@ import { groupAttachments } from './attachmentGroups'
 import { PhotoViewer } from './PhotoViewer'
 import { TextSheet } from './TextSheet'
 import { useAudioPlayback } from './useAudioPlayback'
+import { Waveform } from './Waveform'
 
 interface AttachmentBodyProps {
   attachments: Attachment[]
@@ -271,7 +272,11 @@ function NoteText({
   )
 }
 
-/** Playback row for an entry's second and later clips. */
+/**
+ * Playback row for an entry's second and later clips. Carries the same
+ * waveform fingerprint (#86) as the card header's primary clip so the
+ * signature reads consistently wherever an entry's audio appears.
+ */
 function AudioRow({ file, durationSec }: { file: string; durationSec?: number }) {
   const playback = useAudioPlayback(file)
   return (
@@ -290,6 +295,7 @@ function AudioRow({ file, durationSec }: { file: string; durationSec?: number })
         )}
         <span className="relative">{playback.playing ? '■' : '▶'}</span>
       </IconButton>
+      <Waveform file={file} progress={playback.progress} className="w-16 shrink-0" />
       <span className={cx('tabular-nums', type_.caption, tone.textFaint)}>
         Recording{durationSec !== undefined ? ` · ${durationSec}s` : ''}
       </span>
