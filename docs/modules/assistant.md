@@ -110,9 +110,19 @@ or an `(error: …)` line — they never throw out of `execute`.
     user notes: `patch.removeAttachments` lists the existing non-derived text attachment
     files (machine-derived transcripts/captions — anything with `derivedFrom` — are never
     removed) and a new note attachment carries the trimmed text. `time` (`"HH:MM"`,
-    24-hour) sets `patch.capturedAt` via `withTimeOfDayIso`, keeping the date. Validation
-    happens before any write: unknown or revoked id, empty text, malformed time, or no
-    fields at all each return an `(error: …)` line and append nothing.
+    24-hour) sets `patch.capturedAt` recomposed in the **entry's own zone** — civil date
+    from `localDateOf(entry.capturedAt)` + the new time via `zonedIso(…, entry.deviceTz)`,
+    exactly like `editPlan`'s `draftPatch` — never a device-zone `Date` round-trip, which
+    would silently move cross-timezone entries. Validation happens before any write:
+    unknown or revoked id, empty text, malformed time, or no fields at all each return an
+    `(error: …)` line and append nothing.
+
+The AI SDK executes all tool calls of one model step **concurrently**, so the write
+tools serialize through a per-toolset promise chain (`enqueueWrite`): each write task —
+including `update_entry`'s `getEntries()` read — starts only after the previous write
+has fully landed. Without this, two updates to the same entry would both remove the same
+note file and the fold would keep both replacement notes. Two concurrent `create_entry`
+calls still create two entries — that is the intended meaning of two create calls.
 
 Read results are re-sorted by `capturedAt` before rendering so `formatDigest`'s day
 grouping stays coherent regardless of store order.
@@ -269,10 +279,13 @@ fake-indexeddb blobs. Reads: inclusive local-date range filtering, revoked-entry
 exclusion, text-blob reads, the `(id …)` suffix, empty-result messages, and both
 truncation caps with their notes. Writes: create happy path (one capture event, trimmed
 note blob, local-ISO `capturedAt`, id in the result); update happy paths (note
-replacement preserving derived transcripts, time-of-day patch, both combined in a single
-amend event); and every rejection — unknown id, revoked entry, empty text, malformed
-time, no fields — asserting that **nothing** is appended; plus write failures surfacing
-as `(error: …)` text rather than throws.
+replacement preserving derived transcripts, time-of-day patch in the entry's own zone —
+including a cross-timezone Asia/Tokyo entry — both combined in a single amend event);
+a concurrency test that fires two simultaneous `update_entry` calls at one entry against
+a writer that folds a real event log, asserting the fold converges to exactly one note;
+and every rejection — unknown id, revoked entry, empty text, malformed time, no fields —
+asserting that **nothing** is appended; plus write failures surfacing as `(error: …)`
+text rather than throws.
 
 ### src/assistant/transport.integration.test.ts
 
@@ -297,6 +310,10 @@ targets just this file.
   are never injected. Write tools validate first and return `(error: …)` text — never
   throw, never append on invalid input. `update_entry` never removes machine-derived
   attachments (`derivedFrom` set), mirroring the UI edit path.
+- **Writes are serialized**: tool calls in one model step run concurrently in the SDK,
+  so write executions queue through `enqueueWrite` — each reads the log state the
+  previous write produced. Time edits recompose `capturedAt` in the entry's own
+  `deviceTz` (`zonedIso`), never the device zone.
 - **Prefix-cache stability**: `buildInstructions` truncates the current time to the hour
   so the system prompt is byte-identical across turns within an hour; changing the prompt
   invalidates the server's KV cache and forces a full re-prefill.

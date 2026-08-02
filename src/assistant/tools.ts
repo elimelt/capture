@@ -10,7 +10,7 @@
  * or an "(error: …)" line for writes.
  */
 import { jsonSchema, tool } from 'ai'
-import { toLocalIso, withTimeOfDayIso } from '../contract/time'
+import { localDateOf, toLocalIso, zonedIso } from '../contract/time'
 import type { AmendPatch, CaptureEvent, Entry } from '../contract/types'
 import { getBlob, type NewAttachment } from '../store/events'
 import type { Place } from '../store/places'
@@ -75,6 +75,22 @@ export function createAssistantTools(
   getPlaces: () => readonly Place[],
   writer: EntryWriter,
 ) {
+  // The SDK runs all tool calls of one model step concurrently
+  // (Promise.all over executions), so write tools serialize through this
+  // chain: each write task starts — including its getEntries() read — only
+  // after the previous write has fully landed. Without it, two update_entry
+  // calls on the same entry both read the pre-write snapshot, both remove
+  // the same note file, and the fold keeps both replacement notes.
+  let lastWrite: Promise<unknown> = Promise.resolve()
+  const enqueueWrite = <T>(task: () => Promise<T>): Promise<T> => {
+    const run = lastWrite.then(task, task)
+    lastWrite = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    return run
+  }
+
   return {
     list_entries: tool({
       description:
@@ -152,22 +168,23 @@ export function createAssistantTools(
         required: ['text'],
         additionalProperties: false,
       }),
-      execute: async ({ text }) => {
-        if (typeof text !== 'string' || text.trim() === '') {
-          return '(error: text must be a non-empty string)'
-        }
-        try {
-          // Same shape the capture screen's "+ note" path appends (one
-          // capture event, one text attachment); location is UI-only.
-          const event = await writer.capture({
-            capturedAt: toLocalIso(new Date()),
-            attachments: [noteAttachment(text.trim())],
-          })
-          return `Created entry ${event.id}.`
-        } catch (err) {
-          return errorText('could not create entry', err)
-        }
-      },
+      execute: ({ text }) =>
+        enqueueWrite(async () => {
+          if (typeof text !== 'string' || text.trim() === '') {
+            return '(error: text must be a non-empty string)'
+          }
+          try {
+            // Same shape the capture screen's "+ note" path appends (one
+            // capture event, one text attachment); location is UI-only.
+            const event = await writer.capture({
+              capturedAt: toLocalIso(new Date()),
+              attachments: [noteAttachment(text.trim())],
+            })
+            return `Created entry ${event.id}.`
+          } catch (err) {
+            return errorText('could not create entry', err)
+          }
+        }),
     }),
 
     update_entry: tool({
@@ -189,45 +206,53 @@ export function createAssistantTools(
         required: ['id'],
         additionalProperties: false,
       }),
-      execute: async ({ id, text, time }) => {
-        const entry = getEntries().find((e) => e.id === id)
-        if (!entry) return `(error: no entry with id "${id}")`
-        if (entry.revoked) return `(error: entry "${id}" is deleted)`
-        if (text === undefined && time === undefined) {
-          return '(error: nothing to update — provide text and/or time)'
-        }
-        if (text !== undefined && (typeof text !== 'string' || text.trim() === '')) {
-          return '(error: text must be a non-empty string)'
-        }
-        if (time !== undefined && (typeof time !== 'string' || !TIME_RE.test(time))) {
-          return '(error: time must be "HH:MM", 24-hour)'
-        }
-        // One amend event carrying every change — the same pipeline as the
-        // UI edit path (EntryList): editing text removes the old note files
-        // and appends the new one; the log itself is never mutated.
-        const patch: AmendPatch = {}
-        if (time !== undefined) patch.capturedAt = withTimeOfDayIso(entry.capturedAt, time)
-        let attachments: NewAttachment[] | undefined
-        if (text !== undefined) {
-          // Replace user notes only; machine-derived texts (transcripts,
-          // captions — anything with derivedFrom) stay untouched.
-          const notes = entry.attachments.filter(
-            (a) => a.kind === 'text' && a.derivedFrom === undefined,
-          )
-          if (notes.length > 0) patch.removeAttachments = notes.map((a) => a.file)
-          attachments = [noteAttachment(text.trim())]
-        }
-        try {
-          await writer.amend({
-            targets: [id],
-            ...(Object.keys(patch).length > 0 ? { patch } : {}),
-            ...(attachments ? { attachments } : {}),
-          })
-          return `Updated entry ${id}.`
-        } catch (err) {
-          return errorText('could not update entry', err)
-        }
-      },
+      execute: ({ id, text, time }) =>
+        enqueueWrite(async () => {
+          // Inside the write chain, so this read reflects every prior write.
+          const entry = getEntries().find((e) => e.id === id)
+          if (!entry) return `(error: no entry with id "${id}")`
+          if (entry.revoked) return `(error: entry "${id}" is deleted)`
+          if (text === undefined && time === undefined) {
+            return '(error: nothing to update — provide text and/or time)'
+          }
+          if (text !== undefined && (typeof text !== 'string' || text.trim() === '')) {
+            return '(error: text must be a non-empty string)'
+          }
+          if (time !== undefined && (typeof time !== 'string' || !TIME_RE.test(time))) {
+            return '(error: time must be "HH:MM", 24-hour)'
+          }
+          // One amend event carrying every change — the same pipeline as the
+          // UI edit path: editing text removes the old note files and appends
+          // the new one; the log itself is never mutated.
+          const patch: AmendPatch = {}
+          if (time !== undefined) {
+            // Recompose in the ENTRY's own zone (date from its civil fields,
+            // offset from its deviceTz), exactly like editPlan's draftPatch —
+            // a device-zone Date round-trip would silently move entries
+            // captured in another timezone.
+            patch.capturedAt = zonedIso(localDateOf(entry.capturedAt), time, entry.deviceTz)
+          }
+          let attachments: NewAttachment[] | undefined
+          if (text !== undefined) {
+            // Replace user notes only; machine-derived texts (transcripts,
+            // captions — anything with derivedFrom) stay untouched.
+            const notes = entry.attachments.filter(
+              (a) => a.kind === 'text' && a.derivedFrom === undefined,
+            )
+            if (notes.length > 0) patch.removeAttachments = notes.map((a) => a.file)
+            attachments = [noteAttachment(text.trim())]
+          }
+          try {
+            await writer.amend({
+              targets: [id],
+              ...(Object.keys(patch).length > 0 ? { patch } : {}),
+              ...(attachments ? { attachments } : {}),
+            })
+            return `Updated entry ${id}.`
+          } catch (err) {
+            return errorText('could not update entry', err)
+          }
+        }),
     }),
   }
 }

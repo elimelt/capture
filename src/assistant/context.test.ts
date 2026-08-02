@@ -89,6 +89,8 @@ describe('buildInstructions', () => {
     expect(prompt).toContain('update_entry')
     // Writes are opt-in per user turn, never assistant-initiated.
     expect(prompt).toContain('only when the user explicitly asks')
+    // Ids are tool plumbing, not conversation content.
+    expect(prompt).toContain('Never show raw entry ids to the user in prose')
     const hour = `${toLocalIso(NOW).slice(0, 13)}:00`
     expect(prompt).toContain(`Current local time: ${hour} (${deviceTz()}).`)
   })

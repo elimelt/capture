@@ -1,7 +1,12 @@
 import 'fake-indexeddb/auto'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { withTimeOfDayIso } from '../contract/time'
-import { EVENT_SCHEMA, type AmendPatch, type Entry } from '../contract/types'
+import { fold } from '../contract/fold'
+import {
+  EVENT_SCHEMA,
+  type AmendPatch,
+  type Entry,
+  type LogEvent,
+} from '../contract/types'
 import { getDb, resetDbCache } from '../store/db'
 import type { NewAttachment } from '../store/events'
 import type { Place } from '../store/places'
@@ -280,7 +285,7 @@ describe('update_entry', () => {
   })
 
   it('sets the capture time of day, keeping the date and attachments alone', async () => {
-    const target = noteAndTranscriptEntry()
+    const target = noteAndTranscriptEntry() // 2026-08-02T07:45:00-04:00, America/New_York
     const w = recordedWriter()
     const tools = makeTools([target], [], w.writer)
     const result = (await tools.update_entry.execute({ id: target.id, time: '09:30' }, OPTS)) as string
@@ -288,8 +293,21 @@ describe('update_entry', () => {
     expect(w.amends).toHaveLength(1)
     expect(w.amends[0]).toEqual({
       targets: [target.id],
-      patch: { capturedAt: withTimeOfDayIso(target.capturedAt, '09:30') },
+      patch: { capturedAt: '2026-08-02T09:30:00-04:00' },
     })
+  })
+
+  it("recomposes the time in the ENTRY's zone, not the device's", async () => {
+    // Captured in Tokyo, edited from a device in another zone: the civil
+    // date and the offset must stay Tokyo's. A device-zone Date round-trip
+    // (the harness runs outside +09:00) would move the instant and rewrite
+    // the offset.
+    const target = entry('2026-08-03T00:30:00+09:00', { deviceTz: 'Asia/Tokyo' })
+    const w = recordedWriter()
+    const tools = makeTools([target], [], w.writer)
+    await tools.update_entry.execute({ id: target.id, time: '08:15' }, OPTS)
+    expect(w.amends).toHaveLength(1)
+    expect(w.amends[0].patch).toEqual({ capturedAt: '2026-08-03T08:15:00+09:00' })
   })
 
   it('applies text and time together as a single amend event', async () => {
@@ -300,10 +318,78 @@ describe('update_entry', () => {
     expect(w.amends).toHaveLength(1)
     const amend = w.amends[0]
     expect(amend.patch).toEqual({
-      capturedAt: withTimeOfDayIso(target.capturedAt, '18:05'),
+      capturedAt: '2026-08-02T18:05:00-04:00',
       removeAttachments: ['note.txt'],
     })
     expect(amend.attachments).toHaveLength(1)
+  })
+
+  it('serializes concurrent updates so the fold converges to exactly one note', async () => {
+    // The AI SDK runs all tool calls of one model step concurrently. Fold a
+    // real event log in the writer so each update_entry sees the entries
+    // the previous amend produced — unserialized, both calls would remove
+    // the same note file and the entry would end up with BOTH new notes.
+    const events: LogEvent[] = [
+      {
+        schema: EVENT_SCHEMA,
+        type: 'capture',
+        id: 'cap1',
+        seq: 1,
+        stream: 'timelog',
+        loggedAt: '2026-08-02T07:45:00-04:00',
+        capturedAt: '2026-08-02T07:45:00-04:00',
+        deviceTz: 'America/New_York',
+        attachments: [{ kind: 'text', file: 'note.txt', mimeType: 'text/plain' }],
+      },
+    ]
+    let entries = fold(events)
+    let n = 0
+    const writer: EntryWriter = {
+      capture: () => Promise.reject(new Error('unused')),
+      amend: async ({ targets, patch, attachments }) => {
+        // Genuinely asynchronous, like the real IndexedDB transaction — a
+        // synchronous mock would let an unserialized second call read the
+        // refolded entries by accident and mask the race.
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        n += 1
+        events.push({
+          schema: EVENT_SCHEMA,
+          type: 'amend',
+          id: `am${n}`,
+          seq: 1 + n,
+          stream: 'timelog',
+          loggedAt: `2026-08-02T12:0${n}:00-04:00`,
+          deviceTz: 'America/New_York',
+          targets,
+          ...(patch ? { patch } : {}),
+          ...(attachments && attachments.length > 0
+            ? {
+                attachments: attachments.map((a, i) => ({
+                  kind: a.kind,
+                  file: `amend${n}-${i}.txt`,
+                  mimeType: a.mimeType,
+                })),
+              }
+            : {}),
+        })
+        entries = fold(events)
+      },
+    }
+    const tools = createAssistantTools(
+      () => entries,
+      () => [],
+      writer,
+    )
+    const results = await Promise.all([
+      tools.update_entry.execute({ id: 'cap1', text: 'first rewrite' }, OPTS),
+      tools.update_entry.execute({ id: 'cap1', text: 'second rewrite' }, OPTS),
+    ])
+    expect(results).toEqual(['Updated entry cap1.', 'Updated entry cap1.'])
+    const notes = entries
+      .find((e) => e.id === 'cap1')!
+      .attachments.filter((a) => a.kind === 'text')
+    // Exactly one note survives: the second update replaced the first's.
+    expect(notes.map((a) => a.file)).toEqual(['amend2-0.txt'])
   })
 
   it('rejects an unknown id without appending anything', async () => {
