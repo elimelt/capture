@@ -82,7 +82,7 @@ describe('drainStream', () => {
     expect(drive.uploadOrder.indexOf(record)).toBeGreaterThanOrEqual(0)
 
     const { getSyncStatuses } = await import('../store/events')
-    expect((await getSyncStatuses('timelog')).get(event.seq)?.status).toBe('uploaded')
+    expect((await getSyncStatuses('timelog')).get(event.id)?.status).toBe('uploaded')
   })
 
   it('is idempotent: a re-drain re-uploads nothing already present', async () => {

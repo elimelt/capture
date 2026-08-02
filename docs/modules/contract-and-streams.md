@@ -63,8 +63,10 @@ Key exports:
   lastEventSeq, revoked }`. Never serialized; derived state only.
 
 All events share the (non-exported) `EventBase` envelope: `schema`, `id` (short,
-unique within stream), `seq` (per-stream monotonic), `stream`, `loggedAt` (ISO-8601
-with local offset; the partition key), `deviceTz` (IANA zone).
+crypto-random — **the identity**), `seq` (per-stream sequence assigned at append; an
+ordering *hint* only, not unique across devices — two devices appending offline can
+mint the same seq, see SPEC §3.2 #3), `stream`, `loggedAt` (ISO-8601 with local
+offset; the partition key), `deviceTz` (IANA zone).
 
 Relations: everything else in the module is built on these types; `src/streams`
 imports `AttachmentKind`.
@@ -130,9 +132,13 @@ Key exports:
 - `seqOfFilename(name: string): number` — parses the leading seq via
   `split('_')[0]`; deliberately split-based (not slice) so seq can grow past 6
   digits without a padding change.
+- `idOfRecordName(name: string): string | null` — parses the event id out of a
+  record filename (`000041_…_a1b2c3.json` → `"a1b2c3"`), or `null` when the name is
+  not an event record (attachment, foreign file, folder). This is what lets the pull
+  engine (`src/drive/pull.ts`) compute the missing set from a Drive listing alone.
 
-Relations: consumes `types.ts` and `time.ts`; `Attachment.file` values and Drive
-uploads use these names.
+Relations: consumes `types.ts` and `time.ts`; `Attachment.file` values, Drive
+uploads, and pull-side discovery use these names.
 
 ### src/contract/serialize.ts
 
@@ -194,18 +200,24 @@ Key exports:
 
 The fold (SPEC §3.3): computes visible entries from the raw event log — capture
 events with later amend patches applied and revoked captures dropped. Designed to be
-computed identically by the app and by skill consumers.
+computed identically by the app and by skill consumers. Identity is the event `id`;
+`seq` is a non-unique ordering hint, so all ordering breaks ties by `loggedAt` then
+`id`, keeping the fold deterministic across devices even when two devices
+offline-minted the same seq (SPEC §3.2 #3, "Design C").
 
 Key exports:
 
+- `compareEvents(a, b: LogEvent): number` — **the** total log order: `seq` first,
+  then `loggedAt`, then `id`. Also used by `src/store/events#listEvents` to re-sort
+  the id-keyed store into log order.
 - `FoldOptions` — `{ includeRevoked?: boolean }`; when set, revoked entries are kept
   and flagged instead of dropped.
 - `fold(events: readonly LogEvent[], opts?: FoldOptions): Entry[]`.
 
 Semantics (all verified by `fold.test.ts`):
 
-- Events are processed in `seq` order regardless of input array order (the input is
-  copied and sorted; the fold is order-insensitive to arrival order).
+- Events are processed in `compareEvents` order regardless of input array order (the
+  input is copied and sorted; the fold is order-insensitive to arrival order).
 - `capture` creates an entry (`revoked: false`, `lastEventSeq = seq`,
   attachments copied).
 - `amend` applies to every id in `targets`; unknown targets and **already-revoked
@@ -218,15 +230,16 @@ Semantics (all verified by `fold.test.ts`):
 - `revoke` flags every known target (`revoked: true`, bumps `lastEventSeq`);
   unknown targets are ignored.
 - Result ordering: by effective `capturedAt` (post-amendment, string comparison of
-  local-offset ISO), with `seq` as tiebreak. Revoked entries are filtered out unless
-  `opts.includeRevoked`.
+  local-offset ISO), with `seq` then `id` as tiebreaks. Revoked entries are filtered
+  out unless `opts.includeRevoked`.
 
 ### src/contract/filenames.test.ts
 
 Covers the filename scheme: timestamp sanitization, seq padding and parse-back
 (including seqs past 6 digits and secondary attachment names), attachment naming
-per kind/mime/index, date partitioning, and the invariant that lexicographic name
-order equals seq order.
+per kind/mime/index, date partitioning, the invariant that lexicographic name
+order equals seq order, and `idOfRecordName` round-tripping generated record names
+while rejecting attachments and foreign files.
 
 ### src/contract/files.test.ts
 
@@ -237,10 +250,12 @@ fields, and trailing newline.
 ### src/contract/fold.test.ts
 
 Covers fold semantics end-to-end with builder helpers: effective-time ordering and
-seq tiebreaks, patch application (capturedAt, location, clearLocation precedence),
-attachment add/remove ordering within one amend, revoke behavior and
-`includeRevoked`, silent ignoring of unknown/revoked targets, multi-target events,
-and insensitivity to event arrival order.
+seq tiebreaks, cross-device seq collisions broken by `loggedAt` then `id` (including
+colliding-seq amends applying in `loggedAt` order — last writer wins), patch
+application (capturedAt, location, clearLocation precedence), attachment add/remove
+ordering within one amend, revoke behavior and `includeRevoked`, silent ignoring of
+unknown/revoked targets, multi-target events, and insensitivity to event arrival
+order.
 
 ### src/contract/ids.test.ts
 
@@ -296,8 +311,13 @@ ids, and that `BUILTIN_STREAMS` contains the timelog stream.
   order, 2-space indent, trailing newline; optional fields are omitted entirely,
   never `null`. `serializeEvent` output is tested byte-for-byte.
 - **Filename ↔ log-order invariant.** Name-sorted listings equal seq order, and
-  `seqOfFilename` recovers `seq` from any log filename. It parses by splitting on
-  `_` (not slicing 6 chars) so seq can exceed 999999.
+  `seqOfFilename` recovers `seq` from any log filename (`idOfRecordName` recovers the
+  id from record names). It parses by splitting on `_` (not slicing 6 chars) so seq
+  can exceed 999999.
+- **Identity is `id`; `seq` is a hint.** Seq is per-device and can collide across
+  devices syncing the same Drive log; every ordering (event application, entry
+  tiebreaks) goes through `compareEvents` (`seq → loggedAt → id`) so all replicas
+  fold identically. Never key anything by `[stream, seq]`.
 - **Local-offset timestamps everywhere.** All contract timestamps are ISO-8601 with
   the local offset; `partitionOf` and entry ordering rely on the canonical
   `YYYY-MM-DDTHH:mm:ss±HH:MM` shape (fixed-index string operations).

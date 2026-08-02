@@ -65,3 +65,13 @@ export function seqOfFilename(name: string): number {
   // Split rather than slice: seq grows past 6 digits without padding changes.
   return parseInt(name.split('_')[0], 10)
 }
+
+/**
+ * Parse the event id out of a record filename
+ * ("000041_2026-08-02T09-04-11-0400_a1b2c3.json" → "a1b2c3"), or null when
+ * the name isn't a record of ours (foreign file, attachment, folder).
+ */
+export function idOfRecordName(name: string): string | null {
+  const m = /^\d+_[^_]+_([0-9a-z]+)\.json$/.exec(name)
+  return m ? m[1] : null
+}

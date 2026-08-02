@@ -43,7 +43,7 @@ describe('capture', () => {
     const event = await useAppStore.getState().capture({ capturedAt: AT, attachments: [] })
     const state = useAppStore.getState()
     expect(state.entries.map((e) => e.id)).toContain(event.id)
-    expect(state.syncStatuses.get(event.seq)?.status).toBe('queued')
+    expect(state.syncStatuses.get(event.id)?.status).toBe('queued')
   })
 })
 

@@ -2,6 +2,12 @@
  * The fold (SPEC §3.3): visible entries = capture events with later amend
  * patches applied and revoked captures dropped. Computed identically by the
  * app and by skill consumers.
+ *
+ * Identity is the event `id`; `seq` is a non-unique ordering *hint* (two
+ * devices appending offline can mint the same per-stream seq). So both the
+ * event-application order and the final entry order break ties by `loggedAt`
+ * then `id`, making the fold deterministic across devices regardless of seq
+ * collisions.
  */
 import type { Entry, LogEvent } from './types'
 
@@ -10,8 +16,15 @@ export interface FoldOptions {
   includeRevoked?: boolean
 }
 
+/** Total order over events: seq first (the hint), then loggedAt, then id. */
+export function compareEvents(a: LogEvent, b: LogEvent): number {
+  if (a.seq !== b.seq) return a.seq - b.seq
+  if (a.loggedAt !== b.loggedAt) return a.loggedAt < b.loggedAt ? -1 : 1
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+}
+
 export function fold(events: readonly LogEvent[], opts: FoldOptions = {}): Entry[] {
-  const ordered = [...events].sort((a, b) => a.seq - b.seq)
+  const ordered = [...events].sort(compareEvents)
   const entries = new Map<string, Entry>()
 
   for (const e of ordered) {
@@ -62,9 +75,12 @@ export function fold(events: readonly LogEvent[], opts: FoldOptions = {}): Entry
   }
 
   const result = [...entries.values()].filter((en) => opts.includeRevoked || !en.revoked)
-  // Effective-time order (capturedAt after amendments), seq as tiebreak.
-  result.sort((a, b) =>
-    a.capturedAt === b.capturedAt ? a.seq - b.seq : a.capturedAt < b.capturedAt ? -1 : 1,
-  )
+  // Effective-time order (capturedAt after amendments); seq then id as
+  // tiebreak so a seq collision across devices still orders deterministically.
+  result.sort((a, b) => {
+    if (a.capturedAt !== b.capturedAt) return a.capturedAt < b.capturedAt ? -1 : 1
+    if (a.seq !== b.seq) return a.seq - b.seq
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+  })
   return result
 }

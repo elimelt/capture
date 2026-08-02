@@ -25,7 +25,7 @@ export function EntryList({ entries, onDelete }: EntryListProps) {
           key={entry.id}
           entry={entry}
           maxClipSec={streamSettings.maxClipSec}
-          syncStatus={syncStatuses.get(entry.seq)?.status}
+          syncStatus={syncStatuses.get(entry.id)?.status}
           onDelete={() => onDelete(entry.id)}
           onSetTime={(time) =>
             void amend({

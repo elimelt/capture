@@ -3,6 +3,7 @@ import {
   attachmentFileName,
   eventBaseName,
   eventRecordName,
+  idOfRecordName,
   padSeq,
   partitionOf,
   seqOfFilename,
@@ -81,6 +82,19 @@ describe('seqOfFilename', () => {
 
   it('parses the seq out of a secondary attachment name', () => {
     expect(seqOfFilename('000041_2026-08-02T09-04-11-0400_a1b2c3_note.txt')).toBe(41)
+  })
+})
+
+describe('idOfRecordName', () => {
+  it('round-trips the id out of a generated record name', () => {
+    expect(idOfRecordName(eventRecordName(E))).toBe('a1b2c3')
+  })
+
+  it('rejects attachments and foreign files', () => {
+    expect(idOfRecordName(attachmentFileName(BASE, 'audio', 'audio/mp4'))).toBeNull()
+    expect(idOfRecordName(`${BASE}_note.txt`)).toBeNull()
+    expect(idOfRecordName('notes.json')).toBeNull()
+    expect(idOfRecordName('2026-08-02')).toBeNull()
   })
 })
 

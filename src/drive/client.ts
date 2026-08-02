@@ -155,6 +155,45 @@ export async function readFileText(token: string, fileId: string): Promise<strin
   return res.text()
 }
 
+/** Read a file's contents as a Blob (attachment pull — §8.4). */
+export async function readFileBlob(token: string, fileId: string): Promise<Blob> {
+  const res = await ensureOk(
+    await fetch(`${API}/files/${fileId}?alt=media`, { headers: bearer(token) }),
+  )
+  return res.blob()
+}
+
+/** One child of a folder listing (name-sortable for log order — §5.1). */
+export interface DriveChild {
+  id: string
+  name: string
+  mimeType: string
+}
+
+/**
+ * List every non-trashed child of a folder, following pagination. Used by the
+ * pull path to enumerate log/ partitions and their files: since filenames lead
+ * with the zero-padded seq (§5.1), the names alone answer "everything after N"
+ * without opening a file.
+ */
+export async function listChildren(token: string, parentId: string): Promise<DriveChild[]> {
+  const children: DriveChild[] = []
+  let pageToken: string | undefined
+  do {
+    const params = new URLSearchParams({
+      q: `'${esc(parentId)}' in parents and trashed = false`,
+      fields: 'nextPageToken, files(id, name, mimeType)',
+      pageSize: '1000',
+    })
+    if (pageToken) params.set('pageToken', pageToken)
+    const res = await ensureOk(await fetch(`${API}/files?${params}`, { headers: bearer(token) }))
+    const data = (await res.json()) as { nextPageToken?: string; files?: DriveChild[] }
+    if (data.files) children.push(...data.files)
+    pageToken = data.nextPageToken
+  } while (pageToken)
+  return children
+}
+
 /**
  * Overwrite an existing file's media in place, leaving its name/parents alone.
  * Used to update the app-owned config.json (the target-calendar selection —

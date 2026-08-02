@@ -1,7 +1,7 @@
 /** Screen 3 — Settings (SPEC §4.3, M1 subset). */
 import { useEffect, useState } from 'react'
 import { modelLabel } from '../assistant/config'
-import type { DrainResult } from '../drive/queue'
+import type { SyncResult } from '../store/appStore'
 import { getValidAccessToken } from '../drive/token'
 import { CalendarError, listCalendars } from '../gcal/client'
 import { getTargetCalendar, setTargetCalendar } from '../gcal/config'
@@ -282,10 +282,18 @@ const CONNECTION_LABEL: Record<string, string> = {
 
 /** Human summary of a manual "Sync now" outcome; null when there's nothing
  * to say (the reconnect case is already covered by the connection pill). */
-function syncResultLabel(result: DrainResult): string | null {
+function syncResultLabel(result: SyncResult): string | null {
   switch (result.outcome) {
-    case 'drained':
-      return result.uploaded === 1 ? 'Synced 1 entry' : `Synced ${result.uploaded} entries`
+    case 'drained': {
+      const parts: string[] = []
+      if (result.uploaded > 0) {
+        parts.push(result.uploaded === 1 ? 'Synced 1 entry' : `Synced ${result.uploaded} entries`)
+      }
+      if (result.pulled > 0) {
+        parts.push(result.pulled === 1 ? 'pulled 1 entry' : `pulled ${result.pulled} entries`)
+      }
+      return parts.length > 0 ? parts.join(' · ') : 'Already up to date'
+    }
     case 'idle':
       return 'Already up to date'
     case 'retry-later':

@@ -18,8 +18,9 @@ State flows one way: a UI action calls a store action → the action writes thro
 (one IndexedDB transaction) → the action re-reads (`refresh`/`loadPlaces`/`loadSettings`)
 and `set()`s the new snapshot → components re-render. The store never mutates cached
 entries in place; the entry list is always recomputed by folding the local log
-(`fold` from `src/contract`). Uploads are driven by the same store: appends enqueue a
-`sync` row, and `drainSync` hands pending rows to `src/drive/queue`.
+(`fold` from `src/contract`). Sync is driven by the same store: appends enqueue a
+`sync` row, and `drainSync` runs one pull-then-push cycle — `src/drive/pull` imports
+remote events first, then `src/drive/queue` drains pending rows.
 
 Per SPEC §10's layering rule, `store/` is stream-agnostic: it imports only from
 `src/contract` and `src/drive`, never from `gcal/`, `dayview/`, or `assistant/`
@@ -34,14 +35,16 @@ Defines the IndexedDB schema (via the `idb` package) and owns the singleton conn
 Key exports:
 
 - `getDb(): Promise<TimeboxDatabase>` — opens (once, memoized in a module-level promise)
-  the `timebox` database at **version 4** and runs versioned upgrades.
+  the `timebox` database at **version 5** and runs versioned upgrades.
 - `resetDbCache(): void` — test hook; forgets the cached connection promise.
 - `type TimeboxDatabase = IDBPDatabase<TimeboxDB>`.
 - `type SyncStatus = 'queued' | 'uploaded' | 'error'` — user-facing rollup.
 - `type SyncPhase = 'attachments-pending' | 'record-pending' | 'done'` — position in the
   atomic append protocol (SPEC §5.2: attachments first, event record last).
-- `interface SyncStatusRow { stream; seq; status; phase; attempts; nextRetryAt?; error? }`
-  — upload state for one event; `nextRetryAt` is ISO local time, absent = eligible now.
+- `interface SyncStatusRow { id; stream; seq; status; phase; attempts; nextRetryAt?; error? }`
+  — upload state for one event; `id` is the event's id (the identity and the row's key),
+  `seq` is kept for drain order and display, `nextRetryAt` is ISO local time, absent =
+  eligible now.
 - `interface Place { id; name; lat; lng; radiusM; address? }`.
 - `interface GeocacheRow { key; address; cachedAt }` — reverse-geocode cache row keyed by
   a rounded `"lat,lng"` cell (SPEC §7).
@@ -52,18 +55,26 @@ Object stores (schema `TimeboxDB`):
 
 | Store | Key | Value |
 |---|---|---|
-| `events` | `[stream, seq]` (+ `by-stream` index) | `LogEvent` (from `src/contract/types`) |
+| `events` | event `id` (+ `by-stream` index) | `LogEvent` (from `src/contract/types`) |
 | `blobs` | contract filename | `{ file, blob }` |
-| `sync` | `[stream, seq]` | `SyncStatusRow` |
+| `sync` | event `id` | `SyncStatusRow` |
 | `places` | `id` | `Place` |
 | `geocache` | rounded `"lat,lng"` | `GeocacheRow` |
 | `meta` | string (out-of-line) | `unknown` — settings + per-stream seq counters |
 | `chats` | `id` | `StoredChatRow` |
 
+`events` and `sync` are keyed by the event `id` — the identity (SPEC §3.3): two
+devices appending offline can mint the same per-stream `seq`, so `seq` is only a
+non-unique ordering hint and must not be part of a key. Sequenced access goes through
+the `by-stream` index plus an explicit sort.
+
 Migrations: v1 creates the core stores; v2 backfills `attempts: 0` and a `phase` on
 existing `sync` rows (`'done'` if uploaded, else `'attachments-pending'` — safe because
 re-uploads are idempotent by filename); v3 adds `chats` and migrates the legacy single
-conversation from `meta['assistant:chat']` into a chat row; v4 adds `geocache`.
+conversation from `meta['assistant:chat']` into a chat row; v4 adds `geocache`; v5
+re-keys `events` and `sync` by `id` instead of `[stream, seq]` — by **dropping and
+recreating** both stores rather than migrating rows, since the local log is a replica
+of Drive and a pull rebuilds it.
 
 ### src/store/events.ts
 
@@ -85,21 +96,30 @@ Key exports:
 - `appendAmend(input: { stream; targets: string[]; patch?: AmendPatch; attachments?: NewAttachment[] }): Promise<AmendEvent>`
 - `appendRevoke(input: { stream; targets: string[] }): Promise<RevokeEvent>`
 - `listEvents(stream): Promise<LogEvent[]>` — all events for a stream via the
-  `by-stream` index.
+  `by-stream` index, re-sorted into log order with `compareEvents` (seq → loggedAt →
+  id, the same total order the fold uses) since the id-keyed index yields id order.
 - `listEntries(stream): Promise<Entry[]>` — `fold(listEvents(...))`; the user-visible
   folded view (SPEC §3.3).
 - `getBlob(file): Promise<Blob | undefined>` / `deleteBlob(file): Promise<void>` —
   the latter supports `keepAudioLocally=false` pruning after upload (SPEC §8.4).
-- `getSyncStatuses(stream): Promise<Map<number, SyncStatusRow>>` — status by seq.
+- `getSyncStatuses(stream): Promise<Map<string, SyncStatusRow>>` — status by event id.
 - `listPendingSync(stream): Promise<SyncStatusRow[]>` — rows with `status !== 'uploaded'`
-  sorted by seq ascending; the order `src/drive/queue` must upload in so the Drive log
-  commits monotonically (SPEC §5.2, §8.4).
-- `getEvent(stream, seq): Promise<LogEvent | undefined>` / `putSyncStatus(row)` — used
+  sorted by seq ascending (id as tiebreak); the order `src/drive/queue` must upload in
+  so the Drive log commits monotonically (SPEC §5.2, §8.4).
+- `getEventById(id): Promise<LogEvent | undefined>` / `putSyncStatus(row)` — used
   by the drive queue to read the event being uploaded and record progress.
+- `importEvents(stream, events, blobs): Promise<void>` — the pull-side writer
+  (SPEC §8.5): commits events pulled from Drive plus their eagerly-fetched attachment
+  blobs in **one transaction**. Pulled events get sync rows with `status: 'uploaded'`
+  / `phase: 'done'` (already on Drive — the drainer never touches them), and the
+  per-stream seq counter is bumped past every imported seq so the next local append
+  extends the merged log instead of colliding. Idempotent: re-importing a known id
+  overwrites it with itself.
 - `wipeAll(): Promise<void>` — clears all seven object stores in one transaction
   (including `meta`, so seq counters restart at 1).
 
-Invariants and edge cases: seq counters are per-stream and monotonic; `capture` events
+Invariants and edge cases: seq counters are per-stream and monotonic per device
+(`importEvents` keeps them ahead of everything pulled); `capture` events
 always carry an `attachments` array (possibly empty), while `amend` events only get one
 when attachments were supplied; blobs are stored under the contract filename so uploads
 and replay reference the same key; nothing here ever updates or deletes an event row.
@@ -137,10 +157,14 @@ path when new settings fields are added.
 
 The single Zustand store (`useAppStore = create<AppState>()(...)`) the UI reads. State:
 `ready` (boot splash gate), `currentStreamId` (initial `'timelog'`), `entries: Entry[]`,
-`syncStatuses: Map<number, SyncStatusRow>`, `places: Place[]`, `appSettings`,
-`streamSettings`, `lastError: string | null` (toast channel),
+`syncStatuses: Map<string, SyncStatusRow>` (keyed by event id), `places: Place[]`,
+`appSettings`, `streamSettings`, `lastError: string | null` (toast channel),
 `driveConnection: DriveConnection` (`src/drive/token`; drives the reconnect pill,
-SPEC §8.2), and `syncing` (drain in flight).
+SPEC §8.2), and `syncing` (sync cycle in flight).
+
+Also exports `interface SyncResult { outcome: DrainOutcome; uploaded; pulled: number;
+error? }` — the combined result of one pull-then-push cycle, consumed by the Settings
+"Sync now" label.
 
 Actions:
 
@@ -154,12 +178,17 @@ Actions:
   `refresh()`. `capture` additionally fire-and-forgets `drainSync()` (eager upload,
   SPEC §2.3/§8.4).
 - Drive — `connectDrive()` (user gesture → `connect()` from `src/drive/auth` →
-  refresh connection → drain), `disconnectDrive()` (revokes the stored token),
-  and `drainSync()`: no-op if already `syncing`; without a valid token it only
-  refreshes connection state (so the reconnect pill can appear); with one it calls
-  `drainStream(token, currentStreamId)` from `src/drive/queue`, maps outcome
-  `'reconnect'` → `driveConnection: 'expired'` and `'error'` → `lastError`, then
-  refreshes entries and clears `syncing` in a `finally`.
+  refresh connection → sync), `disconnectDrive()` (revokes the stored token),
+  and `drainSync(): Promise<SyncResult>` — one full sync cycle (SPEC §8.4/§8.5):
+  no-op (`'retry-later'`) if already `syncing`; without a valid token it only
+  refreshes connection state (so the reconnect pill can appear) and returns
+  `'reconnect'`; with one it runs **pull then push** — `pullStream(token,
+  currentStreamId)` from `src/drive/pull` first (so local appends land after
+  everything other devices committed; a pull `'reconnect'` flips the pill and skips
+  the push), then `drainStream(token, currentStreamId)` from `src/drive/queue`.
+  The two outcomes merge worst-of (`idle < drained < retry-later < reconnect <
+  error`), `'error'` sets `lastError`, and entries are refreshed and `syncing`
+  cleared in a `finally`.
 - Places/settings/data — `addPlace`, `removePlace`, `updateSettings`,
   `updateStreamSettings`, `wipe()` (`wipeAll()` then reload), `clearError()`.
 
@@ -176,16 +205,17 @@ capture/amend/revoke updating folded entries, settings persistence, wipe, and th
 
 ### src/store/appStore.drive.test.ts
 
-Mocks `src/drive/{auth,queue,token}` to test only the store's Drive wiring: `drainSync`'s
-no-token, success, reconnect, and error branches, plus the connect→drain and
-disconnect flows.
+Mocks `src/drive/{auth,queue,pull,token}` to test only the store's Drive wiring:
+`drainSync`'s no-token, pull-then-push success (combined `SyncResult`),
+pull-reconnect (pill flipped, push skipped), pull-error-despite-push-success,
+reconnect, and error branches, plus the connect→sync and disconnect flows.
 
 ### src/store/events.test.ts
 
 Exercises the event repo end to end: per-stream monotonic seq allocation, contract
 attachment naming and blob round-trips, queued sync rows with the correct initial phase,
-fold behavior of amend/revoke, `wipeAll` (including seq-counter reset), and the v1→v2
-sync-row migration.
+fold behavior of amend/revoke, `wipeAll` (including seq-counter reset), and the
+migration to v5 (id-keyed `events`/`sync` stores replacing `[stream, seq]`-keyed ones).
 
 ### src/store/places.test.ts
 
@@ -199,17 +229,27 @@ per-stream independence of stream settings.
 
 ## Key invariants & gotchas
 
-- **Append-only, single writer.** Only `events.ts#append()` writes the log; events are
-  never edited or deleted locally. "Edit"/"delete" are new `amend`/`revoke` events;
-  visible state is always a fresh `fold()` over the whole per-stream log.
+- **Append-only, two writers.** `events.ts#append()` writes locally-minted events;
+  `importEvents()` writes events pulled from Drive. Events are never edited or deleted
+  locally — "edit"/"delete" are new `amend`/`revoke` events; visible state is always a
+  fresh `fold()` over the whole per-stream log.
 - **Atomic append.** Seq counter increment, event record, attachment blobs, and the
   `sync` row commit in a single IndexedDB transaction — no partial appends exist.
+  `importEvents` gives pulls the same guarantee (events + blobs + counter bump in one
+  transaction).
+- **Identity is the event id; seq is an ordering hint.** `events`/`sync` are keyed by
+  `id` because two devices appending offline can mint the same per-stream seq
+  (SPEC §3.3 Design C); ordering everywhere is seq → loggedAt → id via
+  `compareEvents`.
 - **Seq is per-stream and allocated locally** from `meta` key `nextSeq:<stream>`;
-  `wipeAll()` clears `meta`, so after a wipe seq restarts at 1 (fine only because the
-  wipe also drops all local events — Drive state is separate).
+  `importEvents` bumps it past every pulled seq, and `wipeAll()` clears `meta`, so
+  after a wipe seq restarts at 1 (fine only because the wipe also drops all local
+  events — Drive state is separate, and the next pull re-bumps the counter).
 - **Upload order matters.** `listPendingSync` returns rows sorted by seq; the drive
   drainer must keep that order so the Drive log commits monotonically, and the
   `phase` field mirrors the attachments-first/record-last commit protocol (SPEC §5.2).
+- **Pull before push.** `drainSync` always runs `pullStream` before `drainStream`;
+  pulled events arrive `uploaded`/`done` so the drainer never re-pushes them.
 - **Blobs are keyed by contract filename**, computed at append time — the same name is
   used locally and in Drive, which is what makes re-uploads idempotent.
 - **`db.ts` caches the connection**; tests (and anything deleting the database) must

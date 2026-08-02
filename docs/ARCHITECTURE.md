@@ -64,9 +64,9 @@ Every stream is an immutable log of `capture.event.v1` events with exactly three
 types: `capture` creates an entry, `amend` patches prior captures, `revoke` hides
 them. "Edit" and "delete" are new events referencing earlier ids; nothing is ever
 mutated in place. Read state is always derived: `fold(events)`
-(`src/contract/fold.ts`) sorts by `seq`, applies amends, drops revoked entries, and
-returns the visible `Entry[]`. The fold is deterministic and insensitive to arrival
-order.
+(`src/contract/fold.ts`) sorts by `seq` → `loggedAt` → `id` (`compareEvents`),
+applies amends, drops revoked entries, and returns the visible `Entry[]`. The fold
+is deterministic and insensitive to arrival order.
 
 Why, and what follows from it:
 
@@ -77,9 +77,12 @@ Why, and what follows from it:
   + blobs + sync row) — all or nothing. In Drive, "the `.json` record exists" *is*
   the commit; attachments upload first, so an interruption leaves only invisible
   orphans.
-- **Multi-device story.** Seq is a per-device counter (v1 is single-device), but
-  because the fold tolerates disorder and unknown targets, any consumer folding a
-  prefix of the log gets consistent state; a name-sorted Drive listing *is* log order.
+- **Multi-device story.** The event `id` is the identity; seq is a per-device
+  ordering hint, so two devices appending offline can mint the same seq — ties are
+  broken deterministically by `loggedAt` then `id`, and every replica folds to
+  identical state. Each sync cycle pulls remote events (discovered by id from Drive
+  filenames alone) before pushing local ones; a name-sorted Drive listing *is* log
+  order.
 - **Skills and external readers.** The byte-stable wire format and filename scheme
   mean a skill needs only a Drive listing and the same fold — no index, no API, no
   server. The app and skills compute identical state from identical files.
@@ -91,12 +94,14 @@ Why, and what follows from it:
 ### Data model & sync — [docs/subsystems/data-and-sync.md](subsystems/data-and-sync.md)
 
 `contract` + `streams` + `store` + `drive`: the generic, offline-first capture
-engine. A UI action becomes an atomic IndexedDB append; the upload queue drains
-pending rows in seq order to the `timebox/` tree in Drive (bootstrap is idempotent
-and self-healing). Reads never consult Drive — the entry list is always a fresh fold
-over the local log. Auth is gesture-driven GIS tokens (~1 hour, `drive.file` +
-read-only Calendar scopes in one consent, no refresh tokens, no backend); expiry
-surfaces as a passive reconnect pill and
+engine. A UI action becomes an atomic IndexedDB append; each sync cycle first pulls
+events other devices committed to Drive (id-based discovery from filenames, eager
+attachment download, atomic import), then the upload queue drains pending rows in
+seq order to the `timebox/` tree in Drive (bootstrap is idempotent and
+self-healing) — the local log is a replica of the Drive log. Reads never consult
+Drive — the entry list is always a fresh fold over the local log. Auth is
+gesture-driven GIS tokens (~1 hour, `drive.file` + read-only Calendar scopes in one
+consent, no refresh tokens, no backend); expiry surfaces as a passive reconnect pill and
 never blocks capture. Failures are classified (auth → reconnect, retryable →
 exponential backoff, else → error toast). Module docs:
 [contract-and-streams](modules/contract-and-streams.md),
@@ -126,7 +131,8 @@ paint is real content. Four screens (Capture, Day view, Chat, Settings) hang off
 flat route table and a bottom tab bar; drill-downs are modal sheets, not routes.
 The Day view overlays read-only Google Calendar events from a user-chosen target
 calendar via `src/gcal` (single Google token, `calendar.readonly` scope; the app
-never writes events). `App.tsx` owns app-level lifecycle: draining the upload queue on
+never writes events). `App.tsx` owns app-level lifecycle: running a pull-then-push
+sync cycle on
 `visibilitychange`/`online` and re-running enrichment whenever entries change. The
 design system lives entirely in `src/ui` (tokens + primitives; screens never hardcode
 palette or shape classes), and a set of iOS-specific invariants (keyboard insets,
@@ -146,8 +152,8 @@ triggers) and reports via `lastError` without throwing. Drive calls throw a type
 runners never surface errors at all (backoff or persistent skip markers).
 
 **Offline behavior.** Capture, day view, and settings work fully offline; entries
-land in IndexedDB and the sync queue, and uploads drain on the next
-foreground/online/manual trigger. Enrichment drains return immediately when
+land in IndexedDB and the sync queue, and the next foreground/online/manual trigger
+runs a full pull-then-push cycle. Enrichment drains return immediately when
 `!navigator.onLine`. The service worker precaches the app shell and runtime-caches
 OSM tiles and Nominatim responses, so maps work offline too. Offline is not an error
 state anywhere in the system.

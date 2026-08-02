@@ -7,7 +7,8 @@ file-level detail see the module docs:
 - [contract-and-streams.md](../modules/contract-and-streams.md) — event types, wire
   format, filenames, fold, stream registry
 - [store.md](../modules/store.md) — IndexedDB repositories and the Zustand app store
-- [drive.md](../modules/drive.md) — GIS auth, Drive client, bootstrap, upload queue
+- [drive.md](../modules/drive.md) — GIS auth, Drive client, bootstrap, upload queue,
+  pull engine
 
 Together these four modules implement the core of the app: a **generic,
 offline-first, append-only event log** that is captured locally, replicated to the
@@ -26,19 +27,25 @@ Every stream (a named capture profile from `src/streams/registry.ts`; v1 ships o
   referencing earlier ids. Removed attachments and cleared locations remain in the
   log forever; they are only hidden from the folded view.
 - **The fold is the read model.** `fold(events)` (`src/contract/fold.ts`) sorts by
-  `seq`, applies amends to their targets (amends after a revoke are silently
-  ignored; unknown targets are skipped), drops revoked entries, and returns
-  `Entry[]` ordered by effective `capturedAt`. The fold is deterministic and
-  order-insensitive to arrival order, so the app and Drive-reading skills compute
-  identical state from the same events.
-- **Seq allocation is local and per-stream.** `src/store/events.ts` allocates
-  `seq` from the IndexedDB `meta` counter `nextSeq:<stream>` inside the same
-  transaction that writes the event, so seqs are monotonic and gap-free per device.
-  Event ids are 6-char random base36 (`ids.ts`), unique-enough per stream.
+  `compareEvents` (`seq` → `loggedAt` → `id`), applies amends to their targets
+  (amends after a revoke are silently ignored; unknown targets are skipped), drops
+  revoked entries, and returns `Entry[]` ordered by effective `capturedAt`. The
+  fold is deterministic and order-insensitive to arrival order, so the app, every
+  device replica, and Drive-reading skills compute identical state from the same
+  events.
+- **Identity is the event id; seq is an ordering hint** (SPEC §3.2 #3, "Design C").
+  `src/store/events.ts` allocates `seq` from the IndexedDB `meta` counter
+  `nextSeq:<stream>` inside the same transaction that writes the event, so seqs are
+  monotonic and gap-free *per device* — but two devices appending offline can mint
+  the same seq, so nothing is keyed by `[stream, seq]`. Event ids are 6-char random
+  base36 (`ids.ts`) and are the unique key of the `events`/`sync` stores; seq
+  collisions are resolved deterministically by the `loggedAt` → `id` tiebreak.
 - **Filenames are the ordering.** Log files are named
   `<seq6>_<timestamp>_<id>[suffix].ext` (`filenames.ts`), partitioned by local date
-  of `loggedAt`. A name-sorted Drive listing *is* log order, and `seqOfFilename`
-  recovers `seq` from names alone — a skill needs no index, just a listing.
+  of `loggedAt`. A name-sorted Drive listing *is* log order, `seqOfFilename`
+  recovers `seq`, and `idOfRecordName` recovers the id from record names alone — a
+  skill needs no index, and the pull engine computes its missing set from a
+  listing without reading any file it already holds.
 - **Byte-stable wire format.** `serializeEvent` produces deterministic JSON (fixed
   key order, 2-space indent, trailing newline, optional fields omitted), so the
   bytes in Drive are reproducible and diff-friendly; `parseEvent` validates the
@@ -58,6 +65,7 @@ sequenceDiagram
     participant UI as UI (capture / edit)
     participant AS as appStore (src/store)
     participant EV as events.ts (IndexedDB)
+    participant P as pull.ts (src/drive)
     participant Q as queue.ts (src/drive)
     participant D as Google Drive
 
@@ -66,7 +74,11 @@ sequenceDiagram
     Note over EV: one readwrite txn:<br/>seq counter + event +<br/>blobs + sync row (queued)
     EV-->>AS: CaptureEvent
     AS->>AS: refresh() — refold entries
-    AS--)Q: drainSync() (fire-and-forget)
+    AS--)P: drainSync() (fire-and-forget) — pull first
+    P->>D: list log/ partitions, diff by id
+    P->>D: fetch missing records + attachments
+    P->>EV: importEvents(...) — atomic per partition
+    AS--)Q: then push
     Q->>EV: listPendingSync(stream) — seq order
     Q->>D: ensureTree / ensurePartition
     loop each pending row
@@ -88,10 +100,11 @@ Stage by stage:
    `sync` row in **one IndexedDB transaction**. No partial appends can exist. The
    sync row starts `queued` with `phase: 'attachments-pending'` (or
    `'record-pending'` when there are no attachments).
-3. **Queue drain.** `drainSync` fires on capture, app init, explicit connect, and
-   manual sync. With a valid token it calls `drainStream(token, stream)`
-   (`src/drive/queue.ts`), which processes pending rows **in seq order** so the
-   Drive log commits monotonically.
+3. **Sync cycle.** `drainSync` fires on capture, app init, explicit connect, and
+   manual sync. With a valid token it runs one **pull-then-push** cycle: first
+   `pullStream(token, stream)` (`src/drive/pull.ts`, §3) imports remote events, then
+   `drainStream(token, stream)` (`src/drive/queue.ts`) processes pending rows **in
+   seq order** so the Drive log commits monotonically.
 4. **Drive tree + commit.** On first use (or a cache miss) the drainer runs
    `ensureTree` (`bootstrap.ts`): `timebox/` root, `streams.json`, and per stream a
    folder with `config.json`/`checkpoint.json` stubs, `log/`, and `results/` —
@@ -104,17 +117,42 @@ Stage by stage:
 After a successful upload, local audio blobs are pruned unless the stream's
 `keepAudioLocally` setting says otherwise.
 
-## 3. Read path: fold → entries → UI
+## 3. Pull path: Drive → IndexedDB (bidirectional sync)
+
+The local log is a **replica** of the Drive log, not just its source. Every sync
+cycle starts with `pullStream(token, stream)` (`src/drive/pull.ts`), which
+converges the replica with Drive before anything is pushed:
+
+1. **Discover.** List every `log/` partition folder and its children; parse each
+   filename with `idOfRecordName`. Names that parse to an id already held locally
+   are skipped without a read; attachments and foreign files are ignored.
+2. **Fetch.** Download each missing event record, `parseEvent`-validate it
+   (malformed records are skipped, never fatal), and **eagerly** download every
+   attachment the event references that isn't already stored (tolerating pruned or
+   still-uploading attachments — the record is the commit, so a referenced-but-
+   absent attachment is a transient race, not corruption).
+3. **Import.** `importEvents()` (`src/store/events.ts`) writes events + blobs in
+   one transaction per partition, marks their sync rows `uploaded`/`done` (they
+   came *from* Drive — the drainer must never re-push them), and bumps
+   `nextSeq:<stream>` past every pulled seq so future local appends sort after.
+
+Pull failures are classified exactly like the drainer's (§5): 401/403 →
+`'reconnect'`, 429/5xx → `'retry-later'`, else `'error'`. A mid-pull failure keeps
+everything already imported — re-pulling is idempotent because discovery is
+id-based. A wiped or brand-new device rebuilds its whole local state from one
+pull.
+
+## 4. Read path: fold → entries → UI
 
 Reads never consult Drive. The UI's entry list is always a fresh fold over the
 local log: `listEntries(stream)` = `fold(listEvents(stream))`, cached in the app
-store as `entries: Entry[]` alongside `syncStatuses` (per-seq upload state for the
-status badges). Every write action ends in `refresh()`, which recomputes both — the
-store never mutates cached entries in place. Skills perform the mirror-image read
-on the Drive side: list `log/` partitions past their checkpoint, parse records, and
-run the same fold.
+store as `entries: Entry[]` alongside `syncStatuses` (per-event-id upload state for
+the status badges). Every write action ends in `refresh()`, which recomputes both —
+the store never mutates cached entries in place. Skills perform the mirror-image
+read on the Drive side: list `log/` partitions past their checkpoint, parse
+records, and run the same fold.
 
-## 4. Auth lifecycle and failure model
+## 5. Auth lifecycle and failure model
 
 **Token flow (SPEC §8.2).** There is no backend, so there are no refresh tokens.
 `src/drive/auth.ts` wraps the GIS token client: `connect()` — which **must run from
@@ -135,7 +173,8 @@ gesture GIS needs — then drains. Capture is never blocked by auth: entries que
 locally regardless.
 
 **Failure classification.** Every Drive call throws `DriveError` with a status, and
-`drainStream` maps it to an outcome the store consumes:
+`drainStream` (and `pullStream`, identically) maps it to an outcome the store
+consumes:
 
 | Failure | Queue behavior | Outcome → store reaction |
 |---|---|---|
@@ -145,10 +184,13 @@ locally regardless.
 
 Backoff is exponential per row: `min(30s × 4^(attempts−1), 1h)` — 30s, 2m, 8m, …
 capped at an hour; rows whose `nextRetryAt` is in the future are skipped, and auth
-errors bypass backoff entirely. Offline is not a special case: capture works fully
-offline, and the queue simply drains on the next trigger that finds a valid token.
+errors bypass backoff entirely. `drainSync` merges the pull and push outcomes
+worst-of (`idle < drained < retry-later < reconnect < error`), and a pull
+`'reconnect'` skips the push (the token is dead either way). Offline is not a
+special case: capture works fully offline, and the cycle simply runs on the next
+trigger that finds a valid token.
 
-## 5. Idempotency and crash safety
+## 6. Idempotency and crash safety
 
 The subsystem is safe to interrupt at any point, by construction:
 
@@ -172,16 +214,23 @@ The subsystem is safe to interrupt at any point, by construction:
   user-deleted folder is recreated on the next drain. Skill-owned mutable files are
   stubbed only when absent, never clobbered — required because `drive.file` scope
   only lets the app see files it created, so the stub is what grants read-back.
-- **The fold tolerates disorder.** It sorts by `seq` and silently ignores unknown
-  or already-revoked targets, so partial replication (e.g. a skill reading Drive
-  mid-drain) still folds to a consistent prefix of the log.
+- **Pulls are idempotent and atomic.** Discovery is by event id from filenames, so
+  a re-pull skips everything already held; imports commit per partition in one
+  transaction (events + blobs + counter bump), so an interrupted pull leaves only
+  complete events, all of which the next pull skips.
+- **The fold tolerates disorder.** It sorts by `compareEvents` and silently ignores
+  unknown or already-revoked targets, so partial replication (e.g. a skill reading
+  Drive mid-drain, or a pull racing an in-flight upload) still folds to a
+  consistent subset of the log.
 
 What is *not* guaranteed: seq uniqueness across devices (seq is a per-device
-counter; v1 is single-device), event-id collision checks (random ids,
+counter; collisions are expected under offline multi-device use and resolved by
+the `loggedAt` → `id` fold tiebreak), event-id collision checks (random ids,
 probabilistic uniqueness), and `wipeAll()` resets local seq counters to 1 — safe
-only because the wipe also drops the local log, while Drive state is separate.
+only because the wipe also drops the local log, while Drive state is separate and
+the next pull rebuilds the replica and re-bumps the counter.
 
-## 6. Layering rules
+## 7. Layering rules
 
 SPEC §10 declares `streams/`, `capture/`, `contract/`, `drive/`, `store/` (and
 friends) **stream-agnostic**: they must not import from the timelog-specific or
@@ -209,8 +258,8 @@ Within this subsystem the dependency direction is strictly one-way:
   (auth/token/queue for the appStore wiring); it stores assistant chats as opaque
   `unknown[]` precisely to avoid importing `assistant/`.
 - `drive/` imports `contract` (file serializers, filenames) and `store` (event
-  repo, meta store); its only inbound consumers are `store/appStore.ts` and
-  `App.tsx` (the reconnect pill).
+  repo — including `importEvents` for pulls — and meta store); its only inbound
+  consumers are `store/appStore.ts` and `App.tsx` (the reconnect pill).
 
 The payoff is that the generic capture client — everything in this document — is
 separable by construction: a second stream, or a fork without the timelog UI,

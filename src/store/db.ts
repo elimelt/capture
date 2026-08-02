@@ -14,7 +14,10 @@ export type SyncStatus = 'queued' | 'uploaded' | 'error'
 export type SyncPhase = 'attachments-pending' | 'record-pending' | 'done'
 
 export interface SyncStatusRow {
+  /** The event's id — the identity (SPEC §3.3) and this row's key. */
+  id: string
   stream: string
+  /** The event's seq: ordering hint only, kept for drain order + display. */
   seq: number
   /** User-facing rollup; `phase` tracks the protocol state underneath. */
   status: SyncStatus
@@ -60,9 +63,14 @@ export interface StoredChatRow {
 }
 
 interface TimeboxDB extends DBSchema {
-  /** The local replica of the append-only log. Key: [stream, seq]. */
+  /**
+   * The local replica of the append-only log. Keyed by event `id` (the
+   * identity — SPEC §3.3 fold): two devices appending offline can mint the
+   * same per-stream `seq`, so `seq` is only a non-unique ordering hint and
+   * must not be part of the key. Sequenced access uses the by-stream index.
+   */
   events: {
-    key: [string, number]
+    key: string
     value: LogEvent
     indexes: { 'by-stream': string }
   }
@@ -71,9 +79,9 @@ interface TimeboxDB extends DBSchema {
     key: string
     value: { file: string; blob: Blob }
   }
-  /** Upload state per event. Key: [stream, seq]. */
+  /** Upload state per event, keyed by event `id` (same identity as events). */
   sync: {
-    key: [string, number]
+    key: string
     value: SyncStatusRow
   }
   places: {
@@ -102,7 +110,7 @@ export type TimeboxDatabase = IDBPDatabase<TimeboxDB>
 let dbPromise: Promise<TimeboxDatabase> | undefined
 
 export function getDb(): Promise<TimeboxDatabase> {
-  dbPromise ??= openDB<TimeboxDB>('timebox', 4, {
+  dbPromise ??= openDB<TimeboxDB>('timebox', 5, {
     async upgrade(db, oldVersion, _newVersion, tx) {
       if (oldVersion < 1) {
         const events = db.createObjectStore('events', { keyPath: ['stream', 'seq'] })
@@ -147,6 +155,19 @@ export function getDb(): Promise<TimeboxDatabase> {
       if (oldVersion < 4) {
         // v4: reverse-geocode cache so a coordinate cell is looked up once.
         db.createObjectStore('geocache', { keyPath: 'key' })
+      }
+      if (oldVersion < 5) {
+        // v5: re-key events and sync rows by `id` (the fold identity) instead
+        // of [stream, seq]. seq is only a non-unique ordering hint now, so it
+        // cannot be part of a key: two devices appending offline may mint the
+        // same (stream, seq) with different ids (SPEC §3.3, Design C).
+        // The local log is a replica of Drive; a re-pull rebuilds it, so we
+        // drop and recreate rather than migrate rows.
+        if (db.objectStoreNames.contains('events')) db.deleteObjectStore('events')
+        const events = db.createObjectStore('events', { keyPath: 'id' })
+        events.createIndex('by-stream', 'stream')
+        if (db.objectStoreNames.contains('sync')) db.deleteObjectStore('sync')
+        db.createObjectStore('sync', { keyPath: 'id' })
       }
     },
   })
