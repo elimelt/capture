@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import { Button, FieldRow, Sheet, TextInput } from '../ui'
-import { DEFAULT_PLACE_RADIUS_M, coerceRadiusM } from './geo'
+import { Button, FieldRow, Sheet, TextInput, commitNumericDraft } from '../ui'
+import { DEFAULT_PLACE_RADIUS_M } from './geo'
 
 interface NamePlaceSheetProps {
   /** Optional "near …" hint shown under the title while the user names it. */
@@ -17,10 +17,11 @@ interface NamePlaceSheetProps {
 export function NamePlaceSheet({ address, onSave, onClose }: NamePlaceSheetProps) {
   const [name, setName] = useState('')
   // String-backed so the field can be momentarily empty while editing without
-  // snapping back to a default; coerced to a number only on save.
+  // snapping back to a default; validated and clamped only on save, and Save
+  // stays disabled while the draft is empty or invalid.
   const [radius, setRadius] = useState(String(DEFAULT_PLACE_RADIUS_M))
 
-  const radiusM = coerceRadiusM(radius)
+  const radiusM = commitNumericDraft(radius, 10)
 
   return (
     <Sheet title="Name this place" onClose={onClose}>
@@ -50,10 +51,10 @@ export function NamePlaceSheet({ address, onSave, onClose }: NamePlaceSheetProps
         <Button
           variant="primary"
           block
-          disabled={!name.trim()}
+          disabled={!name.trim() || radiusM === undefined}
           onClick={() => {
             const trimmed = name.trim()
-            if (trimmed) onSave(trimmed, radiusM)
+            if (trimmed && radiusM !== undefined) onSave(trimmed, radiusM)
             onClose()
           }}
         >

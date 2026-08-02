@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Place } from '../store/places'
-import { DEFAULT_PLACE_RADIUS_M, coerceRadiusM, needsPlacePrompt, snapshotLocation } from './geo'
+import { needsPlacePrompt, snapshotLocation } from './geo'
 
 const home: Place = { id: 'p1', name: 'Home', lat: 40.7, lng: -74, radiusM: 100 }
 
@@ -68,24 +68,6 @@ describe('snapshotLocation', () => {
       },
     })
     expect(await snapshotLocation([home], true)).toBeUndefined()
-  })
-})
-
-describe('coerceRadiusM', () => {
-  it('parses a plain number and rounds decimals', () => {
-    expect(coerceRadiusM('75')).toBe(75)
-    expect(coerceRadiusM('49.6')).toBe(50)
-  })
-
-  it('falls back to the default when empty, zero, or not a number', () => {
-    expect(coerceRadiusM('')).toBe(DEFAULT_PLACE_RADIUS_M)
-    expect(coerceRadiusM('0')).toBe(DEFAULT_PLACE_RADIUS_M)
-    expect(coerceRadiusM('abc')).toBe(DEFAULT_PLACE_RADIUS_M)
-  })
-
-  it('clamps to the 10 m floor', () => {
-    expect(coerceRadiusM('3')).toBe(10)
-    expect(coerceRadiusM('-20')).toBe(10)
   })
 })
 

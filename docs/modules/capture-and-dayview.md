@@ -274,10 +274,11 @@ entry; skipping is always fine — capture never dead-ends.
 `onSave: (name: string, radiusM: number) => void`.
 
 **Behavior:** shows an optional "near …" hint under the title, an auto-focused name
-field, and a string-backed radius field (so it can be momentarily empty while editing);
-the radius is coerced only on save via `coerceRadiusM` from `geo.ts` (default
-`DEFAULT_PLACE_RADIUS_M` = 50 m, floor 10 m). "Save place" is disabled until the trimmed
-name is non-empty; both buttons close the sheet.
+field, and a string-backed radius field (so it can be momentarily empty while editing;
+initialized to `DEFAULT_PLACE_RADIUS_M` = 50 m); the radius is validated and clamped
+only on save via `commitNumericDraft` from `src/ui` (floor 10 m). "Save place" is
+disabled until the trimmed name is non-empty and the radius draft is a valid number;
+both buttons close the sheet.
 
 ### src/capture/LocationSheet.tsx
 
@@ -410,11 +411,11 @@ create the immediate-hide effect.
 throws.
 
 **Exports:** `snapshotLocation(places: Place[], locationEnabled: boolean):
-Promise<GeoLocation | undefined>`; `DEFAULT_PLACE_RADIUS_M` (50); `coerceRadiusM(input:
-string): number` — string-backed radius field to metres (default when empty/invalid,
-floor 10, rounded); `needsPlacePrompt(location: GeoLocation | undefined,
-locationEnabled: boolean): boolean` — true when a captured coordinate matched no saved
-place and should trigger `NamePlaceSheet`.
+Promise<GeoLocation | undefined>`; `DEFAULT_PLACE_RADIUS_M` (50); `needsPlacePrompt(
+location: GeoLocation | undefined, locationEnabled: boolean): boolean` — true when a
+captured coordinate matched no saved place and should trigger `NamePlaceSheet`.
+(String-backed radius drafts are validated by the numeric-draft helpers in
+`src/ui/numberDraft.ts`.)
 
 **Behavior:** resolves `undefined` immediately when location is disabled in settings or
 `navigator.geolocation` is missing. Otherwise wraps
@@ -431,8 +432,7 @@ Vitest unit tests for `snapshotLocation`: verifies it resolves `undefined` witho
 touching geolocation when disabled, when `navigator.geolocation` is absent, on
 geolocation errors, and on synchronous throws; and that successes round `accuracyM` and
 include `placeLabel` only when the coordinate falls inside a saved place's radius. Also
-covers `coerceRadiusM` (parsing, defaulting, 10 m floor) and `needsPlacePrompt`
-(prompts only for enabled, unlabelled locations).
+covers `needsPlacePrompt` (prompts only for enabled, unlabelled locations).
 
 ### src/dayview/DayScreen.tsx
 

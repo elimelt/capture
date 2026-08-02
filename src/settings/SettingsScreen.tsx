@@ -1,7 +1,7 @@
 /** Screen 3 — Settings (SPEC §4.3, M1 subset). */
 import { useEffect, useState } from 'react'
 import { modelLabel } from '../assistant/config'
-import { DEFAULT_PLACE_RADIUS_M, coerceRadiusM } from '../capture/geo'
+import { DEFAULT_PLACE_RADIUS_M } from '../capture/geo'
 import type { SyncResult } from '../store/appStore'
 import { fetchDriveSpace, type DriveSpace } from '../drive/space'
 import { getValidAccessToken } from '../drive/token'
@@ -20,6 +20,8 @@ import {
   Select,
   TextInput,
   Toggle,
+  canCommitNumericDraft,
+  commitNumericDraft,
   cx,
   motion,
   tone,
@@ -40,10 +42,17 @@ export default function SettingsScreen() {
   const [pendingPlace, setPendingPlace] = useState<{ lat: number; lng: number } | null>(null)
   const [placeName, setPlaceName] = useState('')
   // String-backed so the field can be momentarily empty while editing without
-  // snapping back to a default; coerced to a number only on save.
+  // snapping back to a default; validated and clamped only on save, and Save
+  // stays disabled while the draft is empty or invalid.
   const [placeRadius, setPlaceRadius] = useState(String(DEFAULT_PLACE_RADIUS_M))
   const [locating, setLocating] = useState(false)
   const [locateError, setLocateError] = useState<string | null>(null)
+
+  // Draft for the max-clip-length field; null mirrors the saved value. While
+  // typing, the raw string (including empty) is shown untouched — valid values
+  // commit (clamped 10–120) as they're typed, invalid/empty drafts commit
+  // nothing, and blur snaps the field back to the last saved value.
+  const [clipDraft, setClipDraft] = useState<string | null>(null)
 
   function addCurrentLocation() {
     setLocateError(null)
@@ -68,8 +77,8 @@ export default function SettingsScreen() {
   }
 
   async function savePendingPlace() {
-    if (!pendingPlace || !placeName.trim()) return
-    const radiusM = coerceRadiusM(placeRadius)
+    const radiusM = commitNumericDraft(placeRadius, 10)
+    if (!pendingPlace || !placeName.trim() || radiusM === undefined) return
     // Best-effort reverse geocode for a "near …" label; never blocks the save.
     const address = await reverseGeocode(pendingPlace.lat, pendingPlace.lng)
     await addPlace({
@@ -117,11 +126,16 @@ export default function SettingsScreen() {
               type="number"
               min={10}
               max={120}
-              value={streamSettings.maxClipSec}
+              inputMode="numeric"
+              value={clipDraft ?? String(streamSettings.maxClipSec)}
               onChange={(e) => {
-                const v = Math.min(120, Math.max(10, Number(e.target.value) || 10))
-                void updateStreamSettings({ ...streamSettings, maxClipSec: v })
+                setClipDraft(e.target.value)
+                const v = commitNumericDraft(e.target.value, 10, 120)
+                if (v !== undefined) {
+                  void updateStreamSettings({ ...streamSettings, maxClipSec: v })
+                }
               }}
+              onBlur={() => setClipDraft(null)}
               className="w-24 text-right"
             />
           </FieldRow>
@@ -202,7 +216,7 @@ export default function SettingsScreen() {
                   <Button
                     variant="primary"
                     block
-                    disabled={!placeName.trim()}
+                    disabled={!placeName.trim() || !canCommitNumericDraft(placeRadius)}
                     onClick={() => void savePendingPlace()}
                   >
                     Save place
