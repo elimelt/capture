@@ -15,7 +15,7 @@ import type {
   RevokeEvent,
 } from '../contract/types'
 import { EVENT_SCHEMA } from '../contract/types'
-import { fold } from '../contract/fold'
+import { compareEvents, fold } from '../contract/fold'
 import { attachmentFileName, eventBaseName } from '../contract/filenames'
 import { newEventId } from '../contract/ids'
 import { deviceTz, toLocalIso } from '../contract/time'
@@ -76,6 +76,7 @@ async function append({ stream, build, attachments = [] }: AppendArgs): Promise<
     await tx.objectStore('blobs').put({ file: attachmentMeta[i].file, blob: attachments[i].blob })
   }
   await tx.objectStore('sync').put({
+    id: event.id,
     stream,
     seq: event.seq,
     status: 'queued',
@@ -145,7 +146,9 @@ export async function appendRevoke(input: {
 
 export async function listEvents(stream: string): Promise<LogEvent[]> {
   const db = await getDb()
-  return db.getAllFromIndex('events', 'by-stream', stream)
+  // The store is keyed by id, so the index yields id order; re-sort into log
+  // order (seq → loggedAt → id, same total order the fold uses).
+  return (await db.getAllFromIndex('events', 'by-stream', stream)).sort(compareEvents)
 }
 
 /** The folded, user-visible view (SPEC §3.3). */
@@ -158,28 +161,67 @@ export async function getBlob(file: string): Promise<Blob | undefined> {
   return (await db.get('blobs', file))?.blob
 }
 
-/** Sync status by seq for one stream (M1: everything stays 'queued'). */
-export async function getSyncStatuses(stream: string): Promise<Map<number, SyncStatusRow>> {
+/** Sync status by event id for one stream (id is the identity — SPEC §3.3). */
+export async function getSyncStatuses(stream: string): Promise<Map<string, SyncStatusRow>> {
   const db = await getDb()
   const all = await db.getAll('sync')
-  return new Map(all.filter((r) => r.stream === stream).map((r) => [r.seq, r]))
+  return new Map(all.filter((r) => r.stream === stream).map((r) => [r.id, r]))
 }
 
 /**
- * Rows not yet uploaded for a stream, in [stream, seq] order — the order the
- * drainer must respect so the log commits monotonically (SPEC §5.2, §8.4).
+ * Rows not yet uploaded for a stream, in seq order (loggedAt then id as
+ * tiebreak) — the order the drainer must respect so the log commits
+ * monotonically (SPEC §5.2, §8.4).
  */
 export async function listPendingSync(stream: string): Promise<SyncStatusRow[]> {
   const db = await getDb()
   const all = await db.getAll('sync')
   return all
     .filter((r) => r.stream === stream && r.status !== 'uploaded')
-    .sort((a, b) => a.seq - b.seq)
+    .sort((a, b) => a.seq - b.seq || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
 }
 
-export async function getEvent(stream: string, seq: number): Promise<LogEvent | undefined> {
+export async function getEventById(id: string): Promise<LogEvent | undefined> {
   const db = await getDb()
-  return db.get('events', [stream, seq])
+  return db.get('events', id)
+}
+
+/**
+ * Import events pulled from Drive (plus their eagerly-fetched attachment
+ * blobs) into the local replica in one transaction. Pulled events are already
+ * on Drive, so their sync rows are 'uploaded' — the drainer will never touch
+ * them. Also bumps the per-stream seq counter past every imported seq so the
+ * next local append continues after the remote log rather than colliding.
+ * Idempotent: an already-present id is simply overwritten with itself.
+ */
+export async function importEvents(
+  stream: string,
+  events: readonly LogEvent[],
+  blobs: ReadonlyMap<string, Blob>,
+): Promise<void> {
+  if (events.length === 0 && blobs.size === 0) return
+  const db = await getDb()
+  const tx = db.transaction(['events', 'blobs', 'sync', 'meta'], 'readwrite')
+  for (const event of events) {
+    await tx.objectStore('events').put(event)
+    await tx.objectStore('sync').put({
+      id: event.id,
+      stream,
+      seq: event.seq,
+      status: 'uploaded',
+      phase: 'done',
+      attempts: 0,
+    })
+  }
+  for (const [file, blob] of blobs) {
+    await tx.objectStore('blobs').put({ file, blob })
+  }
+  const meta = tx.objectStore('meta')
+  const key = SEQ_KEY(stream)
+  const current = ((await meta.get(key)) as number | undefined) ?? 1
+  const maxSeq = events.reduce((m, e) => Math.max(m, e.seq), 0)
+  if (maxSeq + 1 > current) await meta.put(maxSeq + 1, key)
+  await tx.done
 }
 
 export async function putSyncStatus(row: SyncStatusRow): Promise<void> {

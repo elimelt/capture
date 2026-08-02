@@ -164,10 +164,12 @@ foundational invariant of the whole system:
    represented as *new* events (`revoke`, `amend`, §3.3) that reference a prior event by
    id. The visible state of an entry is a **fold** over the log, computed identically by
    the app and by consumers.
-3. **Totally ordered per stream** by a monotonic sequence number assigned at capture
-   (`seq`, embedded in filenames), so log position — not wall-clock time — defines order.
-   `capturedAt` remains the *domain* timestamp; `seq` is the *log* ordering. (This
-   matters when a correction to this morning is captured tonight.)
+3. **Totally ordered per stream** by `seq` (embedded in filenames) with `loggedAt` then
+   `id` breaking ties, so log position — not wall-clock time — defines order. Identity
+   is the event `id`; `seq` is a non-unique ordering *hint*: two devices appending
+   offline can mint the same per-stream seq, and the tiebreak keeps the fold
+   deterministic across devices regardless (see §3.3). `capturedAt` remains the *domain*
+   timestamp. (This matters when a correction to this morning is captured tonight.)
 4. **Consumers are cursor-based.** Downstream processors (skills) track their progress
    with a checkpoint — "I have consumed the log through seq N" — rather than by mutating
    the log (§5.4). "Unprocessed" is defined as `seq > checkpoint`, discoverable without
@@ -187,8 +189,9 @@ type LogEvent = CaptureEvent | AmendEvent | RevokeEvent;
 
 interface EventBase {
   schema: 'capture.event.v1';
-  id: string;                  // uuid
-  seq: number;                 // per-stream monotonic sequence, assigned at append
+  id: string;                  // the identity: unique, crypto-random
+  seq: number;                 // per-stream sequence assigned at append; ordering
+                               // hint only — NOT unique across devices (§3.2 #3)
   stream: string;              // "timelog"
   loggedAt: string;            // ISO 8601 with offset: when the event was appended
   deviceTz: string;            // IANA zone at append
@@ -232,11 +235,13 @@ interface Attachment {
 ```
 
 **Fold rules** (pure function, identical for app and skills): start with all `capture`
-events; apply `amend` patches in seq order; drop entries targeted by a `revoke`. An
-`amend`/`revoke` whose target hasn't been consumed yet simply folds in; one that arrives
-*after* its target was already processed lands after the consumer's checkpoint, so the
-next run sees it and compensates on the output surface (e.g. updates or deletes the
-calendar event it previously created — §6.2).
+events; apply `amend` patches in log order — `seq`, ties broken by `loggedAt` then `id`
+— and drop entries targeted by a `revoke`. The tiebreak makes the fold deterministic
+even when two devices offline-minted the same seq (§3.2 #3). An `amend`/`revoke` whose
+target hasn't been consumed yet simply folds in; one that arrives *after* its target was
+already processed lands after the consumer's checkpoint, so the next run sees it and
+compensates on the output surface (e.g. updates or deletes the calendar event it
+previously created — §6.2).
 
 Rules:
 
@@ -678,6 +683,29 @@ user's assistant, authorized separately by the user in that product.
 3. Success → status `uploaded`; local audio blob retained or pruned per Settings.
 4. Failures: exponential backoff on 429/5xx; 401/403 → keep queued + reconnect pill;
    storage-quota errors surface explicitly (Drive full).
+
+### 8.5 Pull engine (Drive → local; bidirectional sync)
+
+The local IndexedDB is a **replica** of the Drive log, not the source of truth. Every
+sync cycle runs **pull, then push** (same triggers as §8.4), so a second device — or a
+reinstalled/wiped one — converges on the full log:
+
+1. **Discover by filename.** List `log/`'s date-partition folders, then each
+   partition's children. Record filenames carry `seq_ts_id` (§5.1), so the missing set
+   (ids not in the local replica) is computed from listings alone — no file reads for
+   events already held. Foreign files and non-`YYYY-MM-DD` folders are ignored.
+2. **Download eagerly.** For each missing record: fetch the `.json`, then fetch every
+   referenced attachment blob not already local (full offline availability). An
+   attachment absent on Drive (pruned, or a §5.2 push race) is skipped and picked up on
+   a later pull — the record commits last on push, so this is rare.
+3. **Import atomically.** Events + blobs commit in one transaction; pulled events get
+   sync status `uploaded` (never re-pushed) and the per-stream seq counter jumps past
+   every pulled seq, so the next local append extends the merged log.
+4. **Converge deterministically.** Identity is the event `id`; a seq collision from
+   another device's offline appends is resolved by the fold's `seq → loggedAt → id`
+   order (§3.3), with no coordination and no conflict state. Re-pulling is idempotent.
+5. Failures classify exactly as §8.4: 401/403 → reconnect pill; 429/5xx → retry later;
+   a partial pull keeps everything already imported.
 
 ---
 

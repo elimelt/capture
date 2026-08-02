@@ -2,16 +2,18 @@ import 'fake-indexeddb/auto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Mock the drive layer so these tests exercise only the store's wiring:
-// gesture → connect → drain, and the no-token / reconnect branches.
+// gesture → connect → pull → drain, and the no-token / reconnect branches.
 const connect = vi.fn()
 const disconnect = vi.fn()
 const drainStream = vi.fn()
+const pullStream = vi.fn()
 const getValidAccessToken = vi.fn<() => Promise<string | undefined>>()
 const connectionState = vi.fn<() => Promise<'connected' | 'expired' | 'disconnected'>>()
 const getStoredToken = vi.fn<() => Promise<{ accessToken: string } | undefined>>()
 
 vi.mock('../drive/auth', () => ({ connect, disconnect }))
 vi.mock('../drive/queue', () => ({ drainStream }))
+vi.mock('../drive/pull', () => ({ pullStream }))
 vi.mock('../drive/token', () => ({
   getValidAccessToken,
   connectionState,
@@ -30,6 +32,7 @@ beforeEach(() => {
   getValidAccessToken.mockResolvedValue(undefined)
   getStoredToken.mockResolvedValue(undefined)
   drainStream.mockResolvedValue({ outcome: 'drained', uploaded: 0 })
+  pullStream.mockResolvedValue({ outcome: 'idle', pulled: 0 })
 })
 
 afterEach(() => {
@@ -41,19 +44,25 @@ describe('drainSync', () => {
     connectionState.mockResolvedValue('expired')
     const store = await freshStore()
     const result = await store.getState().drainSync()
+    expect(pullStream).not.toHaveBeenCalled()
     expect(drainStream).not.toHaveBeenCalled()
     expect(store.getState().driveConnection).toBe('expired')
-    expect(result).toEqual({ outcome: 'reconnect', uploaded: 0 })
+    expect(result).toEqual({ outcome: 'reconnect', uploaded: 0, pulled: 0 })
   })
 
-  it('drains with a valid token and returns the drain result', async () => {
+  it('pulls then drains with a valid token and returns the combined result', async () => {
     getValidAccessToken.mockResolvedValue('tok')
+    pullStream.mockResolvedValue({ outcome: 'pulled', pulled: 2 })
     drainStream.mockResolvedValue({ outcome: 'drained', uploaded: 3 })
     const store = await freshStore()
     const result = await store.getState().drainSync()
+    expect(pullStream).toHaveBeenCalledWith('tok', 'timelog')
     expect(drainStream).toHaveBeenCalledWith('tok', 'timelog')
+    expect(pullStream.mock.invocationCallOrder[0]).toBeLessThan(
+      drainStream.mock.invocationCallOrder[0],
+    )
     expect(store.getState().syncing).toBe(false)
-    expect(result).toEqual({ outcome: 'drained', uploaded: 3 })
+    expect(result).toEqual({ outcome: 'drained', uploaded: 3, pulled: 2 })
   })
 
   it('flips to expired when the drainer asks to reconnect', async () => {
@@ -65,13 +74,38 @@ describe('drainSync', () => {
     expect(result.outcome).toBe('reconnect')
   })
 
+  it('flips to expired and skips the push when the pull asks to reconnect', async () => {
+    getValidAccessToken.mockResolvedValue('tok')
+    pullStream.mockResolvedValue({ outcome: 'reconnect', pulled: 0 })
+    const store = await freshStore()
+    const result = await store.getState().drainSync()
+    expect(drainStream).not.toHaveBeenCalled()
+    expect(store.getState().driveConnection).toBe('expired')
+    expect(result.outcome).toBe('reconnect')
+  })
+
   it('surfaces a drain error as lastError and returns it', async () => {
     getValidAccessToken.mockResolvedValue('tok')
     drainStream.mockResolvedValue({ outcome: 'error', uploaded: 0, error: 'Drive full' })
     const store = await freshStore()
     const result = await store.getState().drainSync()
     expect(store.getState().lastError).toMatch(/Drive full/)
-    expect(result).toEqual({ outcome: 'error', uploaded: 0, error: 'Drive full' })
+    expect(result).toEqual({ outcome: 'error', uploaded: 0, pulled: 0, error: 'Drive full' })
+  })
+
+  it('reports a pull error even when the push succeeds', async () => {
+    getValidAccessToken.mockResolvedValue('tok')
+    pullStream.mockResolvedValue({ outcome: 'error', pulled: 0, error: 'record parse failed' })
+    drainStream.mockResolvedValue({ outcome: 'drained', uploaded: 1 })
+    const store = await freshStore()
+    const result = await store.getState().drainSync()
+    expect(store.getState().lastError).toMatch(/record parse failed/)
+    expect(result).toEqual({
+      outcome: 'error',
+      uploaded: 1,
+      pulled: 0,
+      error: 'record parse failed',
+    })
   })
 
   it('returns retry-later when a drain is already in flight', async () => {
@@ -79,8 +113,9 @@ describe('drainSync', () => {
     const store = await freshStore()
     store.setState({ syncing: true })
     const result = await store.getState().drainSync()
+    expect(pullStream).not.toHaveBeenCalled()
     expect(drainStream).not.toHaveBeenCalled()
-    expect(result).toEqual({ outcome: 'retry-later', uploaded: 0 })
+    expect(result).toEqual({ outcome: 'retry-later', uploaded: 0, pulled: 0 })
   })
 })
 

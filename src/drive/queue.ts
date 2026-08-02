@@ -15,7 +15,7 @@ import type { SyncStatusRow } from '../store/db'
 import {
   deleteBlob,
   getBlob,
-  getEvent,
+  getEventById,
   listPendingSync,
   putSyncStatus,
 } from '../store/events'
@@ -119,7 +119,7 @@ export async function drainStream(token: string, stream: string): Promise<DrainR
   let uploaded = 0
   for (const row of pending) {
     if (row.nextRetryAt && Date.parse(row.nextRetryAt) > now) continue
-    const event = await getEvent(stream, row.seq)
+    const event = await getEventById(row.id)
     if (!event) {
       // Log file erased out-of-band (§11): nothing to upload, drop the row.
       await putSyncStatus({ ...row, status: 'uploaded', phase: 'done' })

@@ -207,6 +207,36 @@ describe('fold', () => {
     expect(fold(events).map((e) => e.id)).toEqual(['aaaaaa', 'bbbbbb', 'cccccc'])
   })
 
+  it('breaks a cross-device seq collision by loggedAt then id (Design C)', () => {
+    // Two devices offline-minted seq 1; identity is the id, seq is a hint.
+    const early = cap(1, 'zzzzzz', '2026-08-02T09:00:00-04:00')
+    const late = cap(1, 'aaaaaa', '2026-08-02T10:00:00-04:00')
+    const entries = fold([late, early])
+    expect(entries.map((e) => e.id)).toEqual(['zzzzzz', 'aaaaaa'])
+    // Same seq, same capturedAt → final order falls back to id.
+    const t = '2026-08-02T09:00:00-04:00'
+    expect(fold([cap(1, 'bbbbbb', t), cap(1, 'aaaaaa', t)]).map((e) => e.id)).toEqual([
+      'aaaaaa',
+      'bbbbbb',
+    ])
+  })
+
+  it('applies colliding-seq amends in loggedAt order (last writer wins)', () => {
+    const a1: AmendEvent = {
+      ...amend(2, ['aaaaaa'], { capturedAt: '2026-08-02T08:00:00-04:00' }),
+      id: 'amend1',
+      loggedAt: '2026-08-02T11:00:00-04:00',
+    }
+    const a2: AmendEvent = {
+      ...amend(2, ['aaaaaa'], { capturedAt: '2026-08-02T07:00:00-04:00' }),
+      id: 'amend2',
+      loggedAt: '2026-08-02T12:00:00-04:00',
+    }
+    const events = [a2, cap(1, 'aaaaaa', '2026-08-02T09:00:00-04:00'), a1]
+    // Later loggedAt wins despite identical seq and shuffled input order.
+    expect(fold(events)[0].capturedAt).toBe('2026-08-02T07:00:00-04:00')
+  })
+
   it('applies one amend to all listed targets', () => {
     const loc = { lat: 40.7, lng: -74, accuracyM: 10 }
     const events = [

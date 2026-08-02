@@ -72,22 +72,28 @@ describe('appendCapture', () => {
   })
 
   it('queues sync status for each appended event', async () => {
-    await appendCapture({ stream: 'timelog', capturedAt: AT, attachments: [] })
+    const e = await appendCapture({ stream: 'timelog', capturedAt: AT, attachments: [] })
     const statuses = await getSyncStatuses('timelog')
-    expect(statuses.get(1)?.status).toBe('queued')
+    expect(statuses.get(e.id)?.status).toBe('queued')
   })
 
   it('queues with attempts 0 and phase per attachment presence (SPEC §5.2)', async () => {
-    await appendCapture({ stream: 'timelog', capturedAt: AT, attachments: [] })
-    await appendCapture({ stream: 'timelog', capturedAt: AT, attachments: [audioAttachment()] })
+    const bare = await appendCapture({ stream: 'timelog', capturedAt: AT, attachments: [] })
+    const withAudio = await appendCapture({
+      stream: 'timelog',
+      capturedAt: AT,
+      attachments: [audioAttachment()],
+    })
     const statuses = await getSyncStatuses('timelog')
-    expect(statuses.get(1)).toMatchObject({ attempts: 0, phase: 'record-pending' })
-    expect(statuses.get(2)).toMatchObject({ attempts: 0, phase: 'attachments-pending' })
+    expect(statuses.get(bare.id)).toMatchObject({ attempts: 0, phase: 'record-pending' })
+    expect(statuses.get(withAudio.id)).toMatchObject({ attempts: 0, phase: 'attachments-pending' })
   })
 })
 
-describe('db migration v1 → v2', () => {
-  it('adds attempts and phase to existing sync rows', async () => {
+describe('db migration to v5 (events/sync re-keyed by id)', () => {
+  it('drops [stream, seq]-keyed rows and re-keys both stores by id', async () => {
+    // Seed a v1-shaped DB: events + sync keyed by [stream, seq] (Design C
+    // makes that key unsound — two devices can mint the same seq offline).
     const v1 = await openDB('timebox', 1, {
       upgrade(db) {
         const events = db.createObjectStore('events', { keyPath: ['stream', 'seq'] })
@@ -99,24 +105,17 @@ describe('db migration v1 → v2', () => {
       },
     })
     await v1.put('sync', { stream: 'timelog', seq: 1, status: 'queued' })
-    await v1.put('sync', { stream: 'timelog', seq: 2, status: 'uploaded' })
+    await v1.put('events', { stream: 'timelog', seq: 1, id: 'aaaaaa' })
     v1.close()
     resetDbCache()
-    const statuses = await getSyncStatuses('timelog')
-    expect(statuses.get(1)).toEqual({
-      stream: 'timelog',
-      seq: 1,
-      status: 'queued',
-      attempts: 0,
-      phase: 'attachments-pending',
-    })
-    expect(statuses.get(2)).toEqual({
-      stream: 'timelog',
-      seq: 2,
-      status: 'uploaded',
-      attempts: 0,
-      phase: 'done',
-    })
+
+    // Old rows are dropped (the local log is a replica; a pull rebuilds it)…
+    expect(await listEvents('timelog')).toEqual([])
+    expect((await getSyncStatuses('timelog')).size).toBe(0)
+
+    // …and the re-keyed stores accept id-keyed appends.
+    const e = await appendCapture({ stream: 'timelog', capturedAt: AT, attachments: [] })
+    expect((await getSyncStatuses('timelog')).get(e.id)?.status).toBe('queued')
   })
 })
 

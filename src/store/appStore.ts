@@ -23,14 +23,32 @@ import type { SyncStatusRow } from './db'
 import { connectionState, getValidAccessToken, type DriveConnection } from '../drive/token'
 import { connect, disconnect } from '../drive/auth'
 import { getStoredToken } from '../drive/token'
-import { drainStream, type DrainResult } from '../drive/queue'
+import { drainStream, type DrainOutcome } from '../drive/queue'
+import { pullStream } from '../drive/pull'
+
+/** Combined result of one sync cycle: pull (Drive → local) then push. */
+export interface SyncResult {
+  outcome: DrainOutcome
+  uploaded: number
+  pulled: number
+  error?: string
+}
+
+/** Worst-of ordering so one cycle reports its most actionable outcome. */
+const OUTCOME_RANK: Record<DrainOutcome, number> = {
+  idle: 0,
+  drained: 1,
+  'retry-later': 2,
+  reconnect: 3,
+  error: 4,
+}
 
 interface AppState {
   /** True once init() has settled; App dismisses the boot splash on it. */
   ready: boolean
   currentStreamId: string
   entries: Entry[]
-  syncStatuses: Map<number, SyncStatusRow>
+  syncStatuses: Map<string, SyncStatusRow>
   places: Place[]
   appSettings: AppSettings
   streamSettings: StreamSettings
@@ -52,12 +70,14 @@ interface AppState {
   connectDrive: () => Promise<void>
   disconnectDrive: () => Promise<void>
   /**
-   * Drain the queue if a valid token exists. Safe to call from any trigger
-   * (app open, focus, online, post-capture, manual). Returns the drain
-   * outcome so a manual "Sync now" can report it; a missing/expired token
-   * yields 'reconnect' and a re-entrant call yields 'retry-later'.
+   * One full sync cycle if a valid token exists: pull the remote log first
+   * (so pushes append after everything other devices committed), then drain
+   * the upload queue. Safe to call from any trigger (app open, focus, online,
+   * post-capture, manual). Returns the combined outcome so a manual
+   * "Sync now" can report it; a missing/expired token yields 'reconnect' and
+   * a re-entrant call yields 'retry-later'.
    */
-  drainSync: () => Promise<DrainResult>
+  drainSync: () => Promise<SyncResult>
 
   capture: (input: {
     capturedAt: string
@@ -160,26 +180,37 @@ export const useAppStore = create<AppState>()((set, get) => {
     }),
 
     drainSync: async () => {
-      if (get().syncing) return { outcome: 'retry-later', uploaded: 0 }
+      if (get().syncing) return { outcome: 'retry-later', uploaded: 0, pulled: 0 }
       const token = await getValidAccessToken()
       if (!token) {
         // No usable token: reflect expiry so the reconnect pill can appear.
         await get().refreshConnection()
-        return { outcome: 'reconnect', uploaded: 0 }
+        return { outcome: 'reconnect', uploaded: 0, pulled: 0 }
       }
       set({ syncing: true })
       try {
-        const result = await drainStream(token, get().currentStreamId)
-        if (result.outcome === 'reconnect') set({ driveConnection: 'expired' })
-        if (result.outcome === 'error' && result.error) {
-          set({ lastError: `Sync failed: ${result.error}` })
+        // Pull before push: local appends then land after everything the
+        // remote log already has, and a restored device rehydrates first.
+        const pull = await pullStream(token, get().currentStreamId)
+        if (pull.outcome === 'reconnect') {
+          set({ driveConnection: 'expired' })
+          await get().refresh()
+          return { outcome: 'reconnect', uploaded: 0, pulled: pull.pulled }
         }
+        const push = await drainStream(token, get().currentStreamId)
+        if (push.outcome === 'reconnect') set({ driveConnection: 'expired' })
+
+        const pullOutcome: DrainOutcome = pull.outcome === 'pulled' ? 'drained' : pull.outcome
+        const outcome =
+          OUTCOME_RANK[pullOutcome] > OUTCOME_RANK[push.outcome] ? pullOutcome : push.outcome
+        const error = push.error ?? pull.error
+        if (outcome === 'error' && error) set({ lastError: `Sync failed: ${error}` })
         await get().refresh()
-        return result
+        return { outcome, uploaded: push.uploaded, pulled: pull.pulled, ...(error ? { error } : {}) }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
         set({ lastError: `Sync failed: ${message}` })
-        return { outcome: 'error', uploaded: 0, error: message }
+        return { outcome: 'error', uploaded: 0, pulled: 0, error: message }
       } finally {
         set({ syncing: false })
       }

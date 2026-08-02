@@ -4,6 +4,8 @@ import {
   FOLDER_MIME,
   createFolder,
   findFile,
+  listChildren,
+  readFileBlob,
   readFileText,
   updateFileContent,
   uploadFile,
@@ -128,6 +130,40 @@ describe('readFileText', () => {
     const text = await readFileText('tok', 'file-9')
     expect(text).toBe('checkpoint-body')
     expect(String(fetchMock.mock.calls[0][0])).toContain('/files/file-9?alt=media')
+  })
+})
+
+describe('readFileBlob', () => {
+  it('reads media contents as a Blob', async () => {
+    const fetchMock = stubFetch(new Response(new Blob(['audio-bytes']), { status: 200 }))
+    const blob = await readFileBlob('tok', 'file-3')
+    expect(await blob.text()).toBe('audio-bytes')
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/files/file-3?alt=media')
+  })
+})
+
+describe('listChildren', () => {
+  it('queries non-trashed children of the parent', async () => {
+    const files = [{ id: 'f1', name: 'a.json', mimeType: 'application/json' }]
+    const fetchMock = stubFetch(jsonResponse({ files }))
+    expect(await listChildren('tok', 'parent-1')).toEqual(files)
+
+    const q = new URL(String(fetchMock.mock.calls[0][0])).searchParams.get('q') ?? ''
+    expect(q).toContain("'parent-1' in parents")
+    expect(q).toContain('trashed = false')
+  })
+
+  it('follows nextPageToken across pages', async () => {
+    const page1 = [{ id: 'f1', name: 'a.json', mimeType: 'application/json' }]
+    const page2 = [{ id: 'f2', name: 'b.json', mimeType: 'application/json' }]
+    const fetchMock = stubFetch(
+      jsonResponse({ files: page1, nextPageToken: 'tok-2' }),
+      jsonResponse({ files: page2 }),
+    )
+    expect(await listChildren('tok', 'parent-1')).toEqual([...page1, ...page2])
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    const second = new URL(String(fetchMock.mock.calls[1][0]))
+    expect(second.searchParams.get('pageToken')).toBe('tok-2')
   })
 })
 
