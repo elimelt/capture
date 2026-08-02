@@ -1,5 +1,5 @@
-import { Suspense, lazy, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
-import { NavLink, Navigate, Route, Routes } from 'react-router-dom'
+import { Suspense, lazy, useEffect, useMemo, useRef, useState, useSyncExternalStore, type TouchEvent } from 'react'
+import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import CaptureScreen from './capture/CaptureScreen'
 import DayScreen from './dayview/DayScreen'
 import SettingsScreen from './settings/SettingsScreen'
@@ -14,6 +14,7 @@ import { drainCaptions } from './vision/runner'
 import { ReconnectPill } from './drive/ReconnectPill'
 import { ProgressBar, RouteErrorBoundary, Toast, cx, layer, shape, tone, type_ } from './ui'
 import { TABS, visibleTabs } from './navTabs'
+import { adjacentTabPath, getSwipeDirection, shouldIgnoreSwipe } from './navigation/swipe'
 
 /**
  * Opt-in assistant route (issue #66). Lazy so users who never enable it
@@ -61,6 +62,9 @@ function enrichmentNoticeBody(transcribed: number, captioned: number): string {
 }
 
 export default function App() {
+  const location = useLocation()
+  const navigate = useNavigate()
+  const touchStart = useRef<{ x: number; y: number } | null>(null)
   const init = useAppStore((s) => s.init)
   const refresh = useAppStore((s) => s.refresh)
   const entries = useAppStore((s) => s.entries)
@@ -72,8 +76,28 @@ export default function App() {
   const syncing = useAppStore((s) => s.syncing)
   const syncProgress = useAppStore((s) => s.syncProgress)
   const tabs = visibleTabs(TABS, assistantEnabled)
+  const tabPaths = tabs.map((tab) => tab.to)
   // Issue #61: a waiting SW update, published by main.tsx's registerSW callback.
   const updateAvailable = useSyncExternalStore(swUpdate.subscribe, swUpdate.snapshot)
+
+  const onTouchStart = (event: TouchEvent<HTMLElement>) => {
+    const touch = event.touches[0]
+    if (!touch || event.touches.length !== 1 || shouldIgnoreSwipe(event.target, event.currentTarget)) {
+      touchStart.current = null
+      return
+    }
+    touchStart.current = { x: touch.clientX, y: touch.clientY }
+  }
+
+  const onTouchEnd = (event: TouchEvent<HTMLElement>) => {
+    const start = touchStart.current
+    touchStart.current = null
+    const touch = event.changedTouches[0]
+    if (!start || !touch) return
+    const direction = getSwipeDirection(start.x, start.y, touch.clientX, touch.clientY)
+    const path = direction ? adjacentTabPath(location.pathname, tabPaths, direction) : null
+    if (path) navigate(path)
+  }
 
   // The HTML boot splash (index.html) covers the app until the store is
   // hydrated, so the first paint is real content, never a flash of empty
@@ -153,7 +177,11 @@ export default function App() {
             inset), not guessed — see the nav's dimensions below — plus a
             1rem gutter, so the last card always clears the bar regardless
             of how large a device's home-indicator inset is. */}
-        <main className="flex-1 pb-[calc(3.5rem+env(safe-area-inset-bottom)+1rem)] pt-[env(safe-area-inset-top)]">
+        <main
+          className="flex-1 pb-[calc(3.5rem+env(safe-area-inset-bottom)+1rem)] pt-[env(safe-area-inset-top)]"
+          onTouchStart={onTouchStart}
+          onTouchEnd={onTouchEnd}
+        >
           <ReconnectPill />
           <Routes>
             <Route path="/" element={<CaptureScreen />} />
