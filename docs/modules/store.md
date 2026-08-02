@@ -234,6 +234,14 @@ ones), the `summarizeSyncStatuses` rollup (pending/error counts, highest-seq
 `lastError`, omitted when the errored row has no message), and
 `getLastSyncAt`/`setLastSyncAt` round-trips per stream.
 
+### src/store/events.sync.test.ts
+
+Sync-specific edge case tests: `importEvents` marking pulled events as `uploaded` (never
+re-pushed), seq counter bump correctness, idempotent re-import, blob keying by contract
+filename, `listPendingSync` ordering by seq, exclusion of uploaded events from pending
+queue, cross-device merge scenarios with seq collisions, and sequential multi-import
+handling.
+
 ### src/store/places.test.ts
 
 Verifies the places repo CRUD round-trip, `put` overwrite semantics on duplicate ids,
