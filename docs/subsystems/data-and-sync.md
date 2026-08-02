@@ -76,14 +76,16 @@ sequenceDiagram
     AS->>AS: refresh() — refold entries
     Note over AS: entry stays queued locally until<br/>the user taps "Sync now" (Settings)
     AS->>P: drainSync() — manual "Sync now"; pull first
-    P->>D: list log/ partitions, diff by id
+    P->>D: changes.list from persisted cursor (or full walk on cold start)
+    P->>D: list dirty partitions, diff by id
     P->>D: fetch missing records + attachments
     P->>EV: importEvents(...) — atomic per partition
     AS->>Q: then push
     Q->>EV: listPendingSync(stream) — seq order
     Q->>D: ensureTree / ensurePartition
     loop each pending row
-        Q->>D: upload attachments (find-first)
+        Q->>D: mint file ids (generateIds, batched) → persist on row
+        Q->>D: upload attachments (pre-generated id; 409 = ok)
         Q->>EV: phase = record-pending
         Q->>D: upload event .json — the commit
         Q->>EV: status = uploaded, phase = done
@@ -110,11 +112,14 @@ Stage by stage:
 4. **Drive tree + commit.** On first use (or a cache miss) the drainer runs
    `ensureTree` (`bootstrap.ts`): `timebox/` root, `streams.json`, and per stream a
    folder with `config.json`/`checkpoint.json` stubs, `log/`, and `results/` —
-   every step finds-before-creates, with ids cached in `tree.ts`. Then, per event:
-   attachments upload first, the event record `.json` last. **The record is the
-   commit** (SPEC §5.2): an event exists in Drive iff its record does. Orphan
-   attachments from an interrupted upload reference nothing and are invisible to
-   any fold.
+   every step finds-before-creates, with ids cached in `tree.ts` and everything
+   tagged with app-private `appProperties` at creation. Then, per event: Drive
+   file ids are minted client-side (`files.generateIds`, batched in `ids.ts`) and
+   persisted on the sync row before any upload; attachments upload first, the
+   event record `.json` last, each carrying its pre-generated id (a 409 means a
+   prior attempt already landed — success). **The record is the commit** (SPEC
+   §5.2): an event exists in Drive iff its record does. Orphan attachments from
+   an interrupted upload reference nothing and are invisible to any fold.
 
 After a successful upload, local audio blobs are pruned unless the stream's
 `keepAudioLocally` setting says otherwise.
@@ -125,9 +130,17 @@ The local log is a **replica** of the Drive log, not just its source. Every sync
 cycle starts with `pullStream(token, stream)` (`src/drive/pull.ts`), which
 converges the replica with Drive before anything is pushed:
 
-1. **Discover.** List every `log/` partition folder and its children; parse each
-   filename with `idOfRecordName`. Names that parse to an id already held locally
-   are skipped without a read; attachments and foreign files are ignored.
+1. **Discover.** One `changes.list` request from the per-stream cursor persisted
+   in `meta` (`src/drive/changes.ts`) marks the partitions that gained record
+   files since the last pull — a no-op pull is a single request no matter how old
+   the log. Only the dirty partitions are then listed; each child's filename is
+   parsed with `idOfRecordName`, and names that parse to an id already held
+   locally (including everything this device just pushed) are skipped without a
+   read; attachments, foreign files, and removed/trashed changes are ignored.
+   Without a cursor — or when Drive rejects one (410 expiry, account switch) —
+   discovery falls back once to the full walk (every `log/` partition folder and
+   its children), minting a fresh cursor before the walk and persisting it after
+   the pull succeeds, so no change window is ever skipped, at worst replayed.
 2. **Fetch.** Download each missing event record, `parseEvent`-validate it
    (malformed records are skipped, never fatal), and **eagerly** download every
    attachment the event references that isn't already stored (tolerating pruned or
@@ -207,11 +220,14 @@ The subsystem is safe to interrupt at any point, by construction:
 - **Local appends are transactional.** One IndexedDB transaction covers counter,
   event, blobs, and sync row (`events.ts`), so a crash leaves either a complete
   append or nothing — never a half-written entry.
-- **Uploads are idempotent by filename.** Attachment and record names are computed
-  once, at append time, from `seq`/`loggedAt`/`id`; the same name keys the local
-  blob and the Drive file. The drainer `findFile`s before every upload, so a
-  retried row (after crash, network drop, or backoff) never duplicates anything
-  already in Drive.
+- **Uploads are idempotent by pre-generated id.** Attachment and record names are
+  computed once, at append time, from `seq`/`loggedAt`/`id`; the same name keys
+  the local blob and the Drive file. The drainer mints Drive file ids client-side
+  and persists them on the sync row *before* the first attempt, so a retried row
+  (after crash, network drop, or backoff) re-uploads with the same id and Drive's
+  409 counts as success — never duplicating anything already in Drive, without
+  any find-before-upload requests. (Rows from older app versions that already
+  attempted an upload keep the legacy `findFile` probe.)
 - **The record-last protocol substitutes for transactions in Drive.** Drive has
   none, so commit is defined as "the `.json` record exists" (SPEC §5.2). Any
   interruption between attachment and record uploads leaves only orphans, which
@@ -227,7 +243,10 @@ The subsystem is safe to interrupt at any point, by construction:
 - **Pulls are idempotent and atomic.** Discovery is by event id from filenames, so
   a re-pull skips everything already held; imports commit per partition in one
   transaction (events + blobs + counter bump), so an interrupted pull leaves only
-  complete events, all of which the next pull skips.
+  complete events, all of which the next pull skips. The changes cursor advances
+  only after a fully successful pull and self-heals like the tree cache (missing,
+  expired, or account-foreign cursors trigger one full walk + re-mint), so the
+  Changes fast path can only replay work, never drop it.
 - **The fold tolerates disorder.** It sorts by `compareEvents` and silently ignores
   unknown or already-revoked targets, so partial replication (e.g. a skill reading
   Drive mid-drain, or a pull racing an in-flight upload) still folds to a
