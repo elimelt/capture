@@ -147,6 +147,15 @@ export interface TimeboxDB extends DBSchema {
     value: OverlayEventRow
     indexes: { 'by-stream': string }
   }
+  /**
+   * Cached per-clip waveform peaks (#86), keyed by the audio attachment's
+   * contract filename — same keying discipline as `blobs`. Purely derived,
+   * rebuildable data: never synced, never an event, cleared by `wipeAll`.
+   */
+  waveforms: {
+    key: string
+    value: { file: string; peaks: number[] }
+  }
 }
 
 export type TimeboxDatabase = IDBPDatabase<TimeboxDB>
@@ -175,7 +184,7 @@ function forget(promise: Promise<TimeboxDatabase>): void {
 
 export function getDb(): Promise<TimeboxDatabase> {
   if (dbPromise) return dbPromise
-  const promise: Promise<TimeboxDatabase> = openDB<TimeboxDB>('timebox', 10, {
+  const promise: Promise<TimeboxDatabase> = openDB<TimeboxDB>('timebox', 11, {
     async upgrade(db, oldVersion, _newVersion, tx) {
       if (oldVersion < 1) {
         const events = db.createObjectStore('events', { keyPath: ['stream', 'seq'] })
@@ -243,6 +252,12 @@ export function getDb(): Promise<TimeboxDatabase> {
         // by-stream index, mirroring `events`; existing stores untouched.
         const overlay = db.createObjectStore('overlayEvents', { keyPath: 'id' })
         overlay.createIndex('by-stream', 'stream')
+      }
+      if (oldVersion < 11 && !db.objectStoreNames.contains('waveforms')) {
+        // v11: cached per-clip waveform peaks (#86), keyed by attachment
+        // filename like `blobs`. Purely derived/rebuildable — additive and
+        // self-contained, mirroring the v8 pattern.
+        db.createObjectStore('waveforms', { keyPath: 'file' })
       }
       // v9: settings become an event-sourced system stream; legacy meta
       // settings are seeded into `settings`-stream events. Deliberately NOT

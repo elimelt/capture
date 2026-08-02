@@ -34,6 +34,7 @@ import { reasonLabel, relativeDayLabel } from './related'
 import { useAudioPlayback } from './useAudioPlayback'
 import { useRecorder, type RecordingResult } from './useRecorder'
 import { useRelated, type RelatedRow } from './useRelated'
+import { Waveform } from './Waveform'
 
 // Leaflet-backed; lazy so its chunk (JS + CSS) stays out of the initial
 // bundle and now only loads once a card's `PlaceCard` row is explicitly
@@ -171,6 +172,18 @@ export function EntryCard({
             {audio.durationSec}s
           </span>
         )}
+        {/* Signature fingerprint (#86), "beside the play control": rendered
+            here whenever the collapsed primary-content slot below isn't
+            *also* showing this same clip's fingerprint — i.e. whenever the
+            card has primaryText (e.g. a transcribed clip) or is expanded
+            (the collapsed-only primary-content slot has unmounted). Audio-
+            only + collapsed is the one case that skips this, since the
+            fingerprint already renders as the primary content below —
+            never drawn twice for the same clip, never absent while the
+            audio is visible (req. 5). */}
+        {audio && (vm.primaryText || expanded) && (
+          <Waveform file={audio.file} progress={playback.progress} className="w-14 shrink-0" />
+        )}
         {audio && (
           <IconButton
             variant="accent"
@@ -190,16 +203,26 @@ export function EntryCard({
         )}
       </div>
 
-      {/* Collapsed content: the entry's primary text representation only,
-          clamped to two lines; tapping it expands the card. Audio-only
-          entries have no separate content block — the header play button
-          already represents the primary clip. */}
+      {/* Collapsed content: the entry's primary text representation, or —
+          for an audio-only entry — its waveform fingerprint (#86) standing
+          in as the primary content, doubling as the play-progress
+          indicator; tapping either expands the card. */}
       {!expanded && vm.primaryText && (
         <PrimaryTextPreview
           file={vm.primaryText.file}
           authorship={vm.primaryText.authorship}
           onTap={() => setExpanded(true)}
         />
+      )}
+      {!expanded && !vm.primaryText && audio && (
+        <button
+          type="button"
+          onClick={() => setExpanded(true)}
+          aria-label="Show more"
+          className="mt-2 block w-full"
+        >
+          <Waveform file={audio.file} progress={playback.progress} height={28} />
+        </button>
       )}
 
       {/* Expanded content: full attachment body + location preview, per #78. */}

@@ -282,6 +282,75 @@ clamped) every ~50ms into a rolling history, so the strip covers roughly the las
 seconds, drawn right-to-left with a 3px minimum bar height. The rAF loop is cancelled on
 unmount.
 
+### src/capture/waveformMath.ts
+
+**Purpose:** The signature visual primitive's pure core (#86) — reduces decoded PCM
+samples to normalized peak buckets and turns those into bar geometry, no DOM/I/O; tested
+directly (`waveformMath.test.ts`, no jsdom). Named `waveformMath` rather than the issue's
+suggested `waveform` to avoid colliding with `Waveform.tsx` on case-insensitive
+filesystems — the same `PhotoViewer.tsx`/`photoViewerMath.ts` split this module follows.
+
+**Exports:**
+
+- `WAVEFORM_BUCKETS` (32) — bucket count for a clip's fingerprint, in the same N ≈ 28–36
+  range as `LevelMeter`'s 36-bar language (the "live antecedent": capture shows the
+  waveform being born via `LevelMeter`, the card keeps it via this module).
+- `MIN_BAR_HEIGHT` (3px) — `drawSpec`'s minimum bar height, mirroring `LevelMeter`'s
+  3px-minimum convention.
+- `interface Bar { x; y; width; height }` — one drawable bar in a caller-given box.
+- `peaks(samples: Float32Array | readonly number[], buckets: number): number[]` —
+  deterministic, pure reduction to `buckets` peak values in `[0, 1]`. Each bucket holds
+  the max absolute sample in its window (fractional bucket boundaries, so
+  `samples.length < buckets` still yields exactly `buckets` values, each window widened
+  to at least one sample); the result is normalized so the loudest bucket is exactly 1,
+  except an all-silent (or empty) `samples` maps to all 0 rather than dividing by zero.
+  Non-finite samples (NaN/Infinity) are treated as 0 rather than propagating.
+- `drawSpec(peaksArr: readonly number[], width: number, height: number): Bar[]` — pure
+  geometry turning normalized peaks into vertically-centered bars inside a `width`×
+  `height` box. Every bar is at least `min(MIN_BAR_HEIGHT, height)` tall, so silence (or
+  the neutral placeholder `Waveform.tsx` renders while decoding) still shows a hairline
+  strip rather than vanishing; out-of-range/non-finite peak values are clamped so a
+  decoder's stray NaN never produces a NaN rect; a degenerate box or empty `peaksArr`
+  yields no bars.
+
+### src/capture/Waveform.tsx
+
+**Purpose:** The signature visual primitive (#86) — a small, static, per-clip amplitude
+glyph that is the entry's visual identity wherever its audio appears, doubling as the
+playback progress indicator. Composes `waveformMath.ts`'s pure functions with the async
+decode/cache/render glue `photoViewerMath.ts`/`PhotoViewer.tsx` don't need.
+
+**Export:** `Waveform({ file, progress?, height?, className? }: WaveformProps)` — `file`
+is the audio attachment's contract filename (the `blobs`/`waveforms` cache key);
+`progress` (0..1, default 0) is `useAudioPlayback.progress`; `height` (default 24px)
+sizes the strip, which always fills its parent's width. Renders an `aria-hidden`
+absolutely-stacked pair of inline SVGs — a quiet base fingerprint plus a full-strength
+accent copy clipped to the played fraction (`clip-path: inset(...)`) — so the played
+portion and the signature are one element (req. 4). The clip-path transition is covered
+by `index.css`'s global `prefers-reduced-motion` rule (collapses `transition-duration`),
+so no extra reduced-motion handling lives here.
+
+**Decode & cache (lazy, defensive — req. 2/3):** on mount, checks the `waveforms`
+IndexedDB cache (`getWaveform`/`putWaveform`, `src/store/events.ts`) first; a cache miss
+loads the blob (`getBlob`), decodes it via `AudioContext.decodeAudioData`, reduces the
+first channel through `peaks`, renders it, and writes it back to the cache — so a clip is
+ever decoded at most once across the app's lifetime. Decode is never triggered before a
+card's first render (capture itself never touches this module). While decoding, the
+component shows a neutral placeholder (an all-zero `peaks` array fed through the same
+`drawSpec` — silence's own hairline-minimum rendering, so no placeholder-specific drawing
+code is needed) so a card never blocks on this. On any failure — missing blob, no
+`AudioContext`, or a `decodeAudioData` rejection (iOS `audio/mp4` is expected to work;
+this is a silent best-effort fallback matching `useRecorder`'s `LevelMeter` precedent) —
+the component renders `null`, leaving exactly the plain play control that existed before
+this feature; it never throws or blocks the card.
+
+**Placement (req. 4/5):** `EntryCard.tsx` mounts it beside the header play control when
+the card's primary-content slot is already showing `vm.primaryText` (a transcribed
+clip), and as the collapsed primary-content slot itself for audio-only entries (no
+`primaryText`) — tapping it expands the card, like `PrimaryTextPreview`. `AttachmentBody`'s
+`AudioRow` mounts one per extra clip (index ≥ 1) so the fingerprint reads as identity
+everywhere the entry's audio appears, not just the header.
+
 ### src/capture/EntryList.tsx
 
 **Purpose:** Maps `Entry[]` to `EntryCard`s and translates every card edit into a store
@@ -461,7 +530,14 @@ The card computes its own `EntryLifecycle` from `sync` + `hasPendingEnrichment(e
   via `useAudioPlayback(audio?.file)` as an `accent`-variant `IconButton` (accent wash +
   border so it reads as interactive against the card); while playing, a progress fill
   widens behind the ▶/■ icon. This is the collapsed card's "play" affordance; later
-  clips render inside `AttachmentBody`, expanded only.
+  clips render inside `AttachmentBody`, expanded only. A `Waveform` strip
+  (`waveformMath.ts`/`Waveform.tsx`, #86, fed the same `playback.progress`) renders
+  beside this button whenever the collapsed primary-content slot below *isn't* also
+  showing this clip's fingerprint — i.e. whenever the card has `vm.primaryText` (a
+  transcribed clip; the slot below is text) or is expanded (that slot has unmounted).
+  The one case that skips it is a collapsed, audio-only card, where the fingerprint
+  already renders as the primary content itself — so it is never drawn twice for the
+  same clip, and never absent while the audio is visible (req. 5).
 - **Collapsed content:** when collapsed and `vm.primaryText` is set, `PrimaryTextPreview`
   (private) loads the text via `getBlob` (same stale-guarded pattern as
   `AttachmentBody`'s `NoteText`) and renders it `line-clamp-2`, styled `bodyStrong` in
@@ -472,8 +548,10 @@ The card computes its own `EntryLifecycle` from `sync` + `hasPendingEnrichment(e
   typed. Tapping the preview expands the card rather than opening the inline editor —
   editing lives behind expansion. `bodyStrong` is `leading-snug` (not `leading-normal`,
   #85) so the two-line clamp reads as a compact fragment of speech, not a headline.
-  Audio-only entries show no separate content block; the header play button already
-  represents the primary clip.
+  Audio-only entries (no `vm.primaryText`) show their `Waveform` fingerprint (#86) in
+  this same slot instead — full-width, fed `playback.progress`, wrapped in a button
+  that expands the card on tap like `PrimaryTextPreview` — so the primary clip's
+  signature *is* the collapsed content rather than a bare play button standing alone.
 - **Expanded content:** the full `AttachmentBody` (all attachments, inline editing) plus
   a `PlaceCard` row (when `entry.location` is set) mount once `expanded` is true.
   `PlaceCard` is leaflet-free — no network, no map tiles in the feed (#81); tapping it
@@ -721,7 +799,9 @@ classifier.
   `TextSheet`, titled "Edit note" / "Edit caption" / "Edit transcript" per `EDIT_TITLE[
   authorship(attachment)]`; save calls `onEditText(file, text, derivedFrom)`.
 - `AudioRow` is a playback row (via `useAudioPlayback`) with the same progress-fill
-  toggle button plus "Recording · Ns" caption.
+  toggle button, a `Waveform` fingerprint strip (#86, same `playback.progress`) beside
+  it, plus "Recording · Ns" caption — the entry's signature reads consistently on every
+  clip beyond the header's primary one.
 - `PhotoThumb` loads a blob object URL (revoked on unmount), shows a 64px thumbnail, and
   expands to the full-screen `PhotoViewer` on tap, passing the photo's caption
   attachment file (if any) for alt text; the viewer's "Remove photo" button closes it

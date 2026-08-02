@@ -11,8 +11,10 @@ import {
   getBlob,
   getLastSyncAt,
   getSyncStatuses,
+  getWaveform,
   listEntries,
   listEvents,
+  putWaveform,
   setLastSyncAt,
   summarizeSyncStatuses,
   wipeAll,
@@ -163,6 +165,26 @@ describe('wipeAll', () => {
     await setLastSyncAt('timelog', AT)
     await wipeAll()
     expect(await getLastSyncAt('timelog')).toBeUndefined()
+  })
+
+  it('clears cached waveform peaks (#86: derived, rebuildable data)', async () => {
+    await putWaveform('a_audio_1.m4a', [0, 0.5, 1])
+    await wipeAll()
+    expect(await getWaveform('a_audio_1.m4a')).toBeUndefined()
+  })
+})
+
+describe('getWaveform/putWaveform', () => {
+  it('round-trips peaks keyed by filename', async () => {
+    expect(await getWaveform('a_audio_1.m4a')).toBeUndefined()
+    await putWaveform('a_audio_1.m4a', [0, 0.25, 1, 0.5])
+    expect(await getWaveform('a_audio_1.m4a')).toEqual([0, 0.25, 1, 0.5])
+  })
+
+  it('put overwrites a previous cache entry for the same file', async () => {
+    await putWaveform('a_audio_1.m4a', [0, 1])
+    await putWaveform('a_audio_1.m4a', [1, 0, 1])
+    expect(await getWaveform('a_audio_1.m4a')).toEqual([1, 0, 1])
   })
 })
 
