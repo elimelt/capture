@@ -74,6 +74,24 @@ Key exports:
 - `listChildren(token, parentId): Promise<DriveChild[]>` — every non-trashed child of a folder, following `nextPageToken` pagination (`pageSize` 1000). Used by the pull path to enumerate `log/` partitions and their files; because filenames lead with the zero-padded seq and embed the id (§5.1), the names alone answer discovery without opening a file.
 - `updateFileContent(token, fileId, mimeType, body): Promise<void>` — `PATCH …?uploadType=media`, overwriting content in place. Used only for the app-owned `config.json`; the immutable `log/` is never updated this way.
 
+### src/drive/space.ts
+
+Read-only Drive storage accounting for the Settings "Data" section (SPEC §4.3).
+Deliberately self-contained — its own small `fetch` helper mirroring client.ts's
+conventions, sharing only the `DriveError` classification — so it can evolve
+independently of the upload/pull primitives.
+
+- `interface DriveSpace { usageBytes; limitBytes?; appBytes: number }` —
+  account-wide usage, the account quota (`limitBytes` absent on unlimited plans),
+  and this app's own footprint.
+- `fetchDriveSpace(token): Promise<DriveSpace>` — one on-demand check: the account
+  quota from `about.get?fields=storageQuota` (`drive.file` is a sufficient scope;
+  Drive returns int64s as strings) in parallel with a paginated `files.list`
+  (`trashed = false`, `pageSize` 1000) summing `quotaBytesUsed` — under `drive.file`
+  the listing only ever contains files the app created, so the sum is exactly the
+  app's Drive usage. Failures throw `DriveError` (401/403 → reconnect messaging in
+  Settings). Callers fetch on a user tap, never on a timer.
+
 ### src/drive/tree.ts
 
 Cache of Drive file ids in the IndexedDB `meta` store (key `drive:tree`). Because
@@ -165,6 +183,7 @@ Never a blocking modal. Rendered by `src/App.tsx`.
 - `src/drive/token.test.ts` — verifies token round-trip/clear against fake IndexedDB, the 60s expiry-skew behavior of `tokenValid`, and the `getValidAccessToken` / `connectionState` derivations.
 - `src/drive/auth.test.ts` — with a stubbed GIS global, covers `connect` (token persistence, expiry from `expires_in`, single reused token client, `drive.file` scope, prompt override, error rejection) and `disconnect` (revoke + local clear, clear-only when no token passed).
 - `src/drive/client.test.ts` — with stubbed `fetch`, covers query building/escaping in `findFile`, folder creation, multipart-vs-resumable selection in `uploadFile`, `DriveError` status classification, `readFileText`/`readFileBlob`, and `listChildren` (non-trashed query, `nextPageToken` pagination).
+- `src/drive/space.test.ts` — with stubbed `fetch`, covers `fetchDriveSpace`: quota parsing + app-byte summing (auth header, `about` fields, `files.list` query), `nextPageToken` pagination, `limitBytes` omitted on unlimited plans, and 401 → `DriveError`/`isAuth` classification.
 - `src/drive/bootstrap.test.ts` — against an in-memory fake Drive, asserts `ensureTree` creates the full tree once, is idempotent on re-run, never re-uploads existing mutable stubs, and preserves cached partition ids.
 - `src/drive/queue.test.ts` — against a fake Drive that can be told to fail, covers attachment-before-record ordering, idempotent re-drains, `reconnect` on 401, `retry-later` with `nextRetryAt` on 429, audio pruning when `keepAudioLocally` is false, and the idle case.
 - `src/drive/pull.test.ts` — against an in-memory fake Drive tree plus fake IndexedDB, covers import + `uploaded` status (never re-pushed), eager attachment download, re-pull idempotency (no re-reads), the seq-counter bump past pulled seqs, ignoring foreign files/folders, tolerating a missing attachment, 401 → `reconnect` / 429 → `retry-later` classification, malformed-record errors, and merging with locally queued events across a seq collision.

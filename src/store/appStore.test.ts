@@ -1,5 +1,5 @@
 import 'fake-indexeddb/auto'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore } from './appStore'
 import { getDb, resetDbCache } from './db'
 import { getSettings, getStreamSettings } from './settings'
@@ -36,7 +36,13 @@ beforeEach(async () => {
     lastSyncAt: null,
     appSettings: { locationEnabled: true, assistantEnabled: false, assistantModel: 'gpt-oss:20b' },
     streamSettings: { maxClipSec: 60, keepAudioLocally: true },
+    localSpace: null,
+    appSpace: null,
   })
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
 })
 
 describe('capture', () => {
@@ -117,6 +123,38 @@ describe('wipe', () => {
     const state = useAppStore.getState()
     expect(state.entries).toEqual([])
     expect(state.places).toEqual([])
+  })
+})
+
+describe('space accounting', () => {
+  it('refreshSpace captures the origin estimate and the app-data breakdown', async () => {
+    vi.stubGlobal('navigator', {
+      storage: { estimate: async () => ({ usage: 4321, quota: 5_000_000 }) },
+    })
+    await useAppStore.getState().capture({ capturedAt: AT, attachments: [audioAttachment()] })
+    await useAppStore.getState().refreshSpace()
+    const state = useAppStore.getState()
+    expect(state.localSpace).toEqual({ usageBytes: 4321, quotaBytes: 5_000_000 })
+    expect(state.appSpace?.eventCount).toBe(1)
+    expect(state.appSpace?.blobBytes).toBe(2) // the 'hi' audio blob
+  })
+
+  it('degrades to a null estimate when storage.estimate is unsupported', async () => {
+    vi.stubGlobal('navigator', {})
+    await useAppStore.getState().refreshSpace()
+    const state = useAppStore.getState()
+    expect(state.localSpace).toBeNull()
+    expect(state.appSpace).not.toBeNull()
+  })
+
+  it('wipe re-measures space so the Settings display cannot go stale', async () => {
+    // Regression: usage used to be measured once on Settings mount, so the
+    // number on screen survived "Wipe local data" unchanged.
+    await useAppStore.getState().capture({ capturedAt: AT, attachments: [audioAttachment()] })
+    await useAppStore.getState().refreshSpace()
+    expect(useAppStore.getState().appSpace?.totalBytes).toBeGreaterThan(0)
+    await useAppStore.getState().wipe()
+    expect(useAppStore.getState().appSpace?.totalBytes).toBe(0)
   })
 })
 
