@@ -84,9 +84,8 @@ export function EntryCard({
   onApplyEdit,
   onCopy,
 }: EntryCardProps) {
-  // View-local only, never persisted, never an event — the log carries user
-  // data, not UI state (#78, revised by #102). `menuOpen` is the single "+"
-  // affordance's expand state (actions are what collapse now).
+  // View-local only, never persisted, never an event. The action menu lives
+  // in the entry header so it is available without a footer reveal.
   const [menuOpen, setMenuOpen] = useState(false)
   const [noteOpen, setNoteOpen] = useState(false)
   const [locationOpen, setLocationOpen] = useState(false)
@@ -140,15 +139,24 @@ export function EntryCard({
   )
 
   return (
-    <TimelineRow time={timeControl} first={first} last={last} className={motion.riseIn}>
-      {/* Header: place label and lifecycle status; attachment media lives below. */}
-      <div className="flex items-center gap-2">
+    <TimelineRow
+      beforeTime={
+        entry.location ? (
+          <span className={cx('flex min-w-0 max-w-24 items-center gap-1', type_.caption, tone.textMuted)}>
+            <PinIcon size={13} />
+            <span className="truncate">{locationName(entry.location)}</span>
+          </span>
+        ) : undefined
+      }
+      time={timeControl}
+      first={first}
+      last={last}
+      className={motion.riseIn}
+    >
+      {/* Header: lifecycle status and always-available actions; attachment media lives below. */}
+      <div className="flex items-center gap-1">
         <div className="flex min-w-0 flex-1 items-baseline gap-2">
-          {entry.location && (
-            <span className={cx('truncate', type_.sub, tone.textMuted)}>
-              {locationName(entry.location)}
-            </span>
-          )}
+          <span className="sr-only">{entry.location ? locationName(entry.location) : ''}</span>
         </div>
         <span className="shrink-0">
           <LifecycleBadge lifecycle={lifecycle} />
@@ -158,6 +166,80 @@ export function EntryCard({
             <CopyIcon size={16} />
           </IconButton>
         )}
+        {menuOpen && (
+          <div className="flex flex-wrap items-center justify-end gap-1">
+            <IconButton
+              aria-label="Add note"
+              onClick={() => {
+                setMenuOpen(false)
+                setNoteOpen(true)
+              }}
+            >
+              <NoteIcon size={16} />
+            </IconButton>
+            <IconButton
+              aria-label="Add photo"
+              onClick={() => {
+                setMenuOpen(false)
+                photoInputRef.current?.click()
+              }}
+            >
+              <PhotoIcon size={16} />
+            </IconButton>
+            {rec.state === 'error' ? (
+              <IconButton aria-label="Microphone unavailable, tap to retry" onClick={rec.resetError}>
+                <AudioIcon size={16} />
+              </IconButton>
+            ) : (
+              <IconButton
+                aria-label="Add audio"
+                onClick={() => {
+                  setMenuOpen(false)
+                  void handleAudioTap()
+                }}
+              >
+                <AudioIcon size={16} />
+              </IconButton>
+            )}
+            <IconButton
+              aria-label={entry.location ? 'Edit location' : 'Add location'}
+              onClick={() => {
+                setMenuOpen(false)
+                setLocationOpen(true)
+              }}
+            >
+              {entry.location ? <PinIcon size={16} /> : <PlusIcon size={16} />}
+            </IconButton>
+            <IconButton
+              aria-label="Edit entry"
+              onClick={() => {
+                setMenuOpen(false)
+                setEditOpen(true)
+              }}
+            >
+              <SlidersIcon size={16} />
+            </IconButton>
+            <IconButton
+              variant="danger"
+              aria-label="Delete entry"
+              onClick={() => {
+                setMenuOpen(false)
+                onDelete()
+              }}
+            >
+              <TrashIcon size={16} />
+            </IconButton>
+          </div>
+        )}
+        <IconButton
+          aria-expanded={menuOpen}
+          aria-label={menuOpen ? 'Close actions' : 'Add or edit'}
+          onClick={() => setMenuOpen((open) => !open)}
+        >
+          <span className={cx('inline-flex transition-transform', menuOpen && 'rotate-45')}>
+            <PlusIcon size={18} />
+          </span>
+        </IconButton>
       </div>
 
       <AttachmentTimeline
@@ -198,89 +280,7 @@ export function EntryCard({
             Done
           </button>
         </div>
-      ) : (
-        <div className={cx('mt-3 flex flex-wrap items-center gap-1 border-t pt-2', tone.border)}>
-          {/* The single "+" affordance (#102): replaces the old labelled
-              action column. Every action is still reachable and labelled
-              (aria-label) — icon-only now, tighter, but never removed. */}
-          <div className="ml-auto flex flex-wrap items-center justify-end gap-1">
-            {menuOpen && (
-              <>
-                <IconButton
-                  aria-label="Add note"
-                  onClick={() => {
-                    setMenuOpen(false)
-                    setNoteOpen(true)
-                  }}
-                >
-                  <NoteIcon size={16} />
-                </IconButton>
-                <IconButton
-                  aria-label="Add photo"
-                  onClick={() => {
-                    setMenuOpen(false)
-                    photoInputRef.current?.click()
-                  }}
-                >
-                  <PhotoIcon size={16} />
-                </IconButton>
-                {rec.state === 'error' ? (
-                  <IconButton aria-label="Microphone unavailable, tap to retry" onClick={rec.resetError}>
-                    <AudioIcon size={16} />
-                  </IconButton>
-                ) : (
-                  <IconButton
-                    aria-label="Add audio"
-                    onClick={() => {
-                      setMenuOpen(false)
-                      void handleAudioTap()
-                    }}
-                  >
-                    <AudioIcon size={16} />
-                  </IconButton>
-                )}
-                <IconButton
-                  aria-label={entry.location ? 'Edit location' : 'Add location'}
-                  onClick={() => {
-                    setMenuOpen(false)
-                    setLocationOpen(true)
-                  }}
-                >
-                  {entry.location ? <PinIcon size={16} /> : <PlusIcon size={16} />}
-                </IconButton>
-                <IconButton
-                  aria-label="Edit entry"
-                  onClick={() => {
-                    setMenuOpen(false)
-                    setEditOpen(true)
-                  }}
-                >
-                  <SlidersIcon size={16} />
-                </IconButton>
-                <IconButton
-                  variant="danger"
-                  aria-label="Delete entry"
-                  onClick={() => {
-                    setMenuOpen(false)
-                    onDelete()
-                  }}
-                >
-                  <TrashIcon size={16} />
-                </IconButton>
-              </>
-            )}
-            <IconButton
-              aria-expanded={menuOpen}
-              aria-label={menuOpen ? 'Close actions' : 'Add or edit'}
-              onClick={() => setMenuOpen((o) => !o)}
-            >
-              <span className={cx('inline-flex transition-transform', menuOpen && 'rotate-45')}>
-                <PlusIcon size={18} />
-              </span>
-            </IconButton>
-          </div>
-        </div>
-      )}
+      ) : null}
 
       <input
         ref={photoInputRef}

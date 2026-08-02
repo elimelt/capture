@@ -545,9 +545,8 @@ derived; exhaustive over attachment shapes with/without `derivedFrom` across all
 **Purpose:** One entry's card (#78, inverted by #102: **content is always visible;
 actions are what collapse**), rendered as a node on the timeline rail (`TimelineRow`):
 the captured time + rail dot in the gutter, then the content column with a header (place
-label and lifecycle badge), an attachment sub-timeline ordered by each attachment's
-append timestamp, and the place card,
-then a footer holding the single "+" action menu, plus the
+label, lifecycle badge, and the action menu aligned to the right), an attachment
+sub-timeline ordered by each attachment's append timestamp, and the place card, plus the
 sheets/inputs those actions open.
 
 **Exports:** `EntryCard(props: EntryCardProps)` and `timeLabel(iso: string): string`
@@ -567,11 +566,13 @@ The card computes its own `EntryLifecycle` from `sync` + `hasPendingEnrichment(e
   pairing.
 - **Rail gutter + header:** the editable time moved out of the header into the
   `TimelineRow` `time` slot (`timeControl` — the same tap-to-edit button, now in the
-  gutter beside the rail dot). The header is one flex row holding the place label and
-  lifecycle badge; attachment playback lives in the sub-timeline. The
+  gutter beside the rail dot). When present, the location icon and label occupy the
+  gutter immediately before the timestamp. The header is one flex row holding the
+  lifecycle badge, copy action, and top-right action menu; attachment playback lives
+  in the sub-timeline. The
   time button has no underline decoration; it is still the tap target for the native
   picker (below), and the Edit sheet provides the second, labelled path to the same
-  field. The place label renders only when `vm.collapsedShowsLocation` is true. Both are
+  field. The place label renders in the rail gutter when a location is present. Both are
   metadata, not content (#85): the time button and place label are quiet
   `type_.caption`/`type_.sub` (sans, tabular-nums on the time), never serif.
 - **Rail position:** `first`/`last` props (threaded down from `EntryList`, defaulting
@@ -590,8 +591,8 @@ The card computes its own `EntryLifecycle` from `sync` + `hasPendingEnrichment(e
   with no network or map tiles in the feed (#81); tapping it sets `mapOpen`, which mounts
   the lazy `MiniMap` full-screen dialog. Leaflet's chunk loads only on that explicit tap.
 - **Per-card recorder:** "Add audio" (in the "+" menu) uses its own `useRecorder()`
-  instance so entries can hold multiple clips; while recording, the footer (the
-  "+" menu) is replaced by a compact timer bar with Discard/Done.
+  instance so entries can hold multiple clips; while recording, the action controls
+  are replaced by a compact timer bar with Discard/Done.
   If that recorder errors, the menu's audio icon becomes a "mic unavailable, tap to
   retry" button that just calls `rec.resetError`.
 - **Lazy Leaflet:** `MiniMap` and `LocationSheet` are `lazy()` imports wrapped in
@@ -601,9 +602,9 @@ The card computes its own `EntryLifecycle` from `sync` + `hasPendingEnrichment(e
   location editor.
 - Hidden photo input (camera capture) and a `TextSheet` for "Add note" mirror the
   capture-screen patterns.
-- **The "+" action menu (#102, replaces #78's expanded labelled-action column):** a
-  full-bleed hairline divider separates the card's content from a footer row. The single
-  "+" `IconButton` (aria-expanded, aria-label "Add or edit"/"Close actions") toggles
+- **The "+" action menu (#102, replaces #78's expanded labelled-action column):** the
+  single "+" `IconButton` (aria-expanded, aria-label "Add or edit"/"Close actions")
+  lives in the entry header, aligned to the right of the rail timestamp. It toggles
   `menuOpen`; its `PlusIcon` rotates 45° into an "×" rather than drawing a second glyph.
   When open, six icon-only `IconButton`s appear to its left (`flex-wrap`, so they wrap
   on narrow viewports): "Add note", "Add photo", "Add audio" (or the mic-unavailable
