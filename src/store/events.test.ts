@@ -14,6 +14,8 @@ import {
   getWaveform,
   listEntries,
   listEvents,
+  mergeFileIds,
+  putSyncStatus,
   putWaveform,
   setLastSyncAt,
   summarizeSyncStatuses,
@@ -256,6 +258,58 @@ describe('summarizeSyncStatuses', () => {
   it('omits lastError when the errored row carries no message', () => {
     const rows = [row({ id: 'a', status: 'error' })]
     expect(summarizeSyncStatuses(rows)).toEqual({ pending: 1, errors: 1 })
+  })
+})
+
+describe('mergeFileIds', () => {
+  it('persists minted ids for a row with none yet', async () => {
+    const event = await appendCapture({ stream: 'timelog', capturedAt: AT, attachments: [] })
+    const result = await mergeFileIds(event.id, { 'a.json': 'gen-1' })
+    expect(result).toEqual({ 'a.json': 'gen-1' })
+    expect((await getSyncStatuses('timelog')).get(event.id)?.fileIds).toEqual({ 'a.json': 'gen-1' })
+  })
+
+  it('adds new names alongside ids already on the row', async () => {
+    const event = await appendCapture({ stream: 'timelog', capturedAt: AT, attachments: [] })
+    await mergeFileIds(event.id, { 'a.json': 'gen-1' })
+    const result = await mergeFileIds(event.id, { 'b.json': 'gen-2' })
+    expect(result).toEqual({ 'a.json': 'gen-1', 'b.json': 'gen-2' })
+  })
+
+  it('is a no-op write when every proposed name already has a persisted id (issue #50)', async () => {
+    // Simulates the race: a concurrent drain already persisted an id for
+    // this name via a fresh read, so this call's freshly-minted (but never
+    // used) id for the same name must be discarded, not overwrite the one
+    // already committed — otherwise the two drains would use two different
+    // ids for the same contract filename and both would land on Drive.
+    const event = await appendCapture({ stream: 'timelog', capturedAt: AT, attachments: [] })
+    await mergeFileIds(event.id, { 'a.json': 'winner' })
+    const result = await mergeFileIds(event.id, { 'a.json': 'loser-freshly-minted' })
+    expect(result).toEqual({ 'a.json': 'winner' })
+    expect((await getSyncStatuses('timelog')).get(event.id)?.fileIds).toEqual({ 'a.json': 'winner' })
+  })
+
+  it('reads the row fresh rather than trusting a stale in-memory copy', async () => {
+    // A concurrent writer changes the row (e.g. bumps attempts/status)
+    // between this caller's earlier read and its mergeFileIds call; the
+    // fileIds merge must still land against the *current* row, not clobber
+    // that concurrent change back to a stale snapshot.
+    const event = await appendCapture({ stream: 'timelog', capturedAt: AT, attachments: [] })
+    const staleRow = (await getSyncStatuses('timelog')).get(event.id)!
+    await putSyncStatus({ ...staleRow, status: 'error', attempts: 3, error: 'boom' })
+
+    await mergeFileIds(event.id, { 'a.json': 'gen-1' })
+
+    const row = (await getSyncStatuses('timelog')).get(event.id)!
+    expect(row.fileIds).toEqual({ 'a.json': 'gen-1' })
+    expect(row.status).toBe('error') // untouched by the merge
+    expect(row.attempts).toBe(3)
+    expect(row.error).toBe('boom')
+  })
+
+  it('returns the minted map unchanged if the row has vanished', async () => {
+    const result = await mergeFileIds('no-such-id', { 'a.json': 'gen-1' })
+    expect(result).toEqual({ 'a.json': 'gen-1' })
   })
 })
 

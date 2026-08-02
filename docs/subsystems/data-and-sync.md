@@ -182,12 +182,13 @@ nothing in `src/drive/` changed. Rules:
   `StreamSyncResult { stream, outcome, uploaded, pulled, error? }` in the
   returned `SyncResult.perStream`, and the aggregate `SyncResult` is the
   worst-of outcome with summed counts.
-- **Failure isolation.** A `'reconnect'` (401/403) on any stream aborts the rest
-  of the cycle immediately — the token is dead for every stream — and the
-  skipped streams are marked `'reconnect'` in `perStream`. A `'retry-later'` or
-  `'error'` on one stream does **not** block the others: each stream's Drive
-  folders, sync rows, and `drive:changes:<stream>` cursor are
-  independent.
+- **Failure isolation.** A `'reconnect'` (401, or 403 that isn't quota/rate-limit)
+  or a `'quota'` (403 `storageQuotaExceeded`, issue #88) on any stream aborts
+  the rest of the cycle immediately — the token is dead, or Drive is full, for
+  every stream alike — and the skipped streams are marked with that same
+  outcome in `perStream`. A `'retry-later'` or `'error'` on one stream does
+  **not** block the others: each stream's Drive folders, sync rows, and
+  `drive:changes:<stream>` cursor are independent.
 - **Per-stream `lastSyncAt`.** Each stream's stamp is written only when *that
   stream's* pull+push completed cleanly (`idle`/`drained`), regardless of what
   happened to other streams in the same cycle.
@@ -350,8 +351,9 @@ consumes:
 
 | Failure | Queue behavior | Outcome → store reaction |
 |---|---|---|
-| 401 / 403 (`isAuth`) | row re-queued, drain stops | `'reconnect'` → `driveConnection: 'expired'` (pill) |
-| 429 / 5xx (`isRetryable`) | row re-queued, drain stops | `'retry-later'` (retried on next drain) |
+| 403 with reason `storageQuotaExceeded` (`isQuotaExceeded`) | row re-queued, drain stops | `'quota'` → `driveQuotaExceeded: true` (Settings banner; issue #88) |
+| 401, or 403 with no reason / an unrecognized one (`isAuth`) | row re-queued, drain stops | `'reconnect'` → `driveConnection: 'expired'` (pill) |
+| 429 / 5xx, or 403 with a rate-limit reason (`isRetryable`) | row re-queued, drain stops | `'retry-later'` (retried on next drain) |
 | anything else, row's `attempts` still below `MAX_ATTEMPTS_BEFORE_PARKED` | row marked `'error'`, drain stops | `'error'` → `lastError` toast |
 | anything else, row's `attempts` at/above `MAX_ATTEMPTS_BEFORE_PARKED` | row marked `'error'` and **parked**, drain continues past it | `'error'` (unless a later batch also failed worse) → `lastError` toast |
 
@@ -361,6 +363,25 @@ queued row — the user is the rate limiter. (Older versions persisted a
 `nextRetryAt` window and skipped rows inside it while reporting the drain
 clean, which presented as entries stuck "queued" forever; the drainer now
 ignores any legacy `nextRetryAt` still on a row.)
+
+**Quota vs. auth (issue #88).** Drive reports both "the account's Drive
+storage is full" and Drive-side rate limiting as HTTP 403 — the same status
+`isAuth` used to treat uniformly as "token invalid, reconnect". For a full
+Drive that produced an endless, unfixable loop: every upload 403s → the store
+sets `driveConnection: 'expired'` → the user taps the reconnect pill → it
+succeeds (the token was never the problem) → the next "Sync now" 403s again.
+`DriveError` now parses `error.errors[0].reason` from the response body
+(`client.ts#ensureOk`) and reclassifies: `storageQuotaExceeded` is its own
+`isQuotaExceeded` getter (neither auth nor retryable — retrying changes
+nothing until the user frees space, and reconnecting can't touch Drive's
+storage), and `rateLimitExceeded`/`userRateLimitExceeded`/`dailyLimitExceeded`
+join `isRetryable` instead of `isAuth`. The queue treats a quota row exactly
+like a retryable one (kept `queued`, no backoff gate — the very next "Sync
+now" retries it, which is what a user who just freed up space would do) but
+reports the distinct `'quota'` outcome so the store sets `driveQuotaExceeded`
+instead of `driveConnection`, and Settings shows "Google Drive storage is full
+— free up space, then Sync now" rather than either the generic retry-later
+copy or the reconnect pill (SPEC §8.4.5, §8.4 item 5).
 
 **Poison-row parking (issue #87).** Stopping the whole drain on the first
 failure protects the seq-monotonic commit order (§6.2's checkpoint contract
@@ -384,14 +405,41 @@ this doesn't close: a row already grouped into a persisted segment assignment
 with other members (crash-recovery, above) before it started failing stays
 grouped — that shared-segment case needs manual resolution (revoke the poison
 entry) rather than self-healing. `drainSync` merges each stream's pull and push
-outcomes worst-of (`idle < drained < retry-later < reconnect < error`), then the
-per-stream outcomes worst-of into the aggregate; a `'reconnect'` anywhere skips
-that stream's push and aborts the remaining streams (the token is dead either
-way), while retry-later/error stay stream-local (§2a). A stream's fully clean
-cycle (`idle`/`drained`) stamps *its* `lastSyncAt`; reconnect/retry-later/error
-outcomes leave it untouched. Offline is not a special case: capture works fully
-offline, and the cycle simply runs on the next manual "Sync now" that finds a
-valid token.
+outcomes worst-of (`idle < drained < retry-later < quota < reconnect < error`),
+then the per-stream outcomes worst-of into the aggregate; a `'reconnect'` or
+`'quota'` anywhere skips that stream's push and aborts the remaining streams
+(the token is dead, or Drive is full, either way), while retry-later/error stay
+stream-local (§2a). A stream's fully clean cycle (`idle`/`drained`) stamps
+*its* `lastSyncAt`; reconnect/quota/retry-later/error outcomes leave it
+untouched. Offline is not a special case: capture works fully offline, and the
+cycle simply runs on the next manual "Sync now" that finds a valid token.
+
+**Re-entrancy (issue #50).** A concurrent "Sync now" must never run a second
+pull+push cycle alongside the first: two drainers reading the same sync row
+before either persists could each mint a *different* pre-generated Drive file
+id for the same contract filename and both upload — a permanent duplicate in
+the user's Drive log, since the app never deletes anything from Drive. The
+pre-fix guard, an in-memory `syncing` flag on `appStore`, had two holes: it's
+per-tab (a second browser tab or an installed-PWA window has its own copy),
+and even within one tab there's an `await` (the access-token lookup) between
+checking the flag and setting it, so two rapid calls could both pass the
+check before either flipped it. `drainSync` now wraps the whole cycle — token
+lookup through the final `refresh()` — in a `navigator.locks.request('capture:sync',
+{ ifAvailable: true }, …)` lock, which serializes every caller sharing the
+origin (tabs, windows, a same-tab re-entry) with no gap between "is it free"
+and "claim it". A call that can't acquire the lock resolves immediately with
+`'busy'` — a new outcome distinct from `'retry-later'` (issue #64: that used
+to mean both "I'm already syncing" and "Drive had a 429/5xx", and Settings
+showed the same misleading "A sync is already in progress" for a real Drive
+outage) — rather than queuing behind the holder or running concurrently. As a
+second line of defense for whenever the lock is unavailable (very old
+browsers, which fall back to the flag alone) or somehow bypassed,
+`assignFileIds` (`src/drive/queue.ts`) persists newly-minted file ids through
+`mergeFileIds` (`src/store/events.ts`): an atomic read-then-merge inside one
+IndexedDB transaction against the row as *currently stored*, not a blind
+overwrite of a possibly-stale in-memory copy, so a name a concurrent drain
+already claimed keeps that drain's id rather than being clobbered by a second,
+differently-minted one.
 
 **Account switching.** The GIS account chooser lets a user grant a *different*
 Google account, and several pieces of local state are only meaningful on the

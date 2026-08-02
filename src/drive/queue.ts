@@ -12,12 +12,17 @@
  * counts as success — no find-before-upload GETs. Rows written by older app
  * versions (no `fileIds`) that already attempted an upload keep the legacy
  * find-before-upload probe — and are never batched — so they never
- * duplicate. Failures classify: 401/403 stops and asks for reconnect;
- * 429/5xx stops with 'retry-later', keeping the batch's rows queued;
- * anything else marks the batch's rows errored and stops — *unless* the row
- * has failed this way `MAX_ATTEMPTS_BEFORE_PARKED` times running, in which
- * case it's treated as parked (issue #87) and the drain moves on to the
- * batches behind it instead of stopping (see MAX_ATTEMPTS_BEFORE_PARKED).
+ * duplicate. Failures classify (`DriveError`, `src/drive/client.ts`): 401, or
+ * a 403 that isn't quota/rate-limit, stops and asks for reconnect; 429/5xx,
+ * or a rate-limited 403, stops with 'retry-later', keeping the batch's rows
+ * queued; a 403 with reason `storageQuotaExceeded` (Drive full, SPEC §8.4.5)
+ * stops with 'quota', also keeping the batch's rows queued — distinct from
+ * both, since reconnecting can never fix a full Drive and retrying changes
+ * nothing until the user frees space (issue #88); anything else marks the
+ * batch's rows errored and stops — *unless* the row has failed this way
+ * `MAX_ATTEMPTS_BEFORE_PARKED` times running, in which case it's treated as
+ * parked (issue #87) and the drain moves on to the batches behind it instead
+ * of stopping (see MAX_ATTEMPTS_BEFORE_PARKED).
  *
  * There is no per-row backoff gate: sync is manual-only (the sole drain
  * trigger is "Sync now"), so every queued row is attempted on every drain —
@@ -43,6 +48,7 @@ import {
   getBlob,
   getEventById,
   listPendingSync,
+  mergeFileIds,
   putSyncStatus,
 } from '../store/events'
 import type { SyncProgressEvent } from '../store/syncProgress'
@@ -53,12 +59,12 @@ import { tags } from './tags'
 import { ensureTree } from './bootstrap'
 import { getTree, saveTree, type DriveTree } from './tree'
 
-export type DrainOutcome = 'idle' | 'drained' | 'reconnect' | 'retry-later' | 'error'
+export type DrainOutcome = 'idle' | 'drained' | 'reconnect' | 'retry-later' | 'quota' | 'error'
 
 export interface DrainResult {
   outcome: DrainOutcome
   uploaded: number
-  /** Present when outcome is 'error': the last row-level failure message. */
+  /** Present when outcome is 'error', 'retry-later', or 'quota': the last row-level failure message. */
   error?: string
 }
 
@@ -113,7 +119,12 @@ function attachmentsOf(event: LogEvent): Attachment[] {
  * Assign pre-generated Drive ids to every file of this event that lacks one,
  * persisting the row *before* any upload: if the upload lands but we crash
  * before recording success, the retry reuses the same id and gets a 409
- * (success) instead of creating a duplicate.
+ * (success) instead of creating a duplicate. The persist step goes through
+ * `mergeFileIds` (issue #50), an atomic compare-and-merge against the row as
+ * currently stored, rather than a blind overwrite of a possibly-stale
+ * in-memory copy — so a concurrent drain that already claimed a name keeps
+ * its id instead of two drains minting and using two different ones for the
+ * same contract filename.
  */
 async function assignFileIds(
   token: string,
@@ -122,15 +133,14 @@ async function assignFileIds(
 ): Promise<Record<string, string>> {
   const fileIds = { ...row.fileIds }
   const missing = names.filter((n) => !fileIds[n])
-  if (missing.length > 0) {
-    const minted = await allocateIds(token, missing.length)
-    missing.forEach((name, i) => {
-      fileIds[name] = minted[i]
-    })
-    row.fileIds = fileIds
-    await putSyncStatus(row)
-  }
-  return fileIds
+  if (missing.length === 0) return fileIds
+  const minted = await allocateIds(token, missing.length)
+  const proposed: Record<string, string> = {}
+  missing.forEach((name, i) => {
+    proposed[name] = minted[i]
+  })
+  row.fileIds = await mergeFileIds(row.id, proposed)
+  return row.fileIds
 }
 
 /**
@@ -310,8 +320,9 @@ async function uploadSegment(
       attachmentsOf(event).map((a) => a.file),
     )
     if (attachmentIds[name] !== segmentId) {
-      row.fileIds = { ...attachmentIds, [name]: segmentId }
-      await putSyncStatus(row)
+      // Same atomic merge as assignFileIds (issue #50): never blind-overwrite
+      // the row with a possibly-stale in-memory fileIds map.
+      row.fileIds = await mergeFileIds(row.id, { [name]: segmentId })
     }
   }
 
@@ -395,6 +406,17 @@ export async function drainStream(
       onProgress({ kind: 'upload-progress', stream, delta: batch.items.length })
     } catch (err) {
       // A batch fails as a unit: every member row records the attempt.
+      if (err instanceof DriveError && err.isQuotaExceeded) {
+        // Issue #88: Drive full (403 storageQuotaExceeded) is neither an auth
+        // problem (the token is fine — reconnecting can never help) nor
+        // transient (retrying changes nothing until the user frees space).
+        // Keep rows queued exactly like retry-later so they upload
+        // automatically once space is freed and "Sync now" runs again.
+        for (const { row } of batch.items) {
+          await putSyncStatus({ ...row, status: 'queued', attempts: row.attempts + 1, error: err.message })
+        }
+        return { outcome: 'quota', uploaded, error: err.message }
+      }
       if (err instanceof DriveError && err.isAuth) {
         for (const { row } of batch.items) {
           await putSyncStatus({ ...row, status: 'queued', attempts: row.attempts + 1, error: err.message })
@@ -409,7 +431,7 @@ export async function drainStream(
         for (const { row } of batch.items) {
           await putSyncStatus({ ...row, status: 'queued', attempts: row.attempts + 1, error: err.message })
         }
-        return { outcome: 'retry-later', uploaded }
+        return { outcome: 'retry-later', uploaded, error: err.message }
       }
       const message = err instanceof Error ? err.message : String(err)
       let attemptsAfter = 0

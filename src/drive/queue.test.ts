@@ -24,7 +24,7 @@ function fakeDrive() {
   }[] = []
   const uploadOrder: string[] = []
   let n = 0
-  let failWith: { status: number } | null = null
+  let failWith: { status: number; reason?: string } | null = null
   let failNameWith: { name: string; status: number } | null = null
   let user = 'user-A'
 
@@ -33,8 +33,8 @@ function fakeDrive() {
   return {
     nodes,
     uploadOrder,
-    failNext(status: number | null) {
-      failWith = status === null ? null : { status }
+    failNext(status: number | null, reason?: string) {
+      failWith = status === null ? null : { status, ...(reason ? { reason } : {}) }
     },
     /** Fail every upload of exactly this file name, forever, regardless of
      * `failNext` — simulates one deterministically-poison row (e.g. an
@@ -69,7 +69,7 @@ function fakeDrive() {
       if (failNameWith && a.name === failNameWith.name) {
         throw new DriveError(failNameWith.status, 'boom-name')
       }
-      if (failWith) throw new DriveError(failWith.status, 'boom')
+      if (failWith) throw new DriveError(failWith.status, 'boom', failWith.reason)
       // Mirror the real client's contract: re-uploading a pre-generated id
       // that already landed yields 409 upstream, which uploadFile swallows
       // and reports as success without creating anything.
@@ -295,6 +295,47 @@ describe('drainStream', () => {
     expect(retry.outcome).toBe('drained')
     expect(retry.uploaded).toBe(1)
     expect((await getSyncStatuses('timelog')).get(event.id)?.status).toBe('uploaded')
+  })
+
+  it('keeps the row queued on a quota-exceeded 403 (issue #88) — distinct from reconnect', async () => {
+    const event = await captureWithAudio()
+    await import('./bootstrap').then((m) => m.ensureTree('tok', ['timelog']))
+    drive.failNext(403, 'storageQuotaExceeded')
+    const { drainStream } = await import('./queue')
+
+    const res = await drainStream('tok', 'timelog')
+    expect(res.outcome).toBe('quota')
+    expect(res.error).toBeTruthy()
+    const { getSyncStatuses } = await import('../store/events')
+    const row = [...(await getSyncStatuses('timelog')).values()][0]
+    // Same "keep queued, don't ask to reconnect" treatment as retry-later —
+    // the token is fine, only Drive's storage is full.
+    expect(row.status).toBe('queued')
+    expect(row.error).toBeTruthy()
+
+    // Freeing space and retrying immediately (no backoff gate) succeeds.
+    drive.failNext(null)
+    const retry = await drainStream('tok', 'timelog')
+    expect(retry.outcome).toBe('drained')
+    expect((await getSyncStatuses('timelog')).get(event.id)?.status).toBe('uploaded')
+  })
+
+  it('a plain 403 with no reason still asks to reconnect (not quota)', async () => {
+    await captureWithAudio()
+    await import('./bootstrap').then((m) => m.ensureTree('tok', ['timelog']))
+    drive.failNext(403)
+    const { drainStream } = await import('./queue')
+    const res = await drainStream('tok', 'timelog')
+    expect(res.outcome).toBe('reconnect')
+  })
+
+  it('a rate-limited 403 reason is retried like a 429, not treated as reconnect', async () => {
+    await captureWithAudio()
+    await import('./bootstrap').then((m) => m.ensureTree('tok', ['timelog']))
+    drive.failNext(403, 'userRateLimitExceeded')
+    const { drainStream } = await import('./queue')
+    const res = await drainStream('tok', 'timelog')
+    expect(res.outcome).toBe('retry-later')
   })
 
   it('drains a legacy row stuck behind a persisted nextRetryAt (stuck-queue regression)', async () => {
