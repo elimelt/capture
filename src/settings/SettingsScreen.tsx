@@ -6,7 +6,7 @@ import type { SyncResult } from '../store/appStore'
 import { fetchDriveSpace, type DriveSpace } from '../drive/space'
 import { getValidAccessToken } from '../drive/token'
 import { CalendarError, listCalendars } from '../gcal/client'
-import { getTargetCalendar, setTargetCalendar } from '../gcal/config'
+import { getTargetCalendar, resolveTargetSelection, setTargetCalendar } from '../gcal/config'
 import type { CalendarSummary } from '../gcal/events'
 import { reverseGeocode } from '../places/geocode'
 import { useAppStore } from '../store/appStore'
@@ -430,8 +430,12 @@ function SyncStatusLine() {
 /**
  * Target-calendar picker (SPEC §4.3): lists the connected account's calendars
  * and persists the choice (local + config.json) via gcal/config. Only rendered
- * when connected. A 401/403 here means the calendar scope isn't granted on the
- * current token — prompt a reconnect rather than showing an empty list.
+ * when connected. When nothing is stored yet (first load after connecting),
+ * the primary calendar is auto-picked *and persisted* — merely displaying it
+ * as selected left `getTargetCalendar()` empty, so the Day view showed no
+ * events until the user manually switched calendars. A 401/403 here means the
+ * calendar scope isn't granted on the current token — prompt a reconnect
+ * rather than showing an empty list.
  */
 function CalendarPicker() {
   const [calendars, setCalendars] = useState<CalendarSummary[] | null>(null)
@@ -450,9 +454,19 @@ function CalendarPicker() {
       try {
         const [cals, target] = await Promise.all([listCalendars(token), getTargetCalendar()])
         if (!live) return
+        const { selectedId, autoPick } = resolveTargetSelection(target, cals)
         setCalendars(cals)
-        setSelected(target?.id ?? cals.find((c) => c.primary)?.id ?? '')
+        setSelected(selectedId)
         setStatus('ready')
+        if (autoPick !== undefined) {
+          try {
+            await setTargetCalendar(token, autoPick)
+            if (live) setSaveNote(`Showing “${autoPick.summary}” on the day view`)
+          } catch {
+            // Local pick already persisted; only the Drive mirror failed (§5.3).
+            if (live) setSaveNote('Saved on this device; will sync to Drive later')
+          }
+        }
       } catch (err) {
         if (!live) return
         setStatus(err instanceof CalendarError && err.isAuth ? 'auth' : 'error')

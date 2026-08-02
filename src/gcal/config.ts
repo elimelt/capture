@@ -22,6 +22,7 @@ import { ensureTree } from '../drive/bootstrap'
 import { findFile, readFileText, updateFileContent } from '../drive/client'
 import { getDb } from '../store/db'
 import { TIMELOG_STREAM } from '../streams/registry'
+import type { CalendarSummary } from './events'
 
 const TARGET_KEY = 'gcal:targetCalendar'
 const CONFIG_MIME = 'application/json'
@@ -36,6 +37,32 @@ export interface TargetCalendar {
 export async function getTargetCalendar(): Promise<TargetCalendar | undefined> {
   const db = await getDb()
   return (await db.get('meta', TARGET_KEY)) as TargetCalendar | undefined
+}
+
+/**
+ * Decide the Settings picker's initial selection and whether a default must be
+ * persisted right now. Pure — this is the "should we auto-pick?" logic behind
+ * `CalendarPicker`, extracted so the regression stays pinned by tests: the
+ * picker used to *display* the primary calendar as selected without persisting
+ * it, so `getTargetCalendar()` stayed empty and the Day view sat on
+ * `no-calendar` until the user manually switched calendars.
+ *
+ * Rules, in order:
+ *  - a stored target always wins and is never re-persisted (`autoPick` is
+ *    undefined, so repeat Settings visits cause no redundant writes) — even if
+ *    it is momentarily absent from the fetched list;
+ *  - nothing stored → the primary calendar is both selected and returned as
+ *    `autoPick` for the caller to persist immediately;
+ *  - nothing stored and no primary → keep the placeholder, persist nothing.
+ */
+export function resolveTargetSelection(
+  stored: TargetCalendar | undefined,
+  calendars: CalendarSummary[],
+): { selectedId: string; autoPick: TargetCalendar | undefined } {
+  if (stored !== undefined) return { selectedId: stored.id, autoPick: undefined }
+  const primary = calendars.find((c) => c.primary)
+  if (primary === undefined) return { selectedId: '', autoPick: undefined }
+  return { selectedId: primary.id, autoPick: { id: primary.id, summary: primary.summary } }
 }
 
 async function saveTargetLocal(target: TargetCalendar): Promise<void> {
