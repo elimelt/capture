@@ -23,7 +23,7 @@ import type { SyncStatusRow } from './db'
 import { connectionState, getValidAccessToken, type DriveConnection } from '../drive/token'
 import { connect, disconnect } from '../drive/auth'
 import { getStoredToken } from '../drive/token'
-import { drainStream } from '../drive/queue'
+import { drainStream, type DrainResult } from '../drive/queue'
 
 interface AppState {
   /** True once init() has settled; App dismisses the boot splash on it. */
@@ -53,9 +53,11 @@ interface AppState {
   disconnectDrive: () => Promise<void>
   /**
    * Drain the queue if a valid token exists. Safe to call from any trigger
-   * (app open, focus, online, post-capture, manual). No-ops without a token.
+   * (app open, focus, online, post-capture, manual). Returns the drain
+   * outcome so a manual "Sync now" can report it; a missing/expired token
+   * yields 'reconnect' and a re-entrant call yields 'retry-later'.
    */
-  drainSync: () => Promise<void>
+  drainSync: () => Promise<DrainResult>
 
   capture: (input: {
     capturedAt: string
@@ -158,12 +160,12 @@ export const useAppStore = create<AppState>()((set, get) => {
     }),
 
     drainSync: async () => {
-      if (get().syncing) return
+      if (get().syncing) return { outcome: 'retry-later', uploaded: 0 }
       const token = await getValidAccessToken()
       if (!token) {
         // No usable token: reflect expiry so the reconnect pill can appear.
         await get().refreshConnection()
-        return
+        return { outcome: 'reconnect', uploaded: 0 }
       }
       set({ syncing: true })
       try {
@@ -173,8 +175,11 @@ export const useAppStore = create<AppState>()((set, get) => {
           set({ lastError: `Sync failed: ${result.error}` })
         }
         await get().refresh()
+        return result
       } catch (err) {
-        set({ lastError: `Sync failed: ${err instanceof Error ? err.message : String(err)}` })
+        const message = err instanceof Error ? err.message : String(err)
+        set({ lastError: `Sync failed: ${message}` })
+        return { outcome: 'error', uploaded: 0, error: message }
       } finally {
         set({ syncing: false })
       }

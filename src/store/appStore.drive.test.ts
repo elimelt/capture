@@ -40,33 +40,47 @@ describe('drainSync', () => {
   it('no-ops without a token and refreshes connection state', async () => {
     connectionState.mockResolvedValue('expired')
     const store = await freshStore()
-    await store.getState().drainSync()
+    const result = await store.getState().drainSync()
     expect(drainStream).not.toHaveBeenCalled()
     expect(store.getState().driveConnection).toBe('expired')
+    expect(result).toEqual({ outcome: 'reconnect', uploaded: 0 })
   })
 
-  it('drains with a valid token', async () => {
+  it('drains with a valid token and returns the drain result', async () => {
     getValidAccessToken.mockResolvedValue('tok')
+    drainStream.mockResolvedValue({ outcome: 'drained', uploaded: 3 })
     const store = await freshStore()
-    await store.getState().drainSync()
+    const result = await store.getState().drainSync()
     expect(drainStream).toHaveBeenCalledWith('tok', 'timelog')
     expect(store.getState().syncing).toBe(false)
+    expect(result).toEqual({ outcome: 'drained', uploaded: 3 })
   })
 
   it('flips to expired when the drainer asks to reconnect', async () => {
     getValidAccessToken.mockResolvedValue('tok')
     drainStream.mockResolvedValue({ outcome: 'reconnect', uploaded: 0 })
     const store = await freshStore()
-    await store.getState().drainSync()
+    const result = await store.getState().drainSync()
     expect(store.getState().driveConnection).toBe('expired')
+    expect(result.outcome).toBe('reconnect')
   })
 
-  it('surfaces a drain error as lastError', async () => {
+  it('surfaces a drain error as lastError and returns it', async () => {
     getValidAccessToken.mockResolvedValue('tok')
     drainStream.mockResolvedValue({ outcome: 'error', uploaded: 0, error: 'Drive full' })
     const store = await freshStore()
-    await store.getState().drainSync()
+    const result = await store.getState().drainSync()
     expect(store.getState().lastError).toMatch(/Drive full/)
+    expect(result).toEqual({ outcome: 'error', uploaded: 0, error: 'Drive full' })
+  })
+
+  it('returns retry-later when a drain is already in flight', async () => {
+    getValidAccessToken.mockResolvedValue('tok')
+    const store = await freshStore()
+    store.setState({ syncing: true })
+    const result = await store.getState().drainSync()
+    expect(drainStream).not.toHaveBeenCalled()
+    expect(result).toEqual({ outcome: 'retry-later', uploaded: 0 })
   })
 })
 
