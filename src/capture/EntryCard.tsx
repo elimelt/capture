@@ -8,6 +8,7 @@ import {
   IconButton,
   PinIcon,
   PlusIcon,
+  SlidersIcon,
   TrashIcon,
   captureIcon,
   cx,
@@ -222,7 +223,7 @@ export function EntryCard({
             {entry.location ? <PinIcon /> : <PlusIcon />} location
           </Button>
           <Button variant="ghost" size="sm" onClick={() => setEditOpen(true)} className="ml-auto">
-            Edit
+            <SlidersIcon /> Edit
           </Button>
           <Button variant="dangerGhost" size="sm" onClick={onDelete}>
             <TrashIcon /> Delete

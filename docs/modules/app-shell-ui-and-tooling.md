@@ -99,7 +99,7 @@ Form primitives sharing a `FIELD` base (control radius, strong border, surface b
 
 ### src/ui/icons.tsx
 
-Shared SVG icon set — every capture glyph is drawn once here so screens stay visually consistent. Each icon takes an optional `size` prop (px). `captureIcon(kind: CaptureKind)` is the single capture-modality → icon mapping (`audio` → `MicIcon`, `photo` → `CameraIcon`, `text` → `PencilIcon`), used by both the main capture CTA (`RecordPanel`) and the entry-card action row; `PlusIcon`, `PinIcon`, and `TrashIcon` cover add/location/delete affordances. The mapping is unit-tested in `icons.test.ts`.
+Shared SVG icon set — every capture glyph is drawn once here so screens stay visually consistent. Each icon takes an optional `size` prop (px). `captureIcon(kind: CaptureKind)` is the single capture-modality → icon mapping (`audio` → `MicIcon`, `photo` → `CameraIcon`, `text` → `PencilIcon`), used by both the main capture CTA (`RecordPanel`) and the entry-card action row; `PlusIcon`, `PinIcon`, `SlidersIcon`, and `TrashIcon` cover add/location/edit/delete affordances (sliders — not the pencil, which means *text capture* — marks the entry Edit sheet). The mapping is unit-tested in `icons.test.ts`.
 
 ### src/settings/SettingsScreen.tsx
 

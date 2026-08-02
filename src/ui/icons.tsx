@@ -90,6 +90,25 @@ export function TrashIcon({ size = 14 }: IconProps) {
   )
 }
 
+/**
+ * Small sliders for "edit/adjust" affordances (e.g. the entry Edit sheet).
+ * Distinct from PencilIcon, which means *text* capture via `captureIcon`.
+ */
+export function SlidersIcon({ size = 14 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 14 14" fill="none" aria-hidden="true">
+      <path
+        d="M2 4h6M11 4h1M2 10h1M6 10h6"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+      />
+      <circle cx="9.5" cy="4" r="1.6" stroke="currentColor" strokeWidth="1.3" />
+      <circle cx="4.5" cy="10" r="1.6" stroke="currentColor" strokeWidth="1.3" />
+    </svg>
+  )
+}
+
 /** The three capture modalities offered by the main CTA. */
 export type CaptureKind = 'audio' | 'photo' | 'text'
 

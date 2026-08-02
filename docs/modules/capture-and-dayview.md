@@ -181,10 +181,10 @@ actions open.
   capture-screen patterns.
 - **Action-row icons:** the note/photo/audio buttons render the same glyphs as the main
   CTA — pencil/camera/mic via `captureIcon` from `src/ui` — so an entry's add actions
-  share the capture control's visual language; location uses `PinIcon`/`PlusIcon` and
-  delete uses `TrashIcon` from the same shared set.
-- **Edit sheet:** an "Edit" ghost button in the action row opens `EditEntrySheet`;
-  its Save calls `onApplyEdit(patch)`.
+  share the capture control's visual language; location uses `PinIcon`/`PlusIcon`,
+  edit uses `SlidersIcon`, and delete uses `TrashIcon` from the same shared set.
+- **Edit sheet:** an "Edit" ghost button (sliders glyph — the pencil already means
+  *text* in this row) opens `EditEntrySheet`; its Save calls `onApplyEdit(patch)`.
 
 ### src/capture/editPlan.ts
 

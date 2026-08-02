@@ -17,6 +17,7 @@ export {
   PencilIcon,
   PinIcon,
   PlusIcon,
+  SlidersIcon,
   TrashIcon,
   captureIcon,
   type CaptureKind,
