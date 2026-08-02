@@ -22,6 +22,7 @@ Responsibilities by file:
   the two write tools (`create_entry`, `update_entry`), plus the `EntryWriter` boundary.
 - `transport.ts` — `ChatTransport` that runs a `ToolLoopAgent` in-process and streams UI chunks.
 - `history.ts` — chat persistence (IndexedDB `chats` store) plus pure title/search helpers.
+- `sendQueue.ts` — pure state machine for mid-turn message queueing and steering.
 - `ChatScreen.tsx` — the chat UI, wiring everything above together.
 - `ChatHistorySheet.tsx` — bottom sheet listing/searching/deleting past conversations.
 - `Markdown.tsx` — markdown renderer for assistant replies.
@@ -182,6 +183,37 @@ wholesale (`wipeAll` in `store/events`).
 - `loadMostRecentChat(): Promise<StoredChat | undefined>` — boot hydration ("pick up
   where the user left off").
 
+### src/assistant/sendQueue.ts
+
+Pure state machine for mid-turn message queueing (no SDK, no I/O — fully unit-tested).
+Submitting while a turn is in flight must not call `sendMessage` again: the SDK's
+`AbstractChat` has no busy guard and would start a second concurrent request racing the
+active stream. Instead, mid-turn submits queue FIFO and flush **one per settled turn**;
+"steer" interrupts the in-flight response so a queued message sends immediately.
+
+- `interface QueuedMessage` — `{ id, text }`.
+- `interface SendQueueState` — `{ turnInFlight, queue: readonly QueuedMessage[] }`.
+- `type SendQueueCommand` — `{ type: 'send', message } | { type: 'stop' }`; every
+  transition returns `{ state, commands }` (`SendQueueTransition`) and the caller
+  executes the commands (ChatScreen maps them to the chat's `sendMessage`/`stop`).
+- `initialSendQueue(turnInFlight = false)` — `turnInFlight` seeds from the live chat
+  status, because the screen can mount while a stream it started earlier (module-scope
+  `Chat`) is still running.
+- `submit(state, message)` — idle: emit `send`, mark in flight. Mid-turn: enqueue, no
+  commands.
+- `settled(state)` — the in-flight turn reached `ready`/`error` (including via
+  `stop()`): flush the queue head as the next turn (emit `send`, stay in flight), or go
+  idle when nothing is queued. The caller dispatches this exactly once per settle — on
+  the status *transition* — which bounds sends to one per settled turn.
+- `steer(state, id)` — mid-turn: promote message `id` to the queue head and emit only
+  `stop`; the abort settles the turn and that settle flushes it. Every send flows
+  through the same settle path, so steering cannot race the aborting stream (the SDK's
+  abort handler sets status back to `ready` asynchronously; sending directly would let
+  that stale transition clobber the new turn's status or double-flush the queue).
+  Remaining messages keep their order and continue on later settles. Idle (the turn
+  settled between render and tap): degrade to an immediate `send`. Unknown id: no-op.
+- `discard(state, id)` — drop a queued message (the pending bubble's Remove action).
+
 ### src/assistant/ChatScreen.tsx
 
 The chat UI (default export `ChatScreen()`, lazily loaded and opt-in). Wires the model
@@ -205,7 +237,21 @@ Conversation lifecycle:
   `null`.
 - **Persistence**: each settled turn (`status === 'ready'` or `'error'`, non-empty
   messages) is saved via `saveChat` with a bumped `updatedAt` — not per-delta, since
-  streaming would hammer idb.
+  streaming would hammer idb. Each save upserts the full message array, so interleaved
+  queued turns can't drop persistence; the settle effect that flushes the queue is
+  declared after the persist effect so the settled snapshot saves before the next turn
+  starts.
+- **Mid-turn queueing** (`sendQueue.ts`): the machine state lives in a ref (the
+  authority — event handlers must see post-transition state immediately) mirrored to a
+  `queued` useState for rendering; `dispatch` applies a transition and executes its
+  commands. A `prevStatusRef` guard dispatches `settled` only on the status transition
+  into `ready`/`error` from `submitted`/`streaming` (StrictMode- and re-render-safe).
+  Queued drafts are dropped — not sent — on unmount (component state), on conversation
+  switch, and explicitly (`dropQueue()`) *before* the `stop()` in "New chat" / history
+  select / delete-active, since the abort's own settle would otherwise flush the queue
+  head into the conversation being abandoned. A plain Stop with messages queued also
+  settles the turn, so the head sends next — queued means "sends when the current
+  response ends, however it ends".
 - **New chat** stops any in-flight stream and swaps in a fresh seed; the old conversation
   stays in history. Selecting a row in `ChatHistorySheet` loads that `StoredChat`;
   deleting the active row resets to a fresh conversation.
@@ -213,7 +259,10 @@ Conversation lifecycle:
 Rendering details:
 
 - User turns are right-aligned bubbles of plain text (`messageText` concatenates `text`
-  parts); assistant turns render reasoning parts as a collapsible `ReasoningTrace`
+  parts); queued (not-yet-sent) messages render after the thread as right-aligned
+  dashed-border pending bubbles with a "Queued" caption, a Remove action, and — on the
+  queue head while busy — a "Send now (interrupts)" steer action; assistant turns
+  render reasoning parts as a collapsible `ReasoningTrace`
   ("Thinking…" while `p.state === 'streaming'`), tool parts as one-line captions, and the
   text through `Markdown`.
 - `toolActivityLabel(part)` maps tool-invocation parts (both `dynamic-tool` and typed
@@ -227,9 +276,14 @@ Rendering details:
   80px of the document bottom (`pinnedRef`); scrolling up detaches, scrolling down or
   sending/switching conversations re-attaches.
 - The composer is `position: fixed` above the tab bar and lifts above the iOS keyboard
-  using `useKeyboardInset()`; while busy the send button becomes a Stop button. An empty
-  conversation shows three suggestion buttons. Errors render a dismissible one-liner via
-  `clearError`.
+  using `useKeyboardInset()`; while busy the send button becomes a Stop button, and when
+  the input also has text a Queue button (the form submit) appears beside it — the Stop
+  button goes muted so exactly one action reads primary, and it is explicitly
+  `type="button"` so stopping never also submits the form. Submitting mid-turn queues
+  the message; a stopped turn keeps its partial text (the SDK's abort path sets status
+  `ready` with the streamed-so-far message intact) and persists like any settled turn.
+  An empty conversation shows three suggestion buttons. Errors render a dismissible
+  one-liner via `clearError`.
 
 ### src/assistant/ChatHistorySheet.tsx
 
@@ -271,6 +325,16 @@ case-insensitive, cross-message), CRUD round-trips against fake-indexeddb (upser
 summaries, most-recent hydration, delete, erasure by `wipeAll`), and the v2→v3 migration
 of the legacy single conversation from the `meta` store key `assistant:chat` into a
 `chats` row.
+
+### src/assistant/sendQueue.test.ts
+
+Covers the pure machine: immediate send when idle; mid-turn submits enqueue FIFO with
+no send command; `settled` flushing exactly the queue head, draining one message per
+settle in order, and going idle on an empty queue; a flushed message never re-sending
+on later settles; steer promoting any queued message to the head with only a `stop`
+command, the subsequent settle sending it first and the rest continuing in order, the
+idle degradation to an immediate send, and unknown-id no-ops; `discard` removal and
+unknown-id no-op. Input states are frozen, so transitions are verified non-mutating.
 
 ### src/assistant/tools.test.ts
 
@@ -331,6 +395,17 @@ targets just this file.
 - **Truncation semantics differ**: `list_entries` keeps the *newest* 300 in range;
   `search_entries` keeps the *first* 50 matches in store order (while reporting the true
   total). Both say so in the returned text.
+- **One request at a time**: the SDK's `AbstractChat.sendMessage` has no busy guard —
+  calling it mid-stream starts a second concurrent request racing the first. All sends
+  go through the `sendQueue` machine: mid-turn submits queue and flush one per settled
+  turn, and steering emits `stop` and lets the abort's settle do the send (never a
+  direct send racing the aborting stream). Queued messages are drafts: dropped on
+  unmount, conversation switch, and delete — never sent to an abandoned conversation.
+- **Stopping keeps partial turns**: `stop()` aborts the active response; the SDK keeps
+  the streamed-so-far assistant message and sets status `ready`, so the partial turn
+  persists like any settled turn. Aborting mid-tool-call cannot deadlock the write
+  tools' `enqueueWrite` chain — in-flight `execute` promises settle on their own and
+  the chain continues past rejections.
 - **Persistence cadence**: chats are saved only on settled turns (`ready`/`error`), so a
   mid-stream app kill loses the in-flight assistant turn; `updatedAt` is set by the
   caller, not by `saveChat`.
