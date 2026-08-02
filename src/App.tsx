@@ -5,6 +5,7 @@ import DayScreen from './dayview/DayScreen'
 import SettingsScreen from './settings/SettingsScreen'
 import { useAppStore } from './store/appStore'
 import { drainTranscriptions } from './transcribe/runner'
+import { ReconnectPill } from './drive/ReconnectPill'
 import { Toast, cx, tone, type_ } from './ui'
 
 // Opt-in assistant: lazy so users who never enable it never download the
@@ -21,6 +22,7 @@ const TABS = [
 export default function App() {
   const init = useAppStore((s) => s.init)
   const refresh = useAppStore((s) => s.refresh)
+  const drainSync = useAppStore((s) => s.drainSync)
   const entries = useAppStore((s) => s.entries)
   const ready = useAppStore((s) => s.ready)
   const lastError = useAppStore((s) => s.lastError)
@@ -42,14 +44,22 @@ export default function App() {
 
   useEffect(() => {
     void init()
-    // M2 seam: on return to foreground this also becomes where the upload
-    // queue drains.
+    // Drain the upload queue on the natural gestures a no-backend token model
+    // relies on (SPEC §8.2/§8.4): return to foreground and regained network.
     const onVisible = () => {
-      if (document.visibilityState === 'visible') void refresh()
+      if (document.visibilityState === 'visible') {
+        void refresh()
+        void drainSync()
+      }
     }
+    const onOnline = () => void drainSync()
     document.addEventListener('visibilitychange', onVisible)
-    return () => document.removeEventListener('visibilitychange', onVisible)
-  }, [init, refresh])
+    window.addEventListener('online', onOnline)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener('online', onOnline)
+    }
+  }, [init, refresh, drainSync])
 
   // Background transcription: whenever entries change (capture, foreground
   // refresh), transcribe any audio still missing a transcript. Appending the
@@ -76,6 +86,7 @@ export default function App() {
         {/* C12: black-translucent status bar means content extends under the
             iOS status bar; pad every screen below it. */}
         <main className="flex-1 pb-24 pt-[env(safe-area-inset-top)]">
+          <ReconnectPill />
           <Routes>
             <Route path="/" element={<CaptureScreen />} />
             <Route path="/day" element={<DayScreen />} />

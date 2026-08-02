@@ -16,6 +16,7 @@ interface EntryListProps {
 export function EntryList({ entries, onDelete }: EntryListProps) {
   const amend = useAppStore((s) => s.amend)
   const streamSettings = useAppStore((s) => s.streamSettings)
+  const syncStatuses = useAppStore((s) => s.syncStatuses)
 
   return (
     <div className="flex flex-col gap-2">
@@ -24,6 +25,7 @@ export function EntryList({ entries, onDelete }: EntryListProps) {
           key={entry.id}
           entry={entry}
           maxClipSec={streamSettings.maxClipSec}
+          syncStatus={syncStatuses.get(entry.seq)?.status}
           onDelete={() => onDelete(entry.id)}
           onSetTime={(time) =>
             void amend({

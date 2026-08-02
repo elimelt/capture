@@ -165,6 +165,34 @@ export async function getSyncStatuses(stream: string): Promise<Map<number, SyncS
   return new Map(all.filter((r) => r.stream === stream).map((r) => [r.seq, r]))
 }
 
+/**
+ * Rows not yet uploaded for a stream, in [stream, seq] order — the order the
+ * drainer must respect so the log commits monotonically (SPEC §5.2, §8.4).
+ */
+export async function listPendingSync(stream: string): Promise<SyncStatusRow[]> {
+  const db = await getDb()
+  const all = await db.getAll('sync')
+  return all
+    .filter((r) => r.stream === stream && r.status !== 'uploaded')
+    .sort((a, b) => a.seq - b.seq)
+}
+
+export async function getEvent(stream: string, seq: number): Promise<LogEvent | undefined> {
+  const db = await getDb()
+  return db.get('events', [stream, seq])
+}
+
+export async function putSyncStatus(row: SyncStatusRow): Promise<void> {
+  const db = await getDb()
+  await db.put('sync', row)
+}
+
+/** Drop a local attachment blob (keepAudioLocally=false pruning — §8.4). */
+export async function deleteBlob(file: string): Promise<void> {
+  const db = await getDb()
+  await db.delete('blobs', file)
+}
+
 export async function wipeAll(): Promise<void> {
   const db = await getDb()
   const tx = db.transaction(['events', 'blobs', 'sync', 'places', 'meta', 'chats'], 'readwrite')

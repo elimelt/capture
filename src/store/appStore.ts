@@ -20,6 +20,10 @@ import {
   type StreamSettings,
 } from './settings'
 import type { SyncStatusRow } from './db'
+import { connectionState, getValidAccessToken, type DriveConnection } from '../drive/token'
+import { connect, disconnect } from '../drive/auth'
+import { getStoredToken } from '../drive/token'
+import { drainStream } from '../drive/queue'
 
 interface AppState {
   /** True once init() has settled; App dismisses the boot splash on it. */
@@ -32,12 +36,26 @@ interface AppState {
   streamSettings: StreamSettings
   /** Last failed write, as a short human message; App shows it as a toast. */
   lastError: string | null
+  /** Drive auth state, drives the reconnect pill + Settings (SPEC §8.2). */
+  driveConnection: DriveConnection
+  /** True while a drain is in flight, so the UI can show progress / disable Sync. */
+  syncing: boolean
 
   refresh: (streamId?: string) => Promise<void>
   loadPlaces: () => Promise<void>
   loadSettings: () => Promise<void>
+  refreshConnection: () => Promise<void>
   init: () => Promise<void>
   clearError: () => void
+
+  /** Request a Drive token from a user gesture, then drain (SPEC §8.3). */
+  connectDrive: () => Promise<void>
+  disconnectDrive: () => Promise<void>
+  /**
+   * Drain the queue if a valid token exists. Safe to call from any trigger
+   * (app open, focus, online, post-capture, manual). No-ops without a token.
+   */
+  drainSync: () => Promise<void>
 
   capture: (input: {
     capturedAt: string
@@ -81,6 +99,8 @@ export const useAppStore = create<AppState>()((set, get) => {
     appSettings: { locationEnabled: true, assistantEnabled: false, assistantModel: 'gpt-oss:20b' },
     streamSettings: { maxClipSec: 60, keepAudioLocally: true },
     lastError: null,
+    driveConnection: 'disconnected',
+    syncing: false,
 
     refresh: async (streamId) => {
       const stream = streamId ?? get().currentStreamId
@@ -103,9 +123,20 @@ export const useAppStore = create<AppState>()((set, get) => {
       set({ appSettings, streamSettings })
     },
 
+    refreshConnection: async () => {
+      set({ driveConnection: await connectionState() })
+    },
+
     init: async () => {
       try {
-        await Promise.all([get().refresh(), get().loadPlaces(), get().loadSettings()])
+        await Promise.all([
+          get().refresh(),
+          get().loadPlaces(),
+          get().loadSettings(),
+          get().refreshConnection(),
+        ])
+        // A relaunch within the token's hour drains without any gesture (§8.2).
+        void get().drainSync()
       } finally {
         // Even a failed boot must lift the splash so the error is visible.
         set({ ready: true })
@@ -113,6 +144,41 @@ export const useAppStore = create<AppState>()((set, get) => {
     },
 
     clearError: () => set({ lastError: null }),
+
+    connectDrive: guard('Could not connect Google', async () => {
+      await connect()
+      set({ driveConnection: await connectionState() })
+      await get().drainSync()
+    }),
+
+    disconnectDrive: guard('Could not disconnect Google', async () => {
+      const token = await getStoredToken()
+      await disconnect(token?.accessToken)
+      set({ driveConnection: 'disconnected' })
+    }),
+
+    drainSync: async () => {
+      if (get().syncing) return
+      const token = await getValidAccessToken()
+      if (!token) {
+        // No usable token: reflect expiry so the reconnect pill can appear.
+        await get().refreshConnection()
+        return
+      }
+      set({ syncing: true })
+      try {
+        const result = await drainStream(token, get().currentStreamId)
+        if (result.outcome === 'reconnect') set({ driveConnection: 'expired' })
+        if (result.outcome === 'error' && result.error) {
+          set({ lastError: `Sync failed: ${result.error}` })
+        }
+        await get().refresh()
+      } catch (err) {
+        set({ lastError: `Sync failed: ${err instanceof Error ? err.message : String(err)}` })
+      } finally {
+        set({ syncing: false })
+      }
+    },
 
     capture: guard(
       'Could not save entry',
@@ -123,6 +189,8 @@ export const useAppStore = create<AppState>()((set, get) => {
       }) => {
         const event = await appendCapture({ stream: get().currentStreamId, ...input })
         await get().refresh()
+        // Eager upload so unsynced local data is short-lived (§2.3, §8.4).
+        void get().drainSync()
         return event
       },
     ),
