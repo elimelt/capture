@@ -700,8 +700,15 @@ user's assistant, authorized separately by the user in that product.
    stream/date partition, following the atomic append protocol
    (§5.2): attachments first (resumable upload for anything > 5 MB — rare for audio;
    possible for photos), the event record `.json` last — the record is the commit.
-3. Success → status `uploaded`; local audio blob retained or pruned per Settings.
-4. Failures: exponential backoff on 429/5xx; 401/403 → keep queued + reconnect pill;
+3. Uploads are idempotent by **pre-generated file id**: ids are minted client-side
+   in batches (`files.generateIds`) and persisted on the local sync row before the
+   first attempt, so a retry re-uploads with the same id and Drive's 409 answer
+   counts as success — no find-before-upload requests. (Date-partition folders keep
+   find-before-create: pre-generated ids don't apply to folders.) Everything the
+   app creates is tagged with app-private `appProperties` at creation time; tags
+   are advisory (older files carry none) and invisible to other readers.
+4. Success → status `uploaded`; local audio blob retained or pruned per Settings.
+5. Failures: exponential backoff on 429/5xx; 401/403 → keep queued + reconnect pill;
    storage-quota errors surface explicitly (Drive full).
 
 ### 8.5 Pull engine (Drive → local; bidirectional sync)
@@ -710,10 +717,19 @@ The local IndexedDB is a **replica** of the Drive log, not the source of truth. 
 sync cycle runs **pull, then push** (same trigger as §8.4 — manual "Sync now"), so a
 second device — or a reinstalled/wiped one — converges on the full log:
 
-1. **Discover by filename.** List `log/`'s date-partition folders, then each
-   partition's children. Record filenames carry `seq_ts_id` (§5.1), so the missing set
-   (ids not in the local replica) is computed from listings alone — no file reads for
-   events already held. Foreign files and non-`YYYY-MM-DD` folders are ignored.
+1. **Discover by filename, triggered by the Changes API.** One `changes.list`
+   request from a per-stream cursor persisted in local meta says which partitions
+   gained record files since the last pull — a no-op pull is one request no matter
+   how many date partitions the log has accumulated. Dirty partitions are then
+   listed as before: record filenames carry `seq_ts_id` (§5.1), so the missing set
+   (ids not in the local replica) is computed from listings alone — no file reads
+   for events already held. Foreign files, non-`YYYY-MM-DD` folders, trashed or
+   removed changes, and records already local (our own pushes) are ignored.
+   Without a cursor (first pull, wiped meta), or when Drive rejects one (410
+   expired; cursors are also account-bound), discovery falls back to the full
+   walk — list `log/`'s date-partition folders, then each partition's children —
+   and a fresh cursor is minted before the walk and persisted only after a fully
+   successful pull, so no change window is ever skipped, at worst replayed.
 2. **Download eagerly.** For each missing record: fetch the `.json`, then fetch every
    referenced attachment blob not already local (full offline availability). An
    attachment absent on Drive (pruned, or a §5.2 push race) is skipped and picked up on

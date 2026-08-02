@@ -79,15 +79,39 @@ export async function createFolder(
   token: string,
   name: string,
   parentId: string,
+  appProperties?: Record<string, string>,
 ): Promise<string> {
   const res = await ensureOk(
     await fetch(`${API}/files?fields=id`, {
       method: 'POST',
       headers: { ...bearer(token), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, parents: [parentId], mimeType: FOLDER_MIME }),
+      body: JSON.stringify({
+        name,
+        parents: [parentId],
+        mimeType: FOLDER_MIME,
+        ...(appProperties ? { appProperties } : {}),
+      }),
     }),
   )
   return ((await res.json()) as { id: string }).id
+}
+
+/**
+ * Mint Drive file ids client-side (`files.generateIds`). A pre-generated id
+ * persisted before an upload makes the upload idempotent: retrying the same
+ * id yields 409, which `uploadFile` treats as success (already uploaded).
+ * Note: pre-generated ids work for blob files only — never folders.
+ */
+export async function generateIds(token: string, count: number): Promise<string[]> {
+  const params = new URLSearchParams({
+    count: String(count),
+    space: 'drive',
+    fields: 'ids',
+  })
+  const res = await ensureOk(
+    await fetch(`${API}/files/generateIds?${params}`, { headers: bearer(token) }),
+  )
+  return ((await res.json()) as { ids: string[] }).ids
 }
 
 export interface UploadArgs {
@@ -95,19 +119,41 @@ export interface UploadArgs {
   parentId: string
   mimeType: string
   body: Blob | string
+  /** Pre-generated id (files.generateIds); makes the upload an idempotent PUT-like op. */
+  fileId?: string
+  /** App-private metadata set at creation time (free) for files.list/changes discovery. */
+  appProperties?: Record<string, string>
 }
 
-/** Upload a new file, choosing multipart or resumable by size. Returns its id. */
+/**
+ * Upload a new file, choosing multipart or resumable by size. Returns its id.
+ * When `fileId` is a pre-generated id, a 409 means a previous attempt already
+ * created this exact file — that is success, and the id is returned as-is.
+ */
 export async function uploadFile(token: string, args: UploadArgs): Promise<string> {
   const size = typeof args.body === 'string' ? new Blob([args.body]).size : args.body.size
-  return size > RESUMABLE_THRESHOLD
-    ? uploadResumable(token, args)
-    : uploadMultipart(token, args)
+  try {
+    return size > RESUMABLE_THRESHOLD
+      ? await uploadResumable(token, args)
+      : await uploadMultipart(token, args)
+  } catch (err) {
+    if (args.fileId && err instanceof DriveError && err.status === 409) return args.fileId
+    throw err
+  }
+}
+
+function uploadMeta(args: UploadArgs): string {
+  return JSON.stringify({
+    name: args.name,
+    parents: [args.parentId],
+    ...(args.fileId ? { id: args.fileId } : {}),
+    ...(args.appProperties ? { appProperties: args.appProperties } : {}),
+  })
 }
 
 async function uploadMultipart(token: string, args: UploadArgs): Promise<string> {
   const boundary = `tb-${crypto.randomUUID()}`
-  const meta = JSON.stringify({ name: args.name, parents: [args.parentId] })
+  const meta = uploadMeta(args)
   // multipart/related: metadata part, then the media part. Let the Blob carry
   // the Content-Type so fetch emits the matching boundary automatically.
   const body = new Blob(
@@ -134,7 +180,7 @@ async function uploadResumable(token: string, args: UploadArgs): Promise<string>
     await fetch(`${UPLOAD}/files?uploadType=resumable&fields=id`, {
       method: 'POST',
       headers: { ...bearer(token), 'Content-Type': 'application/json; charset=UTF-8' },
-      body: JSON.stringify({ name: args.name, parents: [args.parentId] }),
+      body: uploadMeta(args),
     }),
   )
   const sessionUrl = init.headers.get('location')
@@ -192,6 +238,91 @@ export async function listChildren(token: string, parentId: string): Promise<Dri
     pageToken = data.nextPageToken
   } while (pageToken)
   return children
+}
+
+/** Metadata of one file, as `files.get` returns it (parent resolution — §8.5). */
+export interface FileMetadata {
+  id: string
+  name: string
+  mimeType: string
+  parents?: string[]
+}
+
+/** Read one file's metadata (id, name, mimeType, parents) by id. */
+export async function getFileMetadata(token: string, fileId: string): Promise<FileMetadata> {
+  const params = new URLSearchParams({ fields: 'id, name, mimeType, parents' })
+  const res = await ensureOk(
+    await fetch(`${API}/files/${fileId}?${params}`, { headers: bearer(token) }),
+  )
+  return (await res.json()) as FileMetadata
+}
+
+/** The file payload of one change entry (absent when access was lost). */
+export interface ChangedFile {
+  id: string
+  name: string
+  mimeType: string
+  trashed?: boolean
+  parents?: string[]
+  appProperties?: Record<string, string>
+}
+
+/** One entry of the changes feed (§8.5). */
+export interface DriveChange {
+  fileId: string
+  /** True when the file was permanently deleted or left our visibility. */
+  removed?: boolean
+  file?: ChangedFile
+}
+
+export interface ChangeList {
+  changes: DriveChange[]
+  /** Cursor to persist: where the next changes pull resumes from. */
+  newStartPageToken: string
+}
+
+/** The cursor for "everything from now on" — minted once, then persisted. */
+export async function getStartPageToken(token: string): Promise<string> {
+  const res = await ensureOk(
+    await fetch(`${API}/changes/startPageToken`, { headers: bearer(token) }),
+  )
+  return ((await res.json()) as { startPageToken: string }).startPageToken
+}
+
+/**
+ * Drain the changes feed from a persisted cursor, following pagination to the
+ * end, and return every change plus the next cursor. With drive.file scope
+ * the feed only ever contains files this app created — exactly the set the
+ * pull engine cares about. `restrictToMyDrive` keeps shared-drive and
+ * shared-with-me noise out (the timebox/ tree lives in My Drive by
+ * construction). Throws DriveError 410 when the cursor has expired — the
+ * caller must fall back to a full listing and re-mint via getStartPageToken.
+ */
+export async function listChanges(token: string, pageToken: string): Promise<ChangeList> {
+  const changes: DriveChange[] = []
+  let cursor = pageToken
+  for (;;) {
+    const params = new URLSearchParams({
+      pageToken: cursor,
+      pageSize: '1000',
+      spaces: 'drive',
+      restrictToMyDrive: 'true',
+      fields:
+        'nextPageToken, newStartPageToken, changes(fileId, removed, file(id, name, mimeType, trashed, parents, appProperties))',
+    })
+    const res = await ensureOk(await fetch(`${API}/changes?${params}`, { headers: bearer(token) }))
+    const data = (await res.json()) as {
+      nextPageToken?: string
+      newStartPageToken?: string
+      changes?: DriveChange[]
+    }
+    if (data.changes) changes.push(...data.changes)
+    if (data.nextPageToken) {
+      cursor = data.nextPageToken
+      continue
+    }
+    return { changes, newStartPageToken: data.newStartPageToken ?? cursor }
+  }
 }
 
 /**

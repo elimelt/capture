@@ -4,6 +4,10 @@ import {
   FOLDER_MIME,
   createFolder,
   findFile,
+  generateIds,
+  getFileMetadata,
+  getStartPageToken,
+  listChanges,
   listChildren,
   readFileBlob,
   readFileText,
@@ -65,6 +69,25 @@ describe('createFolder', () => {
       mimeType: FOLDER_MIME,
     })
   })
+
+  it('includes appProperties in the folder metadata when given', async () => {
+    const fetchMock = stubFetch(jsonResponse({ id: 'folder-2' }))
+    await createFolder('tok', '2026-08-02', 'log-1', { captureKind: 'partition' })
+    const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string)
+    expect(body.appProperties).toEqual({ captureKind: 'partition' })
+  })
+})
+
+describe('generateIds', () => {
+  it('requests a batch of ids in the drive space', async () => {
+    const fetchMock = stubFetch(jsonResponse({ ids: ['id-1', 'id-2'] }))
+    expect(await generateIds('tok', 2)).toEqual(['id-1', 'id-2'])
+
+    const url = new URL(String(fetchMock.mock.calls[0][0]))
+    expect(url.pathname).toContain('/files/generateIds')
+    expect(url.searchParams.get('count')).toBe('2')
+    expect(url.searchParams.get('space')).toBe('drive')
+  })
 })
 
 describe('uploadFile', () => {
@@ -104,6 +127,79 @@ describe('uploadFile', () => {
     const [sessionUrl, putInit] = fetchMock.mock.calls[1]
     expect(String(sessionUrl)).toBe('https://upload.example/session')
     expect(putInit?.method).toBe('PUT')
+  })
+
+  it('sends the pre-generated id and appProperties in the multipart metadata', async () => {
+    const fetchMock = stubFetch(jsonResponse({ id: 'pre-1' }))
+    await uploadFile('tok', {
+      name: 'rec.json',
+      parentId: 'p',
+      mimeType: 'application/json',
+      body: '{}',
+      fileId: 'pre-1',
+      appProperties: { captureKind: 'record', captureStream: 'timelog' },
+    })
+
+    const body = fetchMock.mock.calls[0][1]?.body as Blob
+    const metaPart = (await body.text()).split('\r\n\r\n')[1]
+    expect(JSON.parse(metaPart.split('\r\n')[0])).toEqual({
+      name: 'rec.json',
+      parents: ['p'],
+      id: 'pre-1',
+      appProperties: { captureKind: 'record', captureStream: 'timelog' },
+    })
+  })
+
+  it('sends the pre-generated id in the resumable init metadata', async () => {
+    const big = new Blob([new Uint8Array(6 * 1024 * 1024)], { type: 'audio/mp4' })
+    const initRes = new Response(null, {
+      status: 200,
+      headers: { location: 'https://upload.example/session' },
+    })
+    const fetchMock = stubFetch(initRes, jsonResponse({ id: 'pre-2' }))
+    await uploadFile('tok', {
+      name: 'clip.m4a',
+      parentId: 'p',
+      mimeType: 'audio/mp4',
+      body: big,
+      fileId: 'pre-2',
+      appProperties: { captureKind: 'attachment' },
+    })
+    const initBody = JSON.parse(fetchMock.mock.calls[0][1]?.body as string)
+    expect(initBody.id).toBe('pre-2')
+    expect(initBody.appProperties).toEqual({ captureKind: 'attachment' })
+  })
+
+  it('treats 409 as success when uploading with a pre-generated id', async () => {
+    stubFetch(jsonResponse({ error: { message: 'A file already exists' } }, 409))
+    const id = await uploadFile('tok', {
+      name: 'rec.json',
+      parentId: 'p',
+      mimeType: 'application/json',
+      body: '{}',
+      fileId: 'pre-1',
+    })
+    expect(id).toBe('pre-1')
+  })
+
+  it('treats a resumable 409 as success when uploading with a pre-generated id', async () => {
+    const big = new Blob([new Uint8Array(6 * 1024 * 1024)], { type: 'audio/mp4' })
+    stubFetch(jsonResponse({ error: { message: 'A file already exists' } }, 409))
+    const id = await uploadFile('tok', {
+      name: 'clip.m4a',
+      parentId: 'p',
+      mimeType: 'audio/mp4',
+      body: big,
+      fileId: 'pre-2',
+    })
+    expect(id).toBe('pre-2')
+  })
+
+  it('still throws 409 when no pre-generated id was supplied', async () => {
+    stubFetch(jsonResponse({ error: { message: 'conflict' } }, 409))
+    await expect(
+      uploadFile('tok', { name: 'x', parentId: 'p', mimeType: 'text/plain', body: 'x' }),
+    ).rejects.toMatchObject({ status: 409 })
   })
 })
 
@@ -164,6 +260,66 @@ describe('listChildren', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
     const second = new URL(String(fetchMock.mock.calls[1][0]))
     expect(second.searchParams.get('pageToken')).toBe('tok-2')
+  })
+})
+
+describe('getFileMetadata', () => {
+  it('reads id, name, mimeType and parents for a file id', async () => {
+    const meta = { id: 'f-1', name: '2026-08-02', mimeType: FOLDER_MIME, parents: ['log-1'] }
+    const fetchMock = stubFetch(jsonResponse(meta))
+    expect(await getFileMetadata('tok', 'f-1')).toEqual(meta)
+
+    const url = new URL(String(fetchMock.mock.calls[0][0]))
+    expect(url.pathname).toContain('/files/f-1')
+    expect(url.searchParams.get('fields')).toContain('parents')
+  })
+})
+
+describe('getStartPageToken', () => {
+  it('fetches the changes cursor', async () => {
+    const fetchMock = stubFetch(jsonResponse({ startPageToken: '4711' }))
+    expect(await getStartPageToken('tok')).toBe('4711')
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/changes/startPageToken')
+  })
+})
+
+describe('listChanges', () => {
+  const change = (fileId: string) => ({
+    fileId,
+    file: { id: fileId, name: `${fileId}.json`, mimeType: 'application/json', parents: ['p'] },
+  })
+
+  it('drains the feed from the cursor and returns the next cursor', async () => {
+    const fetchMock = stubFetch(
+      jsonResponse({ changes: [change('a')], newStartPageToken: '9' }),
+    )
+    const res = await listChanges('tok', '5')
+    expect(res).toEqual({ changes: [change('a')], newStartPageToken: '9' })
+
+    const url = new URL(String(fetchMock.mock.calls[0][0]))
+    expect(url.pathname).toContain('/changes')
+    expect(url.searchParams.get('pageToken')).toBe('5')
+    expect(url.searchParams.get('restrictToMyDrive')).toBe('true')
+    expect(url.searchParams.get('spaces')).toBe('drive')
+    expect(url.searchParams.get('fields')).toContain('appProperties')
+  })
+
+  it('follows nextPageToken across pages before returning', async () => {
+    const fetchMock = stubFetch(
+      jsonResponse({ changes: [change('a')], nextPageToken: '6' }),
+      jsonResponse({ changes: [change('b')], newStartPageToken: '9' }),
+    )
+    const res = await listChanges('tok', '5')
+    expect(res.changes).toEqual([change('a'), change('b')])
+    expect(res.newStartPageToken).toBe('9')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    const second = new URL(String(fetchMock.mock.calls[1][0]))
+    expect(second.searchParams.get('pageToken')).toBe('6')
+  })
+
+  it('surfaces an expired cursor as DriveError 410', async () => {
+    stubFetch(jsonResponse({ error: { message: 'Page token expired' } }, 410))
+    await expect(listChanges('tok', 'stale')).rejects.toMatchObject({ status: 410 })
   })
 })
 

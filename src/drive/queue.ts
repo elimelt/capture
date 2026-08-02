@@ -2,9 +2,14 @@
  * Upload queue drainer (SPEC §5.2, §8.4). Drains a stream's pending sync rows
  * in seq order, each via the atomic append protocol: attachment blobs first,
  * the event record `.json` last — the record is the commit. Every upload is
- * idempotent by filename (find-before-upload) so a retried row never
- * duplicates. Failures classify: 401/403 stops and asks for reconnect; 429/5xx
- * backs off with `nextRetryAt`; anything else marks the row errored and moves on.
+ * idempotent by pre-generated file id: ids are minted client-side
+ * (files.generateIds, batched in ids.ts) and persisted on the sync row before
+ * the upload starts, so a retried row re-uploads with the same id and Drive's
+ * 409 answer counts as success — no find-before-upload GETs. Rows written by
+ * older app versions (no `fileIds`) that already attempted an upload keep the
+ * legacy find-before-upload probe so they never duplicate. Failures classify:
+ * 401/403 stops and asks for reconnect; 429/5xx backs off with `nextRetryAt`;
+ * anything else marks the row errored and moves on.
  */
 import { serializeEvent } from '../contract/serialize'
 import { eventRecordName, partitionOf } from '../contract/filenames'
@@ -20,6 +25,8 @@ import {
   putSyncStatus,
 } from '../store/events'
 import { DriveError, FOLDER_MIME, createFolder, findFile, uploadFile } from './client'
+import { allocateIds } from './ids'
+import { tags } from './tags'
 import { ensureTree } from './bootstrap'
 import { getTree, saveTree, type DriveTree } from './tree'
 
@@ -47,30 +54,65 @@ async function ensurePartition(
   const st = tree.streams[stream]
   const cached = st.partitions[date]
   if (cached) return cached
+  // Folders can't use pre-generated ids (files.generateIds is blob-files
+  // only), so partitions keep find-before-create — once per day per device.
   const existing = await findFile(token, { name: date, parentId: st.logId, mimeType: FOLDER_MIME })
-  const folderId = existing ?? (await createFolder(token, date, st.logId))
+  const folderId = existing ?? (await createFolder(token, date, st.logId, tags('partition', stream)))
   st.partitions[date] = folderId
   await saveTree(tree)
   return folderId
 }
 
-/** Upload one attachment if not already present (idempotent by filename). */
+/** Upload one attachment with its pre-assigned id (409 = already there = ok). */
 async function uploadAttachment(
   token: string,
   parentId: string,
+  stream: string,
   att: Attachment,
+  fileId: string,
+  legacyRetry: boolean,
 ): Promise<void> {
-  const existing = await findFile(token, { name: att.file, parentId })
-  if (existing) return
+  if (legacyRetry && (await findFile(token, { name: att.file, parentId }))) return
   const blob = await getBlob(att.file)
   if (!blob) return // pruned or never stored; the record still commits the entry
-  await uploadFile(token, { name: att.file, parentId, mimeType: att.mimeType, body: blob })
+  await uploadFile(token, {
+    name: att.file,
+    parentId,
+    mimeType: att.mimeType,
+    body: blob,
+    fileId,
+    appProperties: tags('attachment', stream),
+  })
 }
 
 function attachmentsOf(event: LogEvent): Attachment[] {
   if (event.type === 'capture') return event.attachments
   if (event.type === 'amend') return event.attachments ?? []
   return []
+}
+
+/**
+ * Assign pre-generated Drive ids to every file of this event that lacks one,
+ * persisting the row *before* any upload: if the upload lands but we crash
+ * before recording success, the retry reuses the same id and gets a 409
+ * (success) instead of creating a duplicate.
+ */
+async function assignFileIds(
+  token: string,
+  row: SyncStatusRow,
+  names: string[],
+): Promise<Record<string, string>> {
+  const fileIds = { ...row.fileIds }
+  const missing = names.filter((n) => !fileIds[n])
+  if (missing.length > 0) {
+    const minted = await allocateIds(token, missing.length)
+    missing.forEach((name, i) => {
+      fileIds[name] = minted[i]
+    })
+    row.fileIds = fileIds
+    await putSyncStatus(row)
+  }
+  return fileIds
 }
 
 /** Upload all of one event's parts then commit its record. Throws on failure. */
@@ -81,17 +123,31 @@ async function uploadEvent(
   row: SyncStatusRow,
 ): Promise<void> {
   const parentId = await ensurePartition(token, tree, event.stream, partitionOf(event))
-  for (const att of attachmentsOf(event)) {
-    await uploadAttachment(token, parentId, att)
+
+  // A row from an older app version that already attempted an upload may have
+  // files on Drive we hold no ids for; only those rows keep the legacy
+  // find-before-upload probe so a retry never duplicates them.
+  const legacyRetry = !row.fileIds && (row.attempts > 0 || row.phase === 'record-pending')
+
+  const atts = attachmentsOf(event)
+  const recordName = eventRecordName(event)
+  const fileIds = await assignFileIds(token, row, [...atts.map((a) => a.file), recordName])
+
+  for (const att of atts) {
+    await uploadAttachment(token, parentId, event.stream, att, fileIds[att.file], legacyRetry)
   }
   row.phase = 'record-pending'
   await putSyncStatus(row)
 
-  const name = eventRecordName(event)
-  const existing = await findFile(token, { name, parentId })
-  if (!existing) {
-    await uploadFile(token, { name, parentId, mimeType: 'application/json', body: serializeEvent(event) })
-  }
+  if (legacyRetry && (await findFile(token, { name: recordName, parentId }))) return
+  await uploadFile(token, {
+    name: recordName,
+    parentId,
+    mimeType: 'application/json',
+    body: serializeEvent(event),
+    fileId: fileIds[recordName],
+    appProperties: tags('record', event.stream),
+  })
 }
 
 /** Drop local audio blobs once uploaded, if the stream opts out of keeping them. */

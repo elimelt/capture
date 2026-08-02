@@ -7,7 +7,11 @@ import { eventRecordName, attachmentFileName, eventBaseName } from '../contract/
 import type { CaptureEvent } from '../contract/types'
 import { EVENT_SCHEMA } from '../contract/types'
 
-/** In-memory Drive with folders/files, listable and readable. */
+/**
+ * In-memory Drive with folders/files, listable and readable, plus a faithful
+ * changes feed: every node mutation appends a journal entry, cursors are
+ * indexes into the journal, and getStartPageToken points past its end.
+ */
 function fakeDrive() {
   interface Node {
     id: string
@@ -15,23 +19,68 @@ function fakeDrive() {
     parentId: string
     mimeType: string
     content?: string | Blob
+    trashed?: boolean
+    appProperties?: Record<string, string>
+  }
+  interface JournalEntry {
+    fileId: string
+    removed?: boolean
   }
   const nodes: Node[] = []
+  const journal: JournalEntry[] = []
   let n = 0
-  let failOn: 'list' | 'read' | null = null
+  let failOn: 'list' | 'read' | 'changes' | null = null
   let failStatus = 500
 
-  const add = (name: string, parentId: string, mimeType: string, content?: string | Blob) => {
+  const add = (
+    name: string,
+    parentId: string,
+    mimeType: string,
+    content?: string | Blob,
+    opts: { quiet?: boolean; trashed?: boolean; appProperties?: Record<string, string> } = {},
+  ) => {
     const id = `node-${n++}`
-    nodes.push({ id, name, parentId, mimeType, content })
+    nodes.push({
+      id,
+      name,
+      parentId,
+      mimeType,
+      content,
+      ...(opts.trashed ? { trashed: true } : {}),
+      ...(opts.appProperties ? { appProperties: opts.appProperties } : {}),
+    })
+    if (!opts.quiet) journal.push({ fileId: id })
     return id
   }
   const byId = (id: string) => nodes.find((f) => f.id === id)
+  const changeOf = ({ fileId, removed }: JournalEntry) => {
+    if (removed) return { fileId, removed: true }
+    const f = byId(fileId)!
+    return {
+      fileId,
+      file: {
+        id: f.id,
+        name: f.name,
+        mimeType: f.mimeType,
+        ...(f.trashed ? { trashed: true } : {}),
+        parents: [f.parentId],
+        ...(f.appProperties ? { appProperties: f.appProperties } : {}),
+      },
+    }
+  }
 
   return {
     nodes,
     add,
-    fail(on: 'list' | 'read' | null, status = 500) {
+    /** Journal another change entry for an existing node (metadata touch). */
+    touch(fileId: string) {
+      journal.push({ fileId })
+    },
+    /** Journal a removal (permanent delete / lost visibility). */
+    remove(fileId: string) {
+      journal.push({ fileId, removed: true })
+    },
+    fail(on: 'list' | 'read' | 'changes' | null, status = 500) {
       failOn = on
       failStatus = status
     },
@@ -54,7 +103,7 @@ function fakeDrive() {
     listChildren: vi.fn(async (_t: string, parentId: string) => {
       if (failOn === 'list') throw new DriveError(failStatus, 'boom')
       return nodes
-        .filter((f) => f.parentId === parentId)
+        .filter((f) => f.parentId === parentId && !f.trashed)
         .map(({ id, name, mimeType }) => ({ id, name, mimeType }))
     }),
     readFileText: vi.fn(async (_t: string, id: string) => {
@@ -66,6 +115,19 @@ function fakeDrive() {
       if (failOn === 'read') throw new DriveError(failStatus, 'boom')
       const c = byId(id)?.content
       return typeof c === 'string' ? new Blob([c]) : (c ?? new Blob())
+    }),
+    getFileMetadata: vi.fn(async (_t: string, id: string) => {
+      const f = byId(id)
+      if (!f) throw new DriveError(404, 'not found')
+      return { id: f.id, name: f.name, mimeType: f.mimeType, parents: [f.parentId] }
+    }),
+    getStartPageToken: vi.fn(async (_t: string) => String(journal.length)),
+    listChanges: vi.fn(async (_t: string, pageToken: string) => {
+      if (failOn === 'changes') throw new DriveError(failStatus, 'boom')
+      return {
+        changes: journal.slice(Number(pageToken)).map(changeOf),
+        newStartPageToken: String(journal.length),
+      }
     }),
   }
 }
@@ -82,6 +144,9 @@ vi.mock('./client', async () => {
     listChildren: (...a: unknown[]) => drive.listChildren(...(a as [string, string])),
     readFileText: (...a: unknown[]) => drive.readFileText(...(a as [string, string])),
     readFileBlob: (...a: unknown[]) => drive.readFileBlob(...(a as [string, string])),
+    getFileMetadata: (...a: unknown[]) => drive.getFileMetadata(...(a as [string, string])),
+    getStartPageToken: (...a: unknown[]) => drive.getStartPageToken(...(a as [string])),
+    listChanges: (...a: unknown[]) => drive.listChanges(...(a as [string, string])),
   }
 })
 
@@ -237,6 +302,147 @@ describe('pullStream', () => {
     expect(res.outcome).toBe('error')
     const { listEvents } = await import('../store/events')
     expect(await listEvents('timelog')).toEqual([])
+  })
+
+  it('makes a no-op incremental pull a single request (changes cursor)', async () => {
+    seedRemote([remoteCapture(1, 'aaaaaa')])
+    const { pullStream } = await import('./pull')
+    await pullStream('tok', 'timelog') // cold start: full walk + cursor mint
+
+    for (const fn of [drive.listChildren, drive.readFileText, drive.getStartPageToken]) {
+      fn.mockClear()
+    }
+    const res = await pullStream('tok', 'timelog')
+    expect(res).toEqual({ outcome: 'idle', pulled: 0 })
+    expect(drive.listChanges).toHaveBeenCalledTimes(1)
+    expect(drive.listChildren).not.toHaveBeenCalled()
+    expect(drive.readFileText).not.toHaveBeenCalled()
+    expect(drive.getStartPageToken).not.toHaveBeenCalled()
+  })
+
+  it('imports records discovered through the changes feed', async () => {
+    const { log } = seedRemote([remoteCapture(1, 'aaaaaa')])
+    const { pullStream } = await import('./pull')
+    await pullStream('tok', 'timelog')
+
+    // Another device pushes a new partition + record after our cold start.
+    const remote = remoteCapture(2, 'bbbbbb')
+    const partition2 = drive.add('2026-08-02', log, FOLDER_MIME)
+    drive.add(eventRecordName(remote), partition2, 'application/json', serializeEvent(remote))
+
+    drive.listChildren.mockClear()
+    const res = await pullStream('tok', 'timelog')
+    expect(res).toEqual({ outcome: 'pulled', pulled: 1 })
+    // The folder change warmed the partition cache, so no files.get needed;
+    // only the one dirty partition was listed.
+    expect(drive.getFileMetadata).not.toHaveBeenCalled()
+    expect(drive.listChildren).toHaveBeenCalledTimes(1)
+
+    const { listEvents } = await import('../store/events')
+    expect((await listEvents('timelog')).map((e) => e.id).sort()).toEqual(['aaaaaa', 'bbbbbb'])
+  })
+
+  it('resolves a record in an uncached partition with a single files.get', async () => {
+    const { log } = seedRemote([])
+    const { pullStream } = await import('./pull')
+    await pullStream('tok', 'timelog')
+
+    // The record's change arrives without its partition folder's (e.g. the
+    // folder predates the cursor): the parent must be resolved by id.
+    const remote = remoteCapture(1, 'cccccc')
+    const partition2 = drive.add('2026-08-02', log, FOLDER_MIME, undefined, { quiet: true })
+    drive.add(eventRecordName(remote), partition2, 'application/json', serializeEvent(remote))
+
+    const res = await pullStream('tok', 'timelog')
+    expect(res).toEqual({ outcome: 'pulled', pulled: 1 })
+    expect(drive.getFileMetadata).toHaveBeenCalledTimes(1)
+
+    // …and the resolution warmed the push path's partition cache.
+    const { getTree } = await import('./tree')
+    expect((await getTree())!.streams.timelog.partitions['2026-08-02']).toBe(partition2)
+  })
+
+  it('ignores changes for events already local (our own pushes)', async () => {
+    const { partition } = seedRemote([remoteCapture(1, 'aaaaaa')])
+    const { pullStream } = await import('./pull')
+    await pullStream('tok', 'timelog')
+
+    // A metadata touch on the already-imported record re-journals it.
+    const record = drive.nodes.find((f) => f.parentId === partition && f.name.endsWith('.json'))!
+    drive.touch(record.id)
+
+    drive.listChildren.mockClear()
+    drive.readFileText.mockClear()
+    const res = await pullStream('tok', 'timelog')
+    expect(res).toEqual({ outcome: 'idle', pulled: 0 })
+    expect(drive.listChildren).not.toHaveBeenCalled()
+    expect(drive.readFileText).not.toHaveBeenCalled()
+  })
+
+  it('ignores removed, trashed, foreign, and other-stream-tagged changes', async () => {
+    const { log, partition } = seedRemote([remoteCapture(1, 'aaaaaa')])
+    const { pullStream } = await import('./pull')
+    await pullStream('tok', 'timelog')
+
+    const record = drive.nodes.find((f) => f.parentId === partition && f.name.endsWith('.json'))!
+    drive.remove(record.id)
+    drive.add('000009_2026-08-01T10-00-00-0400_zzzzzz.json', partition, 'application/json', '{}', {
+      trashed: true,
+    })
+    drive.add('random-notes.txt', partition, 'text/plain', 'hi')
+    drive.add('000010_2026-08-01T10-00-00-0400_yyyyyy.json', log, 'application/json', '{}', {
+      appProperties: { captureKind: 'record', captureStream: 'other' },
+    })
+
+    drive.listChildren.mockClear()
+    const res = await pullStream('tok', 'timelog')
+    expect(res).toEqual({ outcome: 'idle', pulled: 0 })
+    expect(drive.listChildren).not.toHaveBeenCalled()
+    // The removed record stays imported: the log is append-only.
+    const { listEvents } = await import('../store/events')
+    expect((await listEvents('timelog')).map((e) => e.id)).toEqual(['aaaaaa'])
+  })
+
+  it('falls back to a full listing and re-mints the cursor when it expires (410)', async () => {
+    const { log } = seedRemote([remoteCapture(1, 'aaaaaa')])
+    const { pullStream } = await import('./pull')
+    await pullStream('tok', 'timelog')
+
+    // New remote records land, but the persisted cursor has expired.
+    const remote = remoteCapture(2, 'dddddd')
+    const partition2 = drive.add('2026-08-02', log, FOLDER_MIME)
+    drive.add(eventRecordName(remote), partition2, 'application/json', serializeEvent(remote))
+    drive.fail('changes', 410)
+
+    const res = await pullStream('tok', 'timelog')
+    expect(res).toEqual({ outcome: 'pulled', pulled: 1 })
+    expect(drive.getStartPageToken).toHaveBeenCalledTimes(2) // cold start + re-mint
+
+    // The re-minted cursor works: the next pull is an O(1) no-op again.
+    drive.fail(null)
+    drive.listChanges.mockClear()
+    drive.listChildren.mockClear()
+    expect(await pullStream('tok', 'timelog')).toEqual({ outcome: 'idle', pulled: 0 })
+    expect(drive.listChanges).toHaveBeenCalledTimes(1)
+    expect(drive.listChildren).not.toHaveBeenCalled()
+  })
+
+  it('does not advance the cursor when an import fails mid-pull', async () => {
+    const { log } = seedRemote([])
+    const { pullStream } = await import('./pull')
+    await pullStream('tok', 'timelog')
+
+    const remote = remoteCapture(1, 'eeeeee')
+    const partition2 = drive.add('2026-08-02', log, FOLDER_MIME)
+    drive.add(eventRecordName(remote), partition2, 'application/json', serializeEvent(remote))
+
+    drive.fail('read', 500)
+    expect((await pullStream('tok', 'timelog')).outcome).toBe('retry-later')
+
+    // The failed window replays: the record is not lost.
+    drive.fail(null)
+    const res = await pullStream('tok', 'timelog')
+    expect(res).toEqual({ outcome: 'pulled', pulled: 1 })
   })
 
   it('merges with locally queued events without disturbing their pending status', async () => {

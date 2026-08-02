@@ -23,11 +23,13 @@ function fakeDrive() {
     async (_t: string, a: { name: string; parentId: string; mimeType?: string }) =>
       find(a.name, a.parentId)?.id ?? null,
   )
-  const createFolder = vi.fn(async (_t: string, name: string, parentId: string) => {
-    const id = `folder-${n++}`
-    nodes.push({ id, name, parentId, isFolder: true })
-    return id
-  })
+  const createFolder = vi.fn(
+    async (_t: string, name: string, parentId: string, _appProperties?: Record<string, string>) => {
+      const id = `folder-${n++}`
+      nodes.push({ id, name, parentId, isFolder: true })
+      return id
+    },
+  )
   const uploadFile = vi.fn(
     async (_t: string, a: { name: string; parentId: string }) => {
       const id = `file-${n++}`
@@ -106,6 +108,33 @@ describe('ensureTree', () => {
     expect(reuploaded).not.toContain('config.json')
     expect(reuploaded).not.toContain('checkpoint.json')
     expect(reuploaded).not.toContain('streams.json')
+  })
+
+  it('tags created folders and files with appProperties', async () => {
+    const { ensureTree } = await load()
+    await ensureTree('tok', ['timelog'])
+
+    const folderProps = new Map(drive.createFolder.mock.calls.map((c) => [c[1], c[3]]))
+    expect(folderProps.get('timebox')).toEqual({ captureKind: 'root' })
+    expect(folderProps.get('timelog')).toEqual({ captureKind: 'stream', captureStream: 'timelog' })
+    expect(folderProps.get('log')).toEqual({ captureKind: 'log', captureStream: 'timelog' })
+    expect(folderProps.get('results')).toEqual({ captureKind: 'results', captureStream: 'timelog' })
+
+    const fileProps = new Map(
+      drive.uploadFile.mock.calls.map((c) => {
+        const a = c[1] as { name: string; appProperties?: Record<string, string> }
+        return [a.name, a.appProperties]
+      }),
+    )
+    expect(fileProps.get('streams.json')).toEqual({ captureKind: 'registry' })
+    expect(fileProps.get('config.json')).toEqual({
+      captureKind: 'config',
+      captureStream: 'timelog',
+    })
+    expect(fileProps.get('checkpoint.json')).toEqual({
+      captureKind: 'checkpoint',
+      captureStream: 'timelog',
+    })
   })
 
   it('preserves cached partition ids across re-runs', async () => {
