@@ -1,0 +1,4 @@
+# SPA fallback: serve index.html for client-side routes so hard-refreshing or
+# deep-linking a path (e.g. /settings, /day) doesn't 404 on the static host.
+# Real assets are matched first; unknown paths fall through to the app shell.
+/*    /index.html    200
