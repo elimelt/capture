@@ -285,14 +285,38 @@ consumes:
 |---|---|---|
 | 401 / 403 (`isAuth`) | row re-queued, drain stops | `'reconnect'` → `driveConnection: 'expired'` (pill) |
 | 429 / 5xx (`isRetryable`) | row re-queued, drain stops | `'retry-later'` (retried on next drain) |
-| anything else | row marked `'error'`, drain stops | `'error'` → `lastError` toast |
+| anything else, row's `attempts` still below `MAX_ATTEMPTS_BEFORE_PARKED` | row marked `'error'`, drain stops | `'error'` → `lastError` toast |
+| anything else, row's `attempts` at/above `MAX_ATTEMPTS_BEFORE_PARKED` | row marked `'error'` and **parked**, drain continues past it | `'error'` (unless a later batch also failed worse) → `lastError` toast |
 
 There is deliberately no per-row retry backoff: sync runs only from the manual
 "Sync now" button, so every drain is an explicit user ask and attempts every
 queued row — the user is the rate limiter. (Older versions persisted a
 `nextRetryAt` window and skipped rows inside it while reporting the drain
 clean, which presented as entries stuck "queued" forever; the drainer now
-ignores any legacy `nextRetryAt` still on a row.) `drainSync` merges each stream's pull and push
+ignores any legacy `nextRetryAt` still on a row.)
+
+**Poison-row parking (issue #87).** Stopping the whole drain on the first
+failure protects the seq-monotonic commit order (§6.2's checkpoint contract
+relies on it — a `seq > N` cursor). But a row whose failure is *deterministic*
+(a malformed/oversized attachment, a stale cached partition id — anything that
+isn't a Drive-side outage) sorts first again on every subsequent drain, so
+stopping on it forever starved every row queued behind it — this got worse
+once the backoff gate above was removed, since a row like this used to
+eventually fall out of rotation on its own. `src/drive/queue.ts` bounds this:
+once a row's `attempts` reaches `MAX_ATTEMPTS_BEFORE_PARKED` (5) on the
+non-retryable-non-auth path, the drain records the failure exactly as before
+(still visibly `'failed'` on the entry card — `src/capture/lifecycle.ts`) but
+*continues* to the rows behind it instead of returning, and never batches a
+parked row into a segment with a healthy neighbor (which would otherwise fail
+the whole segment every time). A parked row is still attempted on every future
+drain — no backoff gate, same as any other row — it just can't block anything
+else. It also never lands out of turn: a parked row doesn't get retried ahead
+of where it sits, and nothing behind it is allowed to overtake it *before* it
+first parks, so whatever *does* land keeps landing in seq order. The one gap
+this doesn't close: a row already grouped into a persisted segment assignment
+with other members (crash-recovery, above) before it started failing stays
+grouped — that shared-segment case needs manual resolution (revoke the poison
+entry) rather than self-healing. `drainSync` merges each stream's pull and push
 outcomes worst-of (`idle < drained < retry-later < reconnect < error`), then the
 per-stream outcomes worst-of into the aggregate; a `'reconnect'` anywhere skips
 that stream's push and aborts the remaining streams (the token is dead either

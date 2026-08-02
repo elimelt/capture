@@ -35,12 +35,29 @@ export type EntryLifecycle = 'understanding' | 'settled' | 'failed'
  * Drive that was never queued locally — PR #90 removed backoff, not the
  * "never queued" case) is treated like a caught-up entry: `'understanding'`
  * while enrichment is still pending, else `'settled'`.
+ *
+ * "A sync error" means `row.error` is set while the row isn't `'uploaded'`
+ * yet — not merely `status === 'error'`. The drainer (`src/drive/queue.ts`)
+ * records `error` on *every* failure path, including the retryable (429/5xx)
+ * and auth (401/403) ones that keep `status: 'queued'` for the next
+ * automatic retry (no backoff gate — SPEC §8.4). Keying off `status ===
+ * 'error'` alone left those rows reading identically to a freshly-queued,
+ * never-attempted entry: an audio upload could fail every single "Sync now"
+ * and the card would still show nothing wrong (the root cause of the
+ * "queued forever" report — the failure was real and recorded, just
+ * invisible). `status !== 'uploaded'` is a defensive second guard, not load
+ * bearing today — the drainer clears `error` on every successful upload
+ * (queue.ts) — but a stale `error` surviving on an uploaded row must never
+ * re-read as failed regardless of how it got there. `status === 'error'` is
+ * checked directly too (not just `error` truthiness) so this stays correct
+ * even for a row shaped by a caller that sets the status without the message
+ * (defensive; the drainer always sets both together in practice).
  */
 export function entryLifecycle(
   sync: SyncStatusRow | undefined,
   hasPendingEnrichment: boolean,
 ): EntryLifecycle {
-  if (sync?.status === 'error') return 'failed'
+  if (sync && sync.status !== 'uploaded' && (sync.status === 'error' || sync.error)) return 'failed'
   return hasPendingEnrichment ? 'understanding' : 'settled'
 }
 
