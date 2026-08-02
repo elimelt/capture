@@ -141,13 +141,18 @@ so non-users never download the bundle.
 - **Client-side agent loop.** There is no backend: the AI SDK's `ToolLoopAgent` runs
   in-process in the browser (`DirectChatTransport`), streaming UI chunks from an
   OpenAI-compatible endpoint. Tool calls execute locally between model turns.
-- **Tools over the local log, and they are read-only.** Verified in
-  `src/assistant/tools.ts`: the three tools (`list_entries`, `search_entries`,
+- **Tools over the local log, with a narrow write boundary.** In
+  `src/assistant/tools.ts`: the three read tools (`list_entries`, `search_entries`,
   `get_places`) only call injected getters over the zustand store plus `getBlob` for
-  text attachments; there are no `appendAmend`/store writes anywhere in the module. The
-  assistant answers questions; it never modifies the log. Rather than embedding the log
-  in the prompt, the agent pulls just what a question needs, rendered as a plain-text
-  digest (revoked entries always excluded, output capped with explicit truncation notes).
+  text attachments. Rather than embedding the log in the prompt, the agent pulls just
+  what a question needs, rendered as a plain-text digest (revoked entries always
+  excluded, entry ids as `(id …)` suffixes, output capped with explicit truncation
+  notes). Two write tools (`create_entry`, `update_entry`) let the assistant — only on
+  explicit user request — append ordinary capture/amend events through an injected
+  `EntryWriter` that wraps the store's own `capture`/`amend` actions: the single write
+  path, so the append-only log is preserved, the UI refreshes at once, and the events
+  ride the normal manual sync queue. Nothing else (revoke, settings, sync, wipe) is
+  injected, so nothing else is reachable from a tool call.
 - **Prefix-cache-aware context.** The system prompt (`context.ts`) truncates "current
   time" to the hour so the prompt is byte-identical across turns within an hour,
   keeping the server's KV/prefix cache warm; wall-clock dates come from string-slicing

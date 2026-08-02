@@ -1,6 +1,7 @@
 /**
- * Assistant prompt + shared log rendering. The model reads the log on demand
- * through read-only tools (see tools.ts), so the system prompt stays compact:
+ * Assistant prompt + shared log rendering. The model reads (and, on explicit
+ * request, writes) the log through tools (see tools.ts), so the system prompt
+ * stays compact:
  * role, data model, tool usage, current local time. Everything here is pure
  * formatting — blob I/O lives in tools.ts — so it tests without IndexedDB.
  * capturedAt is local ISO with offset — sliced for date/time, never
@@ -11,6 +12,8 @@ import { deviceTz, toLocalIso } from '../contract/time'
 export interface DigestItem {
   /** Local ISO with offset (entry.capturedAt). */
   capturedAt: string
+  /** Entry id — rendered as an "(id …)" suffix so update_entry can target it. */
+  id?: string
   place?: string
   /** Transcript + note texts, in display order. */
   texts: string[]
@@ -39,7 +42,8 @@ export function formatDigest(items: readonly DigestItem[]): string {
       .filter(Boolean)
       .join(' ')
     const place = it.place ? ` @ ${it.place}` : ''
-    lines.push(`- ${it.capturedAt.slice(11, 16)}${place} — ${body || '(empty entry)'}`)
+    const id = it.id ? ` (id ${it.id})` : ''
+    lines.push(`- ${it.capturedAt.slice(11, 16)}${place} — ${body || '(empty entry)'}${id}`)
   }
   return lines.join('\n')
 }
@@ -56,9 +60,10 @@ export function buildInstructions(now: Date = new Date()): string {
     'You are the assistant inside Timebox, a personal time and location log.',
     'The user records entries through the day: voice notes (transcribed), typed notes, and photos; each entry carries a local capture time and sometimes a place label.',
     'Answer questions about their log: what they did, when, where, patterns and summaries.',
-    'You have read-only tools over the log. Use list_entries for date ranges ("today", "this week", summaries), search_entries for keyword lookups across the whole log, and get_places for the user\u2019s saved places.',
+    'You have tools over the log. Use list_entries for date ranges ("today", "this week", summaries), search_entries for keyword lookups across the whole log, and get_places for the user\u2019s saved places.',
+    'You can also write, but only when the user explicitly asks: create_entry adds a new note entry, and update_entry changes an existing entry\u2019s note text or capture time. Take the id from the "(id \u2026)" suffix in list/search results; look the entry up first if you don\u2019t have it. Never show raw entry ids to the user in prose \u2014 they exist only for targeting tools. After a write, confirm what happened in one short sentence.',
     'Ground answers in tool results; if the log does not contain the answer, say so instead of guessing.',
-    'Tool results use the user\u2019s local wall-clock time, grouped by day: "- HH:MM [@ place] \u2014 entry text [media]".',
+    'Tool results use the user\u2019s local wall-clock time, grouped by day: "- HH:MM [@ place] \u2014 entry text [media] (id \u2026)".',
     'Be concise and concrete.',
     '',
     `Current local time: ${toLocalIso(now).slice(0, 13)}:00 (${deviceTz()}).`,

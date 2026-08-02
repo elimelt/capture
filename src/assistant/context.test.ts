@@ -63,6 +63,19 @@ describe('formatDigest', () => {
     ]
     expect(formatDigest(items)).toContain('- 10:00 — (empty entry)')
   })
+
+  it('renders the entry id as a trailing suffix so update_entry can target it', () => {
+    const items: DigestItem[] = [
+      {
+        capturedAt: '2026-08-02T10:00:00-04:00',
+        id: 'e1abc',
+        texts: ['walked the dog'],
+        audioCount: 0,
+        photoCount: 0,
+      },
+    ]
+    expect(formatDigest(items)).toContain('- 10:00 — walked the dog (id e1abc)')
+  })
 })
 
 describe('buildInstructions', () => {
@@ -72,6 +85,12 @@ describe('buildInstructions', () => {
     expect(prompt).toContain('list_entries')
     expect(prompt).toContain('search_entries')
     expect(prompt).toContain('get_places')
+    expect(prompt).toContain('create_entry')
+    expect(prompt).toContain('update_entry')
+    // Writes are opt-in per user turn, never assistant-initiated.
+    expect(prompt).toContain('only when the user explicitly asks')
+    // Ids are tool plumbing, not conversation content.
+    expect(prompt).toContain('Never show raw entry ids to the user in prose')
     const hour = `${toLocalIso(NOW).slice(0, 13)}:00`
     expect(prompt).toContain(`Current local time: ${hour} (${deviceTz()}).`)
   })

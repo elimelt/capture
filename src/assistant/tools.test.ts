@@ -1,9 +1,21 @@
 import 'fake-indexeddb/auto'
 import { beforeEach, describe, expect, it } from 'vitest'
-import type { Entry } from '../contract/types'
+import { fold } from '../contract/fold'
+import {
+  EVENT_SCHEMA,
+  type AmendPatch,
+  type Entry,
+  type LogEvent,
+} from '../contract/types'
 import { getDb, resetDbCache } from '../store/db'
+import type { NewAttachment } from '../store/events'
 import type { Place } from '../store/places'
-import { LIST_ENTRIES_MAX, SEARCH_ENTRIES_MAX, createAssistantTools } from './tools'
+import {
+  LIST_ENTRIES_MAX,
+  SEARCH_ENTRIES_MAX,
+  createAssistantTools,
+  type EntryWriter,
+} from './tools'
 
 let seq = 0
 function entry(capturedAt: string, extra: Partial<Entry> = {}): Entry {
@@ -51,10 +63,41 @@ beforeEach(async () => {
 
 const OPTS = { toolCallId: 'test', messages: [], context: {} }
 
-function makeTools(entries: Entry[], places: Place[] = []) {
+/** Writer that records every call; capture mints ids new1, new2, … */
+function recordedWriter() {
+  const captures: Array<{ capturedAt: string; attachments: NewAttachment[] }> = []
+  const amends: Array<{
+    targets: string[]
+    patch?: AmendPatch
+    attachments?: NewAttachment[]
+  }> = []
+  const writer: EntryWriter = {
+    capture: async (input) => {
+      captures.push(input)
+      return {
+        schema: EVENT_SCHEMA,
+        type: 'capture',
+        id: `new${captures.length}`,
+        seq: captures.length,
+        stream: 'timelog',
+        loggedAt: input.capturedAt,
+        deviceTz: 'America/New_York',
+        capturedAt: input.capturedAt,
+        attachments: [],
+      }
+    },
+    amend: async (input) => {
+      amends.push(input)
+    },
+  }
+  return { writer, captures, amends }
+}
+
+function makeTools(entries: Entry[], places: Place[] = [], writer = recordedWriter().writer) {
   return createAssistantTools(
     () => entries,
     () => places,
+    writer,
   )
 }
 
@@ -82,7 +125,7 @@ describe('list_entries', () => {
     const revoked = entry('2026-08-02T09:00:00-04:00', { revoked: true })
     const tools = makeTools([kept, revoked])
     const text = (await tools.list_entries.execute({ from: '2026-08-02', to: '2026-08-02' }, OPTS)) as string
-    expect(text).toContain('- 07:45 @ Home — walked the dog')
+    expect(text).toContain(`- 07:45 @ Home — walked the dog (id ${kept.id})`)
     expect(text).not.toContain('09:00')
   })
 
@@ -152,5 +195,259 @@ describe('search_entries', () => {
     expect(text).toContain(
       `(truncated: showing the first ${SEARCH_ENTRIES_MAX} of ${SEARCH_ENTRIES_MAX + 3} matches)`,
     )
+  })
+})
+
+describe('create_entry', () => {
+  it('appends exactly one capture event with the trimmed note text and returns the id', async () => {
+    const w = recordedWriter()
+    const tools = makeTools([], [], w.writer)
+    const result = (await tools.create_entry.execute({ text: '  had lunch  ' }, OPTS)) as string
+    expect(result).toBe('Created entry new1.')
+    expect(w.captures).toHaveLength(1)
+    expect(w.amends).toHaveLength(0)
+    const input = w.captures[0]
+    // Local ISO with offset, like every UI capture.
+    expect(input.capturedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/)
+    expect(input.attachments).toHaveLength(1)
+    const a = input.attachments[0]
+    expect(a.kind).toBe('text')
+    expect(a.mimeType).toBe('text/plain')
+    expect(await a.blob.text()).toBe('had lunch')
+  })
+
+  it('rejects empty text without appending anything', async () => {
+    const w = recordedWriter()
+    const tools = makeTools([], [], w.writer)
+    const result = (await tools.create_entry.execute({ text: '   ' }, OPTS)) as string
+    expect(result).toBe('(error: text must be a non-empty string)')
+    expect(w.captures).toHaveLength(0)
+    expect(w.amends).toHaveLength(0)
+  })
+
+  it('reports a failed write as terse error text instead of throwing', async () => {
+    const w = recordedWriter()
+    w.writer.capture = async () => {
+      throw new Error('idb closed')
+    }
+    const tools = makeTools([], [], w.writer)
+    const result = (await tools.create_entry.execute({ text: 'x' }, OPTS)) as string
+    expect(result).toBe('(error: could not create entry: idb closed)')
+  })
+})
+
+describe('update_entry', () => {
+  /** An entry with a user note, an audio clip, and its derived transcript. */
+  function noteAndTranscriptEntry(): Entry {
+    return entry('2026-08-02T07:45:00-04:00', {
+      attachments: [
+        { kind: 'text', file: 'note.txt', mimeType: 'text/plain' },
+        { kind: 'audio', file: 'clip.webm', mimeType: 'audio/webm', durationSec: 12 },
+        {
+          kind: 'text',
+          file: 'transcript.txt',
+          mimeType: 'text/plain',
+          derivedFrom: 'clip.webm',
+        },
+      ],
+    })
+  }
+
+  it('replaces the user note in exactly one amend event, preserving transcripts', async () => {
+    const target = noteAndTranscriptEntry()
+    const w = recordedWriter()
+    const tools = makeTools([target], [], w.writer)
+    const result = (await tools.update_entry.execute(
+      { id: target.id, text: ' fixed the fence ' },
+      OPTS,
+    )) as string
+    expect(result).toBe(`Updated entry ${target.id}.`)
+    expect(w.amends).toHaveLength(1)
+    expect(w.captures).toHaveLength(0)
+    const amend = w.amends[0]
+    expect(amend.targets).toEqual([target.id])
+    // Only the user note is removed — never the derived transcript.
+    expect(amend.patch).toEqual({ removeAttachments: ['note.txt'] })
+    expect(amend.attachments).toHaveLength(1)
+    expect(amend.attachments![0].kind).toBe('text')
+    expect(amend.attachments![0].mimeType).toBe('text/plain')
+    expect(await amend.attachments![0].blob.text()).toBe('fixed the fence')
+  })
+
+  it('adds a note without a patch when the entry has none to replace', async () => {
+    const target = entry('2026-08-02T07:45:00-04:00')
+    const w = recordedWriter()
+    const tools = makeTools([target], [], w.writer)
+    await tools.update_entry.execute({ id: target.id, text: 'note' }, OPTS)
+    expect(w.amends).toHaveLength(1)
+    expect(w.amends[0].patch).toBeUndefined()
+    expect(w.amends[0].attachments).toHaveLength(1)
+  })
+
+  it('sets the capture time of day, keeping the date and attachments alone', async () => {
+    const target = noteAndTranscriptEntry() // 2026-08-02T07:45:00-04:00, America/New_York
+    const w = recordedWriter()
+    const tools = makeTools([target], [], w.writer)
+    const result = (await tools.update_entry.execute({ id: target.id, time: '09:30' }, OPTS)) as string
+    expect(result).toBe(`Updated entry ${target.id}.`)
+    expect(w.amends).toHaveLength(1)
+    expect(w.amends[0]).toEqual({
+      targets: [target.id],
+      patch: { capturedAt: '2026-08-02T09:30:00-04:00' },
+    })
+  })
+
+  it("recomposes the time in the ENTRY's zone, not the device's", async () => {
+    // Captured in Tokyo, edited from a device in another zone: the civil
+    // date and the offset must stay Tokyo's. A device-zone Date round-trip
+    // (the harness runs outside +09:00) would move the instant and rewrite
+    // the offset.
+    const target = entry('2026-08-03T00:30:00+09:00', { deviceTz: 'Asia/Tokyo' })
+    const w = recordedWriter()
+    const tools = makeTools([target], [], w.writer)
+    await tools.update_entry.execute({ id: target.id, time: '08:15' }, OPTS)
+    expect(w.amends).toHaveLength(1)
+    expect(w.amends[0].patch).toEqual({ capturedAt: '2026-08-03T08:15:00+09:00' })
+  })
+
+  it('applies text and time together as a single amend event', async () => {
+    const target = noteAndTranscriptEntry()
+    const w = recordedWriter()
+    const tools = makeTools([target], [], w.writer)
+    await tools.update_entry.execute({ id: target.id, text: 'new', time: '18:05' }, OPTS)
+    expect(w.amends).toHaveLength(1)
+    const amend = w.amends[0]
+    expect(amend.patch).toEqual({
+      capturedAt: '2026-08-02T18:05:00-04:00',
+      removeAttachments: ['note.txt'],
+    })
+    expect(amend.attachments).toHaveLength(1)
+  })
+
+  it('serializes concurrent updates so the fold converges to exactly one note', async () => {
+    // The AI SDK runs all tool calls of one model step concurrently. Fold a
+    // real event log in the writer so each update_entry sees the entries
+    // the previous amend produced — unserialized, both calls would remove
+    // the same note file and the entry would end up with BOTH new notes.
+    const events: LogEvent[] = [
+      {
+        schema: EVENT_SCHEMA,
+        type: 'capture',
+        id: 'cap1',
+        seq: 1,
+        stream: 'timelog',
+        loggedAt: '2026-08-02T07:45:00-04:00',
+        capturedAt: '2026-08-02T07:45:00-04:00',
+        deviceTz: 'America/New_York',
+        attachments: [{ kind: 'text', file: 'note.txt', mimeType: 'text/plain' }],
+      },
+    ]
+    let entries = fold(events)
+    let n = 0
+    const writer: EntryWriter = {
+      capture: () => Promise.reject(new Error('unused')),
+      amend: async ({ targets, patch, attachments }) => {
+        // Genuinely asynchronous, like the real IndexedDB transaction — a
+        // synchronous mock would let an unserialized second call read the
+        // refolded entries by accident and mask the race.
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        n += 1
+        events.push({
+          schema: EVENT_SCHEMA,
+          type: 'amend',
+          id: `am${n}`,
+          seq: 1 + n,
+          stream: 'timelog',
+          loggedAt: `2026-08-02T12:0${n}:00-04:00`,
+          deviceTz: 'America/New_York',
+          targets,
+          ...(patch ? { patch } : {}),
+          ...(attachments && attachments.length > 0
+            ? {
+                attachments: attachments.map((a, i) => ({
+                  kind: a.kind,
+                  file: `amend${n}-${i}.txt`,
+                  mimeType: a.mimeType,
+                })),
+              }
+            : {}),
+        })
+        entries = fold(events)
+      },
+    }
+    const tools = createAssistantTools(
+      () => entries,
+      () => [],
+      writer,
+    )
+    const results = await Promise.all([
+      tools.update_entry.execute({ id: 'cap1', text: 'first rewrite' }, OPTS),
+      tools.update_entry.execute({ id: 'cap1', text: 'second rewrite' }, OPTS),
+    ])
+    expect(results).toEqual(['Updated entry cap1.', 'Updated entry cap1.'])
+    const notes = entries
+      .find((e) => e.id === 'cap1')!
+      .attachments.filter((a) => a.kind === 'text')
+    // Exactly one note survives: the second update replaced the first's.
+    expect(notes.map((a) => a.file)).toEqual(['amend2-0.txt'])
+  })
+
+  it('rejects an unknown id without appending anything', async () => {
+    const w = recordedWriter()
+    const tools = makeTools([entry('2026-08-02T10:00:00-04:00')], [], w.writer)
+    const result = (await tools.update_entry.execute({ id: 'nope', text: 'x' }, OPTS)) as string
+    expect(result).toBe('(error: no entry with id "nope")')
+    expect(w.amends).toHaveLength(0)
+    expect(w.captures).toHaveLength(0)
+  })
+
+  it('rejects a revoked entry without appending anything', async () => {
+    const target = entry('2026-08-02T10:00:00-04:00', { revoked: true })
+    const w = recordedWriter()
+    const tools = makeTools([target], [], w.writer)
+    const result = (await tools.update_entry.execute({ id: target.id, text: 'x' }, OPTS)) as string
+    expect(result).toBe(`(error: entry "${target.id}" is deleted)`)
+    expect(w.amends).toHaveLength(0)
+  })
+
+  it.each(['9:30', '24:00', '10:60', 'noon'])(
+    'rejects malformed time "%s" without appending anything',
+    async (time) => {
+      const target = entry('2026-08-02T10:00:00-04:00')
+      const w = recordedWriter()
+      const tools = makeTools([target], [], w.writer)
+      const result = (await tools.update_entry.execute({ id: target.id, time }, OPTS)) as string
+      expect(result).toBe('(error: time must be "HH:MM", 24-hour)')
+      expect(w.amends).toHaveLength(0)
+    },
+  )
+
+  it('rejects empty replacement text without appending anything', async () => {
+    const target = entry('2026-08-02T10:00:00-04:00')
+    const w = recordedWriter()
+    const tools = makeTools([target], [], w.writer)
+    const result = (await tools.update_entry.execute({ id: target.id, text: ' ' }, OPTS)) as string
+    expect(result).toBe('(error: text must be a non-empty string)')
+    expect(w.amends).toHaveLength(0)
+  })
+
+  it('rejects a call with nothing to change without appending anything', async () => {
+    const target = entry('2026-08-02T10:00:00-04:00')
+    const w = recordedWriter()
+    const tools = makeTools([target], [], w.writer)
+    const result = (await tools.update_entry.execute({ id: target.id }, OPTS)) as string
+    expect(result).toBe('(error: nothing to update — provide text and/or time)')
+    expect(w.amends).toHaveLength(0)
+  })
+
+  it('reports a failed write as terse error text instead of throwing', async () => {
+    const target = entry('2026-08-02T10:00:00-04:00')
+    const w = recordedWriter()
+    w.writer.amend = async () => {
+      throw new Error('idb closed')
+    }
+    const tools = makeTools([target], [], w.writer)
+    const result = (await tools.update_entry.execute({ id: target.id, text: 'x' }, OPTS)) as string
+    expect(result).toBe('(error: could not update entry: idb closed)')
   })
 })

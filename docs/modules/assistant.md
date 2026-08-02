@@ -4,10 +4,12 @@ The opt-in AI chat assistant. It is entirely client-side: the PWA has no backend
 AI SDK's agent loop runs in-process in the browser against an OpenAI-compatible endpoint
 (`https://llm.elimelt.com/v1`, an Ollama facade, no API key — access is origin-gated by
 CORS). The agent answers questions about the user's local Capture log (entries, places)
-by calling **read-only tools** over the zustand store and IndexedDB; it never embeds the
-whole log in the prompt. Conversations are persisted to the IndexedDB `chats` store so
-they survive iOS killing the standalone PWA, and are browsable/searchable from a history
-sheet.
+by calling **read tools** over the zustand store and IndexedDB — it never embeds the
+whole log in the prompt — and, on explicit user request, can **create or update entries**
+through two narrow write tools that append ordinary capture/amend events via the store's
+own actions (the single write path; the append-only log is never mutated). Conversations
+are persisted to the IndexedDB `chats` store so they survive iOS killing the standalone
+PWA, and are browsable/searchable from a history sheet.
 
 The feature is gated by `AppSettings.assistantEnabled`; none of this code loads until the
 user enables it (`ChatScreen` is imported lazily by the app shell).
@@ -16,7 +18,8 @@ Responsibilities by file:
 
 - `config.ts` — endpoint URL, curated model list, default model.
 - `context.ts` — system-prompt builder and the shared plain-text log rendering.
-- `tools.ts` — the three read-only tools (`list_entries`, `search_entries`, `get_places`).
+- `tools.ts` — the three read tools (`list_entries`, `search_entries`, `get_places`) and
+  the two write tools (`create_entry`, `update_entry`), plus the `EntryWriter` boundary.
 - `transport.ts` — `ChatTransport` that runs a `ToolLoopAgent` in-process and streams UI chunks.
 - `history.ts` — chat persistence (IndexedDB `chats` store) plus pure title/search helpers.
 - `ChatScreen.tsx` — the chat UI, wiring everything above together.
@@ -46,18 +49,20 @@ System prompt and shared log rendering. Everything here is pure formatting (no b
 that lives in `tools.ts`), so it tests without IndexedDB.
 
 - `interface DigestItem` — one entry's digest view: `capturedAt` (local ISO with offset),
-  optional `place`, `texts: string[]` (transcripts + notes in display order),
-  `audioCount`, `photoCount`.
+  optional `id` (the entry id, so `update_entry` has something to target), optional
+  `place`, `texts: string[]` (transcripts + notes in display order), `audioCount`,
+  `photoCount`.
 - `formatDigest(items: readonly DigestItem[]): string` — renders items grouped by day
   (`YYYY-MM-DD:` headers, blank line between days), one line per entry:
-  `- HH:MM [@ place] — text1 | text2 [1 audio, 2 photos]`. Empty input yields
-  `(no entries in this period)`; an entry with no text and no media renders
-  `(empty entry)`. Date and time come from string slices of `capturedAt`
-  (`slice(0, 10)` / `slice(11, 16)`), never a `Date` round-trip, so the rendering always
-  shows the wall-clock time the entry was captured in.
+  `- HH:MM [@ place] — text1 | text2 [1 audio, 2 photos] (id …)` (the id suffix only
+  when `id` is present). Empty input yields `(no entries in this period)`; an entry with
+  no text and no media renders `(empty entry)`. Date and time come from string slices of
+  `capturedAt` (`slice(0, 10)` / `slice(11, 16)`), never a `Date` round-trip, so the
+  rendering always shows the wall-clock time the entry was captured in.
 - `buildInstructions(now: Date = new Date()): string` — the system prompt: role, data
   model, tool usage guidance (which tool for which question, "ground answers in tool
-  results; say so instead of guessing"), and the current local time. The time is
+  results; say so instead of guessing", and that write tools run **only when the user
+  explicitly asks**), and the current local time. The time is
   **truncated to the hour** (`toLocalIso(now).slice(0, 13) + ':00'`, plus `deviceTz()`)
   so the prompt — the very start of the token stream — stays byte-identical across turns
   and tool-loop steps, keeping the server's prefix (KV) cache valid.
@@ -67,19 +72,25 @@ Uses `deviceTz`/`toLocalIso` from `../contract/time`. `formatDigest` is consumed
 
 ### src/assistant/tools.ts
 
-The read-only tools the agent calls over the local log. Data access is injected —
-`createAssistantTools` takes getters — so `ChatScreen` wires the zustand store while
-tests inject fixtures. Only text-blob reads (`getBlob` from `../store/events`) touch
-IndexedDB. All tools return plain text in the `formatDigest` rendering.
+The tools the agent calls over the local log: three reads and two narrow writes. Data
+access is injected — `createAssistantTools` takes getters plus an `EntryWriter` — so
+`ChatScreen` wires the zustand store while tests inject fixtures. Only text-blob reads
+(`getBlob` from `../store/events`) touch IndexedDB directly; writes go through the
+injected store actions. Read tools return plain text in the `formatDigest` rendering;
+write tools return a terse factual line (`Created entry <id>.` / `Updated entry <id>.`)
+or an `(error: …)` line — they never throw out of `execute`.
 
 - `LIST_ENTRIES_MAX = 300`, `SEARCH_ENTRIES_MAX = 50` — output caps; the rendered text
   appends an explicit `(truncated: …)` note when a cap is hit.
+- `interface EntryWriter` — `{ capture(input), amend(input) }`, the **only** writes the
+  assistant can perform. `ChatScreen` injects the store's `capture`/`amend` actions (the
+  single write path); revoke, settings, sync and wipe are not injected and therefore
+  unreachable from any tool call.
 - `toDigestItem(entry: Entry): Promise<DigestItem>` — builds an entry's digest: loads
   each `text` attachment's blob, trims it, keeps non-empty texts; counts `audio` and
-  `photo` attachments; carries `location?.placeLabel` as `place`.
-- `createAssistantTools(getEntries: () => readonly Entry[], getPlaces: () => readonly Place[])`
-  — returns a `ToolSet` with three AI SDK `tool()`s (JSON-schema inputs, async `execute`
-  returning a string):
+  `photo` attachments; carries `location?.placeLabel` as `place` and `entry.id` as `id`.
+- `createAssistantTools(getEntries, getPlaces, writer)` — returns a `ToolSet` of AI SDK
+  `tool()`s (JSON-schema inputs, async `execute` returning a string):
   - `list_entries({ from, to })` — entries whose local capture date (a
     `capturedAt.slice(0, 10)` string compare) falls in the inclusive `YYYY-MM-DD` range.
     Skips revoked entries. Keeps the **newest** `LIST_ENTRIES_MAX` (`slice(-MAX)`) when
@@ -90,9 +101,31 @@ IndexedDB. All tools return plain text in the `formatDigest` rendering.
     in the whole log (loads every non-revoked entry's text blobs). Keeps the **first**
     `SEARCH_ENTRIES_MAX` matches in store order but counts the true total; returns
     `(no entries matching "…")` when nothing matches.
+  - `create_entry({ text })` — appends one ordinary capture event: `capturedAt` = now
+    (`toLocalIso`), a single trimmed `text/plain` note attachment — the same shape as the
+    capture screen's "+ note" path, minus the UI-only location snapshot. Rejects
+    empty/non-string text without writing.
+  - `update_entry({ id, text?, time? })` — appends **one** amend event targeting an
+    existing entry, the same pipeline as the UI edit path. `text` replaces the entry's
+    user notes: `patch.removeAttachments` lists the existing non-derived text attachment
+    files (machine-derived transcripts/captions — anything with `derivedFrom` — are never
+    removed) and a new note attachment carries the trimmed text. `time` (`"HH:MM"`,
+    24-hour) sets `patch.capturedAt` recomposed in the **entry's own zone** — civil date
+    from `localDateOf(entry.capturedAt)` + the new time via `zonedIso(…, entry.deviceTz)`,
+    exactly like `editPlan`'s `draftPatch` — never a device-zone `Date` round-trip, which
+    would silently move cross-timezone entries. Validation happens before any write:
+    unknown or revoked id, empty text, malformed time, or no fields at all each return an
+    `(error: …)` line and append nothing.
 
-Results are re-sorted by `capturedAt` before rendering so `formatDigest`'s day grouping
-stays coherent regardless of store order.
+The AI SDK executes all tool calls of one model step **concurrently**, so the write
+tools serialize through a per-toolset promise chain (`enqueueWrite`): each write task —
+including `update_entry`'s `getEntries()` read — starts only after the previous write
+has fully landed. Without this, two updates to the same entry would both remove the same
+note file and the fold would keep both replacement notes. Two concurrent `create_entry`
+calls still create two entries — that is the intended meaning of two create calls.
+
+Read results are re-sorted by `capturedAt` before rendering so `formatDigest`'s day
+grouping stays coherent regardless of store order.
 
 ### src/assistant/transport.ts
 
@@ -153,8 +186,11 @@ wholesale (`wipeAll` in `store/events`).
 
 The chat UI (default export `ChatScreen()`, lazily loaded and opt-in). Wires the model
 from settings, `buildInstructions`, `createAssistantTools` (getters over
-`useAppStore.getState().entries` / `.places`), and `createAssistantTransport` into an
-`@ai-sdk/react` `Chat` consumed via `useChat`.
+`useAppStore.getState().entries` / `.places`, plus an `EntryWriter` delegating to the
+store's `capture`/`amend` actions — the only writes handed to the agent), and
+`createAssistantTransport` into an `@ai-sdk/react` `Chat` consumed via `useChat`.
+Because writes run through the store actions, the entry list refreshes immediately and
+the events queue for the normal manual sync.
 
 Conversation lifecycle:
 
@@ -182,8 +218,8 @@ Rendering details:
   text through `Markdown`.
 - `toolActivityLabel(part)` maps tool-invocation parts (both `dynamic-tool` and typed
   `tool-<name>` shapes) to captions: `Read log <from> – <to>`, `Searched the log for
-  "<query>"`, `Looked up saved places`, or a generic fallback; returns `null` for other
-  part types.
+  "<query>"`, `Looked up saved places`, `Added a log entry`, `Updated entry <id>`, or a
+  generic fallback; returns `null` for other part types.
 - `awaitingResponse(status, messages)` drives the `ThinkingDots` placeholder: `true` when
   submitted, or when streaming but the last assistant message has no non-empty text or
   reasoning yet (tool calls can run for seconds before visible content).
@@ -238,9 +274,18 @@ of the legacy single conversation from the `meta` store key `assistant:chat` int
 
 ### src/assistant/tools.test.ts
 
-Covers the three tools with injected fixture getters and fake-indexeddb blobs: inclusive
-local-date range filtering, revoked-entry exclusion, text-blob reads, empty-result
-messages, and both truncation caps with their notes.
+Covers all five tools with injected fixture getters, a recording `EntryWriter` mock, and
+fake-indexeddb blobs. Reads: inclusive local-date range filtering, revoked-entry
+exclusion, text-blob reads, the `(id …)` suffix, empty-result messages, and both
+truncation caps with their notes. Writes: create happy path (one capture event, trimmed
+note blob, local-ISO `capturedAt`, id in the result); update happy paths (note
+replacement preserving derived transcripts, time-of-day patch in the entry's own zone —
+including a cross-timezone Asia/Tokyo entry — both combined in a single amend event);
+a concurrency test that fires two simultaneous `update_entry` calls at one entry against
+a writer that folds a real event log, asserting the fold converges to exactly one note;
+and every rejection — unknown id, revoked entry, empty text, malformed time, no fields —
+asserting that **nothing** is appended; plus write failures surfacing as `(error: …)`
+text rather than throws.
 
 ### src/assistant/transport.integration.test.ts
 
@@ -258,6 +303,17 @@ targets just this file.
 - **No server**: the agent loop (`ToolLoopAgent` + `DirectChatTransport`) runs in the
   browser. Tools execute client-side against local data; nothing but the chat request
   ever leaves the device, and the endpoint needs no API key (CORS origin gating).
+- **Write boundary**: the agent's only writes are `EntryWriter.capture`/`amend` — the
+  store actions `ChatScreen` injects. Each successful write tool call appends exactly one
+  ordinary `capture`/`amend` event through the store's single write path (append-only log
+  preserved, UI refreshed, event queued for manual sync); revoke, settings, sync and wipe
+  are never injected. Write tools validate first and return `(error: …)` text — never
+  throw, never append on invalid input. `update_entry` never removes machine-derived
+  attachments (`derivedFrom` set), mirroring the UI edit path.
+- **Writes are serialized**: tool calls in one model step run concurrently in the SDK,
+  so write executions queue through `enqueueWrite` — each reads the log state the
+  previous write produced. Time edits recompose `capturedAt` in the entry's own
+  `deviceTz` (`zonedIso`), never the device zone.
 - **Prefix-cache stability**: `buildInstructions` truncates the current time to the hour
   so the system prompt is byte-identical across turns within an hour; changing the prompt
   invalidates the server's KV cache and forces a full re-prefill.
