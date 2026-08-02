@@ -68,7 +68,7 @@ Design tokens as constant objects of Tailwind class strings ("Warm Editorial Sla
 
 ### src/ui/Card.tsx
 
-- `Card({ className?, children })` — bordered surface with 14 px radius, `p-3`, subtle light-mode shadow (none in dark).
+- `Card({ className?, children })` — bordered surface with 14 px radius, `p-3`, medium shadow in light mode and elevated shadow in dark mode for clear separation from the background.
 - `Section({ title, children })` — titled `<section>` card (`p-4`, serif `type_.heading` `<h2>`); used for settings/content groups.
 - `EmptyState({ title, children? })` — centered italic-serif empty message with optional sub-content.
 

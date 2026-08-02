@@ -10,8 +10,6 @@ function clock(sec: number): string {
 interface RecordPanelProps {
   recorder: Recorder
   maxClipSec: number
-  /** Live context line under the button (place / location state, A5). */
-  contextLabel?: string
   onTap: () => void
   onDiscard: () => void
   onCamera: () => void
@@ -27,7 +25,6 @@ interface RecordPanelProps {
 export function RecordPanel({
   recorder,
   maxClipSec,
-  contextLabel,
   onTap,
   onDiscard,
   onCamera,
@@ -115,12 +112,8 @@ export function RecordPanel({
           <PencilIcon />
         </SatelliteButton>
       </div>
-      <div className="flex h-10 flex-col items-center justify-start gap-0.5">
-        <p className={cx(type_.sub, tone.textMuted)}>Tap to record</p>
-        {contextLabel && (
-          <p className={cx(type_.caption, tone.textFaint)}>{contextLabel}</p>
-        )}
-      </div>
+      {/* Location context removed — it's redundant with each entry's location
+          shown on its card. Satellite buttons are consistently icon-only. */}
     </div>
   )
 }

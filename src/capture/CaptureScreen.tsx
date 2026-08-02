@@ -32,7 +32,6 @@ export default function CaptureScreen() {
   const del = usePendingDelete(revoke)
   const [textOpen, setTextOpen] = useState(false)
   const [toast, setToast] = useState<ToastState | null>(null)
-  const [here, setHere] = useState<GeoLocation | null>(null)
   const [pendingPlace, setPendingPlace] = useState<PendingPlace | null>(null)
   const photoInputRef = useRef<HTMLInputElement>(null)
   const tapStartRef = useRef<Date>(new Date())
@@ -40,26 +39,6 @@ export default function CaptureScreen() {
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
   useEffect(() => () => clearTimeout(toastTimerRef.current), [])
-
-  // A5: passive location context under the button ("at Office"), refreshed
-  // when the app comes to the foreground.
-  useEffect(() => {
-    let stale = false
-    const probe = () => {
-      void snapshotLocation(places, appSettings.locationEnabled).then((loc) => {
-        if (!stale) setHere(loc ?? null)
-      })
-    }
-    probe()
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') probe()
-    }
-    document.addEventListener('visibilitychange', onVisible)
-    return () => {
-      stale = true
-      document.removeEventListener('visibilitychange', onVisible)
-    }
-  }, [places, appSettings.locationEnabled])
 
   function showToast(next: ToastState) {
     clearTimeout(toastTimerRef.current)
@@ -204,14 +183,6 @@ export default function CaptureScreen() {
     window.matchMedia('(display-mode: standalone)').matches ||
     (navigator as Navigator & { standalone?: boolean }).standalone === true
 
-  const contextLabel = !appSettings.locationEnabled
-    ? undefined
-    : here?.placeLabel
-      ? `at ${here.placeLabel}`
-      : here
-        ? 'location on'
-        : undefined
-
   return (
     <div className={cx('flex flex-col gap-4 p-4', motion.fadeIn)}>
       <ScreenHeader
@@ -222,7 +193,6 @@ export default function CaptureScreen() {
       <RecordPanel
         recorder={recorder}
         maxClipSec={streamSettings.maxClipSec}
-        contextLabel={contextLabel}
         onTap={() => void handleRecordTap()}
         onDiscard={handleDiscard}
         onCamera={() => photoInputRef.current?.click()}
