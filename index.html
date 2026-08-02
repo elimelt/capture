@@ -4,11 +4,12 @@
     <meta charset="UTF-8" />
     <!-- CSP (SPEC §9.2): no third-party runtime scripts except GIS. Drive/Calendar
          are fetch()'d from googleapis.com; GIS connects to accounts.google.com;
-         token revoke on disconnect hits oauth2.googleapis.com; Google Fonts serve
-         CSS/woff. React escaping only — no inline scripts. -->
+         token revoke on disconnect hits oauth2.googleapis.com; the assistant streams
+         from llm.elimelt.com and transcription posts to transcribe.elimelt.com;
+         Google Fonts serve CSS/woff. React escaping only — no inline scripts. -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self' https://accounts.google.com; connect-src 'self' https://www.googleapis.com https://accounts.google.com https://oauth2.googleapis.com; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; frame-src https://accounts.google.com; base-uri 'self'; object-src 'none'"
+      content="default-src 'self'; script-src 'self' https://accounts.google.com; connect-src 'self' https://www.googleapis.com https://accounts.google.com https://oauth2.googleapis.com https://llm.elimelt.com https://transcribe.elimelt.com; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; frame-src https://accounts.google.com; base-uri 'self'; object-src 'none'"
     />
     <link rel="icon" type="image/png" href="./icons/icon-192.png" />
     <meta
