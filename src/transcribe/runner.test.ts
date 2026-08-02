@@ -5,7 +5,10 @@ import type { AmendEvent } from '../contract/types'
 import { EVENT_SCHEMA } from '../contract/types'
 
 const { transcribeAudio } = vi.hoisted(() => ({
-  transcribeAudio: vi.fn<(blob: Blob, mimeType: string) => Promise<string>>(),
+  transcribeAudio:
+    vi.fn<
+      (blob: Blob, mimeType: string, onPartial?: (text: string) => void) => Promise<string>
+    >(),
 }))
 vi.mock('./api', () => ({ transcribeAudio }))
 
@@ -22,8 +25,9 @@ const audioAttachment = () => ({
 async function setup() {
   const events = await import('../store/events')
   const db = await import('../store/db')
+  const livetext = await import('../store/livetext')
   const runner = await import('./runner')
-  return { ...events, ...db, ...runner }
+  return { ...events, ...db, ...runner, liveTranscripts: livetext.liveTranscripts }
 }
 
 async function appendAudioCapture(s: Awaited<ReturnType<typeof setup>>) {
@@ -180,6 +184,91 @@ describe('drainTranscriptions', () => {
 
     expect(await drain).toBe(0)
     expect(amendsOf(await s.listEvents('timelog'))).toHaveLength(1)
+  })
+
+  it('publishes streamed partials to the live store; only the final text is persisted', async () => {
+    const s = await setup()
+    let emitPartial!: (text: string) => void
+    let resolveText!: (text: string) => void
+    transcribeAudio.mockImplementation(
+      (_blob, _mime, onPartial) =>
+        new Promise((res) => {
+          emitPartial = onPartial!
+          resolveText = res
+        }),
+    )
+    const cap = await appendAudioCapture(s)
+    const file = cap.attachments[0].file
+
+    const drain = s.drainTranscriptions('timelog')
+    await vi.waitFor(() => expect(transcribeAudio).toHaveBeenCalledTimes(1))
+    emitPartial('hello')
+    expect(s.liveTranscripts.snapshot().get(file)).toBe('hello')
+    emitPartial('hello world')
+    expect(s.liveTranscripts.snapshot().get(file)).toBe('hello world')
+    resolveText('hello world')
+
+    expect(await drain).toBe(1)
+    // The final live text lingers (until the next drain sweeps it) so the
+    // card never flashes empty before the store refresh.
+    expect(s.liveTranscripts.snapshot().get(file)).toBe('hello world')
+    // Only the resolved final text was persisted, in one amend.
+    const amends = amendsOf(await s.listEvents('timelog'))
+    expect(amends).toHaveLength(1)
+    expect(await (await s.getBlob(amends[0].attachments![0].file))!.text()).toBe('hello world')
+  })
+
+  it('sweeps stale live text on the next drain once the transcript is persisted', async () => {
+    const s = await setup()
+    transcribeAudio.mockImplementation(async (_blob, _mime, onPartial) => {
+      onPartial?.('hello world')
+      return 'hello world'
+    })
+    const cap = await appendAudioCapture(s)
+    const file = cap.attachments[0].file
+
+    expect(await s.drainTranscriptions('timelog')).toBe(1)
+    expect(s.liveTranscripts.snapshot().get(file)).toBe('hello world')
+    expect(await s.drainTranscriptions('timelog')).toBe(0)
+    expect(s.liveTranscripts.snapshot().has(file)).toBe(false)
+  })
+
+  it('clears live partial text when transcription fails mid-stream and persists nothing', async () => {
+    const s = await setup()
+    transcribeAudio.mockImplementation(async (_blob, _mime, onPartial) => {
+      onPartial?.('partial wor')
+      throw new Error('connection lost')
+    })
+    const cap = await appendAudioCapture(s)
+    const file = cap.attachments[0].file
+
+    expect(await s.drainTranscriptions('timelog')).toBe(0)
+    expect(s.liveTranscripts.snapshot().has(file)).toBe(false)
+    expect(amendsOf(await s.listEvents('timelog'))).toEqual([])
+  })
+
+  it('clears live text when a pull imports a remote transcript mid-drain', async () => {
+    const s = await setup()
+    let emitPartial!: (text: string) => void
+    let resolveText!: (text: string) => void
+    transcribeAudio.mockImplementation(
+      (_blob, _mime, onPartial) =>
+        new Promise((res) => {
+          emitPartial = onPartial!
+          resolveText = res
+        }),
+    )
+    const cap = await appendAudioCapture(s)
+    const file = cap.attachments[0].file
+
+    const drain = s.drainTranscriptions('timelog')
+    await vi.waitFor(() => expect(transcribeAudio).toHaveBeenCalledTimes(1))
+    emitPartial('local partial')
+    await s.importEvents('timelog', [remoteTranscriptAmend(cap.id, file)], new Map<string, Blob>())
+    resolveText('local final')
+
+    expect(await drain).toBe(0)
+    expect(s.liveTranscripts.snapshot().has(file)).toBe(false)
   })
 
   it('coalesces overlapping drains onto one in-flight promise', async () => {
