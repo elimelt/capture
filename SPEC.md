@@ -267,6 +267,11 @@ human-readable `placeLabel` so a skill sees "Office" instead of raw coordinates 
 photo tagged "Office" is still useful). Stored only on-device; exported to Drive solely
 as labels inside entry metadata.
 
+Places are **automatic**: capturing at a coordinate that matches no existing place
+prompts (dismissably — capture is already saved) to name it, from a "near …" hint.
+Naming saves the place (default radius 50 m, editable) and retro-labels the just-captured
+entry; future captures there auto-label. Skipping leaves the entry with coordinates only.
+
 ### 3.5 Day view model (timelog read-back; derived, read-only)
 
 Read-back views are **per-stream**. The generic fallback for any stream is the folded
@@ -344,7 +349,8 @@ the folded entry list with results annotations, §3.5).
 - **Capture** (per stream; v1 shows only timelog): max clip length;
   keep-audio-after-processing toggle (default: keep; Drive is the user's own storage);
   photo quality.
-- **Location**: on/off (default on); Places manager (add from current location, radius).
+- **Location**: on/off (default on); Places manager (add from current location, radius;
+  default 50 m).
 - **Skill setup** (per stream): a guided page that (a) shows the skill install
   instructions per provider, (b) renders the stream's canonical skill prompt (§6.2) with
   the user's folder path and calendar choice substituted in, with a copy button.
@@ -620,10 +626,11 @@ this scenario is the acceptance test for the extensibility invariant (§5.5).
 
 - Snapshot at capture only, via `getCurrentPosition`; never blocks capture; entirely
   optional (Settings toggle removes all geolocation calls).
-- Labels come from user-defined Places (§3.4). A best-effort reverse geocode
-  (OSM Nominatim) adds a short `address` ("near …") to Places and to a location that a
-  user edits on an entry; it never blocks, is cached in IndexedDB by a rounded coordinate
-  cell, and is throttled to ≤1 req/sec per Nominatim's usage policy.
+- Labels come from user-defined Places (§3.4); capturing at an unmatched coordinate
+  prompts to name a new place (dismissable), which retro-labels the entry. A best-effort
+  reverse geocode (OSM Nominatim) adds a short `address` ("near …") to Places and to a
+  location that a user edits on an entry; it never blocks, is cached in IndexedDB by a
+  rounded coordinate cell, and is throttled to ≤1 req/sec per Nominatim's usage policy.
 - Coordinates + label travel inside entry metadata to Drive; the timelog skill may put
   the label in the event `location` field.
 - Entry location is editable in-app (a small map preview in the card expands to a
