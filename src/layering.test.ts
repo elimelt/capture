@@ -25,6 +25,7 @@ const sources = import.meta.glob(
     './drive/**/*.{ts,tsx}',
     './transcribe/**/*.{ts,tsx}',
     './vision/**/*.{ts,tsx}',
+    './notify/**/*.{ts,tsx}',
     './ui/**/*.{ts,tsx}',
   ],
   { query: '?raw', import: 'default', eager: true },
@@ -36,7 +37,7 @@ const sources = import.meta.glob(
 const FORBIDDEN_DIRS = ['gcal', 'dayview', 'settings', 'assistant']
 
 // Layers that exist today; guards against the glob patterns silently rotting.
-const LAYERS_EXPECTED_TODAY = ['streams', 'capture', 'contract', 'store', 'places', 'transcribe', 'vision', 'ui']
+const LAYERS_EXPECTED_TODAY = ['streams', 'capture', 'contract', 'store', 'places', 'transcribe', 'vision', 'notify', 'ui']
 
 /** Static import/export-from specifiers plus bare side-effect imports. */
 function importSpecifiers(source: string): string[] {
