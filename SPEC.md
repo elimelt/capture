@@ -408,6 +408,15 @@ Design principle: **three screens**; capture is 95% of usage and must be near-in
   Tap again to stop. Hard cap 60s (auto-stop). No confirmation step by default: stop →
   capture event appended and queued → success toast with **Undo (5s)** (undo appends a
   `revoke` event, §3.3).
+- **Tap/hold/drag accelerator (#77):** holding the capture button past ~400ms records
+  for as long as it's held, releasing stops and commits — an alternate gesture for the
+  same tap-to-start/tap-to-stop outcome, never the only path to it. While holding,
+  dragging toward a satellite (left → photo, right → note) and releasing there commits
+  the recording and immediately opens that add-on for the just-created entry; dragging
+  up discards, same as the plain Discard control. Every outcome the gesture can reach —
+  record, discard, add a photo/note to an entry — remains fully reachable via the plain
+  buttons (tap the button; Discard; the entry card's "+ photo"/"+ note"), so it is
+  strictly an accelerator, not a second interaction path with no plain-button fallback.
 - Above the button: the **latest-entry card** ("🎙 9:04 AM · Office · ⬆ uploaded") and a
   small day summary line ("6 entries today · 4 processed").
   Note: the app cannot show live transcripts (no STT); the card shows time, place, and an
