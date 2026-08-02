@@ -359,6 +359,38 @@ space plus the `error` cases, the "error always wins" invariant, `lifecycleLabel
 per-lifecycle copy (including that `'failed'` mentions retry and `'settled'` is `null`),
 and `hasPendingEnrichment` over audio/photo/note/mixed attachment combinations.
 
+### src/capture/authorship.ts
+
+**Purpose:** Pure authored-vs-generated classification (#80) — no I/O, no React; tested
+directly (`authorship.test.ts`, no jsdom). The visual axis the design review asked for
+("the user should immediately know what they said vs what the app inferred") is driven
+**solely** by the existing `derivedFrom` contract on attachments (SPEC §3.3): no new
+stored state, no heuristics on text content.
+
+**Exports:**
+
+- `type Authorship = 'authored' | 'spoken' | 'derived'` — `'authored'`: user-typed text,
+  no `derivedFrom`. `'spoken'`: text derived from audio (a transcript) — machine-derived
+  but represents what the user *said*, so it is classed with authored text, not
+  inference (decision recorded on #80/#89, so implementers don't relitigate). `'derived'`:
+  machine inference over the entry's content — photo captions today, any future derived
+  text.
+- `authorship(a: Attachment): Authorship` — absent `derivedFrom` → `'authored'`;
+  `derivedFrom` set and `isCaption(a)` (`src/vision/plan`) → `'derived'`; `derivedFrom`
+  set and not a caption → `'spoken'`. Depends only on `derivedFrom`/`kind`, never on text
+  content, so two attachments with identical bodies but different `derivedFrom` always
+  classify differently, and an edited transcript/caption (which preserves `derivedFrom`,
+  per `onEditText`) never changes class.
+
+### src/capture/authorship.test.ts
+
+Vitest unit tests for `authorship`: note → authored, transcript → spoken, caption →
+derived; exhaustive over attachment shapes with/without `derivedFrom` across all three
+`AttachmentKind`s; the pinned invariant that identical text bodies differing only in
+`derivedFrom` classify differently; class stability across an edit that preserves
+`derivedFrom`; and that an orphan caption (source photo removed) still classifies as
+`derived` — classification never depends on sibling-attachment presence.
+
 ### src/capture/cardView.ts
 
 **Purpose:** Pure view-model for the collapsed-vs-expanded entry card (#78) — no I/O, no
@@ -367,23 +399,28 @@ re-derives grouping semantics, only picks a primary among them.
 
 **Exports:**
 
-- `CardViewModel` — `{ primaryText?: { file: string; derivedFrom?: string };
+- `CardViewModel` — `{ primaryText?: { file: string; authorship: Authorship };
   primaryAudio?: Attachment; collapsedShowsLocation: boolean; extraCount: number }`.
+  `primaryText.authorship` is always `'authored'` or `'spoken'` in practice (a photo
+  caption is never chosen as primary text below) but typed as the full `Authorship`
+  union so callers compose against the one classification (#80) rather than
+  re-deriving it from a raw `derivedFrom` string.
 - `cardViewModel(entry, groups): CardViewModel` — `primaryText` is the first transcript,
-  else the first user note (undefined for an audio-only or photo-only entry);
-  `primaryAudio` is the first audio attachment (the one that plays from the card
-  header); `collapsedShowsLocation` mirrors the header's place-label/address condition;
-  `extraCount` is the count of attachments that are neither `primaryText` nor
-  `primaryAudio` — everything the collapsed card doesn't surface, driving the overflow
-  button's "+N" hint. Actions (edit/delete/etc.) are not attachments and are never
-  counted.
+  else the first user note (undefined for an audio-only or photo-only entry), with its
+  `authorship()` (`authorship.ts`) precomputed; `primaryAudio` is the first audio
+  attachment (the one that plays from the card header); `collapsedShowsLocation` mirrors
+  the header's place-label/address condition; `extraCount` is the count of attachments
+  that are neither `primaryText` nor `primaryAudio` — everything the collapsed card
+  doesn't surface, driving the overflow button's "+N" hint. Actions (edit/delete/etc.)
+  are not attachments and are never counted.
 
 ### src/capture/cardView.test.ts
 
 Vitest unit tests for `cardViewModel`: all-empty model for an attachment-and-location-
-free entry, transcript-over-note primacy, audio-only entries (`primaryText` undefined,
-audio as primary), exact hidden-attachment counting, and `collapsedShowsLocation` for
-place label / address / bare-coordinate / no-location cases.
+free entry, transcript-over-note primacy (asserting `authorship: 'spoken'` and
+`'authored'` respectively), audio-only entries (`primaryText` undefined, audio as
+primary), exact hidden-attachment counting, and `collapsedShowsLocation` for place
+label / address / bare-coordinate / no-location cases.
 
 ### src/capture/EntryCard.tsx
 
@@ -428,12 +465,15 @@ The card computes its own `EntryLifecycle` from `sync` + `hasPendingEnrichment(e
 - **Collapsed content:** when collapsed and `vm.primaryText` is set, `PrimaryTextPreview`
   (private) loads the text via `getBlob` (same stale-guarded pattern as
   `AttachmentBody`'s `NoteText`) and renders it `line-clamp-2`, styled `bodyStrong` in
-  `textPrimary` (transcript) or `textSecondary` (note); tapping it expands the card
-  rather than opening the inline editor — editing lives behind expansion. `bodyStrong`
-  is `leading-snug` (not `leading-normal`, #85) so the two-line clamp reads as a
-  compact fragment of speech, not a headline. Audio-only
-  entries show no separate content block; the header play button already represents the
-  primary clip.
+  `textPrimary` for both a transcript and a note (#80: both are the user's own words,
+  heaviest/darkest, never distinguished by weight or color); a transcript
+  (`vm.primaryText.authorship === 'spoken'`) additionally gets the quiet `SpokenMark`
+  glyph (small muted mic icon, `aria-hidden`) noting it was transcribed rather than
+  typed. Tapping the preview expands the card rather than opening the inline editor —
+  editing lives behind expansion. `bodyStrong` is `leading-snug` (not `leading-normal`,
+  #85) so the two-line clamp reads as a compact fragment of speech, not a headline.
+  Audio-only entries show no separate content block; the header play button already
+  represents the primary clip.
 - **Expanded content:** the full `AttachmentBody` (all attachments, inline editing) plus
   a `PlaceCard` row (when `entry.location` is set) mount once `expanded` is true.
   `PlaceCard` is leaflet-free — no network, no map tiles in the feed (#81); tapping it
@@ -474,10 +514,10 @@ The card computes its own `EntryLifecycle` from `sync` + `hasPendingEnrichment(e
   relates. Otherwise a quiet `RelatedRows` block (private) below the location
   preview: an "Related" overline, then up to `RELATED_MAX_RESULTS` rows of
   `relativeDayLabel · reasonLabel` (meta line, `type_.caption`/`tone.textFaint`) plus
-  a one-line snippet (`type_.bodySmall`/`tone.textMuted` — the same muted/small
-  treatment `AttachmentBody` already uses for captions, standing in for #80's
-  not-yet-landed "derived text" class since this is inferred relatedness, not the
-  user's own words). Tapping a row navigates to `/day/<date>` of the related entry
+  a one-line snippet (`type_.derived`/`tone.textDerived`, #80 — this is the app's
+  inference that another memory relates, not the user's own words in this position,
+  so it gets the same quiet treatment as a photo caption or generated prose). Tapping
+  a row navigates to `/day/<date>` of the related entry
   via `useNavigate` (react-router-dom) — no import of `dayview/` itself, so the
   layering rule holds.
 
@@ -637,24 +677,32 @@ primary-text first line, else "Voice note"/"Photo", else empty).
 
 ### src/capture/AttachmentBody.tsx
 
-**Purpose:** Renders an entry's content beyond the primary clip (B7).
+**Purpose:** Renders an entry's content beyond the primary clip (B7), classified along
+the authored-vs-generated axis (#80).
 
 **Export:** `AttachmentBody({ attachments, onEditText, onRemoveAttachment }:
-AttachmentBodyProps)`.
+AttachmentBodyProps)`; also exports `SpokenMark` (the quiet transcribed-glyph, reused by
+`EntryCard`'s collapsed `PrimaryTextPreview`).
 
-**Ordering/classification:** delegates to the pure `groupAttachments`
-(`attachmentGroups.ts`). Render order: transcripts, then any still-**streaming**
+**Ordering/classification:** delegates grouping to the pure `groupAttachments`
+(`attachmentGroups.ts`) and per-attachment classification to the pure `authorship()`
+(`authorship.ts`). Render order: transcripts, then any still-**streaming**
 transcripts, notes, extra audio rows (clips beyond the first, which plays from the
 card header), then one horizontal row per photo — 64 px thumbnail left, its caption(s)
 or still-streaming caption right — then any orphan captions (photo since removed).
 Returns `null` if every group is empty (streaming transcripts count — a fresh
 audio-only entry shows its transcript growing).
 
-**Type scale:** transcripts and notes are the entry's main text and render at
-`type_.bodyStrong` (transcripts in `textPrimary` — they are the spoken content —
-notes in `textSecondary`); photo captions are descriptive metadata and render at
-`type_.bodySmall` in `textMuted`, beside their thumbnail rather than as a competing
-text block.
+**Type scale (#80):** authored notes and spoken transcripts both render at
+`type_.bodyStrong`/`tone.textPrimary` — the heaviest, darkest treatment — since both are
+the user's own words; a transcript additionally gets the quiet `SpokenMark` glyph (small
+muted mic icon, `aria-hidden`) inline before the text, noting it was transcribed rather
+than typed, without ever reading lighter than a note. Photo captions (and any future
+derived text) render in `type_.derived`/`tone.textDerived` (serif, italic, 14 px) beside
+their thumbnail rather than as a competing text block — never bolder than authored/spoken
+text. The composition table (`AUTHORSHIP_STYLE`) and the `TextSheet` edit-title table
+(`EDIT_TITLE`) are both keyed by `Authorship`, so every call site agrees with the
+classifier.
 
 **Key behaviors:**
 
@@ -663,14 +711,15 @@ text block.
   (`src/store/livetext.ts`), where the enrichment runners publish partial text keyed by
   source file while a transcription/caption request streams. For each audio/photo
   attachment with **no persisted derived text yet**, non-empty live text renders as a
-  read-only `StreamingText` — same tokens and position as the final `NoteText`, plus a
-  pulsing cursor tick, `aria-live="polite"`, and nothing to tap (there is no attachment
-  to edit until the amend lands). Once a derived attachment exists it always wins over
-  live text.
+  read-only `StreamingText` — same tokens, position, and `SpokenMark` (for transcripts)
+  as the final `NoteText`, plus a pulsing cursor tick, `aria-live="polite"`, and nothing
+  to tap (there is no attachment to edit until the amend lands) — the same authorship
+  class as its eventual final form (#80 req. 6), so nothing re-styles when the amend
+  lands. Once a derived attachment exists it always wins over live text.
 - `NoteText` loads its text asynchronously via `getBlob(file)` (renders nothing until
   loaded; guards against stale sets on unmount). Tapping opens the shared edit
-  `TextSheet`, titled "Edit note" / "Edit caption" / "Edit transcript" based on
-  `derivedFrom` and `isPhotoFile`; save calls `onEditText(file, text, derivedFrom)`.
+  `TextSheet`, titled "Edit note" / "Edit caption" / "Edit transcript" per `EDIT_TITLE[
+  authorship(attachment)]`; save calls `onEditText(file, text, derivedFrom)`.
 - `AudioRow` is a playback row (via `useAudioPlayback`) with the same progress-fill
   toggle button plus "Recording · Ns" caption.
 - `PhotoThumb` loads a blob object URL (revoked on unmount), shows a 64px thumbnail, and
@@ -1095,8 +1144,8 @@ day). Otherwise a `Card` with the stat line always shown; the "Generate
 summary"/"Regenerate summary" button and any cached/fresh prose render only
 when `assistantEnabled` is true — the affordance and the prose are both
 invisible when the opt-in is off, not just disabled. Prose renders in the quiet
-derived-content treatment (`type_.bodySmall`/`tone.textMuted`, italic) — the
-same pairing #80 specs for machine inference — and is plain read-only text with
+derived-content treatment (`type_.derived`/`tone.textDerived`, #80's authored-vs-
+generated pairing for machine inference) and is plain read-only text with
 no edit affordance; regenerating replaces it wholesale via a new tap. A failed
 generation shows a quiet caption-level note without hiding the stat line.
 
@@ -1236,7 +1285,17 @@ re-throw, matching the appStore `guard` convention.
   (`EntryList.onSetLocation`).
 - **`derivedFrom` must be preserved on edit:** edited transcripts/captions keep their
   `derivedFrom` link so the transcription/captioning runners never re-derive over a
-  user's edit. `onEditText` performs remove-old + add-new in a *single* amend.
+  user's edit. `onEditText` performs remove-old + add-new in a *single* amend. This is
+  also why an edited transcript/caption never changes visual class (#80): `authorship()`
+  depends only on `derivedFrom`.
+- **`derivedFrom` alone drives authored-vs-generated (#80):** `authorship()`
+  (`authorship.ts`) is the single place that interprets it for rendering — absent means
+  authored (heaviest/darkest), present-and-a-caption means derived (quiet
+  `type_.derived`/`tone.textDerived`), present-and-not-a-caption means spoken (same
+  heaviest/darkest weight as authored, plus a quiet `SpokenMark` glyph). Never add a
+  heuristic on text content to this decision, and never introduce new stored state for
+  it — every renderer (`AttachmentBody`, `EntryCard`'s collapsed preview and related-rows
+  snippet, `DaySynthesisCard`'s prose) composes the same two tokens.
 - **`capturedAt` semantics:** for voice entries it is the record-tap time, not the stop
   time; text/photo entries use submit time. Inline time edits change only the
   time-of-day, re-rendered in the device zone (`withTimeOfDayIso`); the Edit sheet

@@ -3,8 +3,8 @@ import { useEffect, useState, useSyncExternalStore } from 'react'
 import type { Attachment } from '../contract/types'
 import { getBlob } from '../store/events'
 import { liveCaptions, liveTranscripts, type LiveTextStore } from '../store/livetext'
-import { IconButton, cx, motion, tone, type_ } from '../ui'
-import { isPhotoFile } from '../vision/plan'
+import { IconButton, MicIcon, cx, motion, tone, type_ } from '../ui'
+import { authorship, type Authorship } from './authorship'
 import { groupAttachments } from './attachmentGroups'
 import { PhotoViewer } from './PhotoViewer'
 import { TextSheet } from './TextSheet'
@@ -26,23 +26,30 @@ function useLiveText(store: LiveTextStore): ReadonlyMap<string, string> {
 /**
  * Renders an entry's content beyond the primary clip (B7): note text inline
  * (tap to edit), extra audio clips as playback rows, photos as thumbnails
- * that expand to a viewer with removal. Machine transcripts (derivedFrom
- * set) are the spoken content of the entry, so they render first and at the
- * main-text scale (`type_.bodyStrong`) alongside user notes; machine photo
- * captions are descriptive metadata, so each photo pairs with its caption in
- * one horizontal row (thumbnail left, smaller muted caption right). Edited
- * transcripts/captions keep their derivedFrom link so they are never
- * re-derived. Grouping/pairing itself is the pure `groupAttachments`.
+ * that expand to a viewer with removal. Authored-vs-generated (#80): user
+ * notes and machine transcripts both render as the entry's own voice — the
+ * heaviest, darkest treatment (`type_.bodyStrong`/`tone.textPrimary`) — a
+ * transcript IS machine-derived but represents what the user *said*, so it
+ * gets only a quiet `SpokenMark` glyph, never a lighter weight. Machine
+ * photo captions are true inference (the app's words about a photo, not the
+ * user's), so they render in the quiet `type_.derived`/`tone.textDerived`
+ * pairing beside their thumbnail rather than as a competing text block.
+ * Classification is the pure `authorship()` (`authorship.ts`), driven
+ * solely by `derivedFrom`; edited transcripts/captions keep their
+ * `derivedFrom` link so they are never re-derived and never change class.
+ * Grouping/pairing itself is the pure `groupAttachments`.
  *
  * While a transcript or caption is still streaming in from its service, the
  * partial text appears in the same position via the transient live-text
  * stores (`src/store/livetext.ts`), keyed by source file — shown only until
- * a persisted attachment derived from that file exists.
+ * a persisted attachment derived from that file exists — and adopts the
+ * same authorship treatment as its final form (#80 req. 6): streaming
+ * transcripts render `spoken`, streaming captions render `derived`.
  */
 export function AttachmentBody({ attachments, onEditText, onRemoveAttachment }: AttachmentBodyProps) {
-  const [edit, setEdit] = useState<{ file: string; text: string; derivedFrom?: string } | null>(
-    null,
-  )
+  const [edit, setEdit] = useState<
+    { file: string; text: string; derivedFrom?: string; authorship: Authorship } | null
+  >(null)
   const liveT = useLiveText(liveTranscripts)
   const liveC = useLiveText(liveCaptions)
   const { transcripts, notes, audio, photoGroups, orphanCaptions } = groupAttachments(attachments)
@@ -79,13 +86,13 @@ export function AttachmentBody({ attachments, onEditText, onRemoveAttachment }: 
   return (
     <div className="mt-2 flex flex-col gap-2">
       {transcripts.map((a) => (
-        <NoteText key={a.file} attachment={a} variant="transcript" onEdit={setEdit} />
+        <NoteText key={a.file} attachment={a} onEdit={setEdit} />
       ))}
       {streamingTranscripts.map((s) => (
-        <StreamingText key={s.file} text={s.text} variant="transcript" />
+        <StreamingText key={s.file} text={s.text} authorship="spoken" />
       ))}
       {notes.map((a) => (
-        <NoteText key={a.file} attachment={a} variant="note" onEdit={setEdit} />
+        <NoteText key={a.file} attachment={a} onEdit={setEdit} />
       ))}
       {extraAudio.map((a) => (
         <AudioRow key={a.file} file={a.file} durationSec={a.durationSec} />
@@ -102,26 +109,20 @@ export function AttachmentBody({ attachments, onEditText, onRemoveAttachment }: 
             {(captions.length > 0 || live) && (
               <div className="flex min-w-0 flex-1 flex-col gap-1 pt-0.5">
                 {captions.map((c) => (
-                  <NoteText key={c.file} attachment={c} variant="caption" onEdit={setEdit} />
+                  <NoteText key={c.file} attachment={c} onEdit={setEdit} />
                 ))}
-                {live && <StreamingText text={live.text} variant="caption" />}
+                {live && <StreamingText text={live.text} authorship="derived" />}
               </div>
             )}
           </div>
         )
       })}
       {orphanCaptions.map((a) => (
-        <NoteText key={a.file} attachment={a} variant="caption" onEdit={setEdit} />
+        <NoteText key={a.file} attachment={a} onEdit={setEdit} />
       ))}
       {edit && (
         <TextSheet
-          title={
-            edit.derivedFrom === undefined
-              ? 'Edit note'
-              : isPhotoFile(edit.derivedFrom)
-                ? 'Edit caption'
-                : 'Edit transcript'
-          }
+          title={EDIT_TITLE[edit.authorship]}
           placeholder="Type a note…"
           cta="Save"
           initial={edit.text}
@@ -169,33 +170,64 @@ function renderWithMath(text: string): React.ReactNode[] {
 }
 
 /**
- * Type scale for entry text (design pass): transcripts are the entry's own
- * voice and lead the card; notes share the main-text scale but read as
- * secondary; photo captions are descriptive metadata — smaller, lighter.
+ * Authored-vs-generated token composition (#80): authored notes and spoken
+ * transcripts share the heaviest, darkest treatment — both are the user's
+ * own words — while derived text (captions, any future machine inference)
+ * renders in the quiet `type_.derived`/`tone.textDerived` pairing. Never key
+ * this off text content or attachment kind directly; always go through
+ * `authorship()` (`authorship.ts`), which is the single place the
+ * `derivedFrom` contract is interpreted.
  */
-type TextVariant = 'transcript' | 'note' | 'caption'
+const AUTHORSHIP_STYLE: Record<Authorship, string> = {
+  authored: cx(type_.bodyStrong, tone.textPrimary),
+  spoken: cx(type_.bodyStrong, tone.textPrimary),
+  derived: cx(type_.derived, tone.textDerived),
+}
 
-const TEXT_STYLE: Record<TextVariant, string> = {
-  transcript: cx(type_.bodyStrong, tone.textPrimary),
-  note: cx(type_.bodyStrong, tone.textSecondary),
-  caption: cx(type_.bodySmall, tone.textMuted),
+/** The `TextSheet` edit title per class (#80 req. 5) — kept in one place so
+ *  every edit affordance (inline `NoteText`) agrees with the classifier. */
+const EDIT_TITLE: Record<Authorship, string> = {
+  authored: 'Edit note',
+  spoken: 'Edit transcript',
+  derived: 'Edit caption',
+}
+
+/**
+ * The quiet marker for `'spoken'` text (#80 req. 2): a transcript IS
+ * machine-derived but renders at authored weight, so a small muted mic
+ * glyph — never bold, never a competing text block — is the only visual
+ * note that it was transcribed rather than typed. `aria-hidden`: the
+ * surrounding control's "Edit transcript" label already carries the
+ * distinction for screen readers.
+ */
+export function SpokenMark() {
+  return (
+    <span
+      aria-hidden="true"
+      className={cx('mr-1 inline-flex -translate-y-px align-middle', tone.textFaint)}
+    >
+      <MicIcon size={11} />
+    </span>
+  )
 }
 
 /**
  * A transcript or caption still streaming in: rendered exactly like the
- * final NoteText (same tokens, same position) but read-only — there is
- * nothing to edit until the amend lands — with a pulsing cursor tick.
+ * final NoteText (same tokens, same position, same `SpokenMark` for
+ * `'spoken'`) but read-only — there is nothing to edit until the amend
+ * lands — with a pulsing cursor tick.
  */
-function StreamingText({ text, variant }: { text: string; variant: TextVariant }) {
+function StreamingText({ text, authorship: a }: { text: string; authorship: Authorship }) {
   return (
     <span
       aria-live="polite"
       className={cx(
         'block whitespace-pre-wrap break-words text-left',
         motion.fadeIn,
-        TEXT_STYLE[variant],
+        AUTHORSHIP_STYLE[a],
       )}
     >
+      {a === 'spoken' && <SpokenMark />}
       {renderWithMath(text)}
       <span
         aria-hidden="true"
@@ -207,14 +239,13 @@ function StreamingText({ text, variant }: { text: string; variant: TextVariant }
 
 function NoteText({
   attachment,
-  variant,
   onEdit,
 }: {
   attachment: Attachment
-  variant: TextVariant
-  onEdit: (target: { file: string; text: string; derivedFrom?: string }) => void
+  onEdit: (target: { file: string; text: string; derivedFrom?: string; authorship: Authorship }) => void
 }) {
   const { file, derivedFrom } = attachment
+  const a = authorship(attachment)
   const [text, setText] = useState<string | null>(null)
   useEffect(() => {
     let stale = false
@@ -228,13 +259,12 @@ function NoteText({
   if (text === null) return null
   return (
     <button
-      onClick={() => onEdit({ file, text, derivedFrom })}
-      aria-label={derivedFrom !== undefined ? 'Edit transcript' : 'Edit note'}
+      onClick={() => onEdit({ file, text, derivedFrom, authorship: a })}
+      aria-label={EDIT_TITLE[a]}
       className={cx('text-left', motion.fadeIn)}
     >
-      <span
-        className={cx('block whitespace-pre-wrap break-words', TEXT_STYLE[variant])}
-      >
+      <span className={cx('block whitespace-pre-wrap break-words', AUTHORSHIP_STYLE[a])}>
+        {a === 'spoken' && <SpokenMark />}
         {renderWithMath(text)}
       </span>
     </button>

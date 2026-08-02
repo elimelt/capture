@@ -50,12 +50,12 @@ describe('cardViewModel', () => {
 
   it('prefers a transcript over a note as primary text', () => {
     const vm = vmOf(entry({ attachments: [AUDIO, TRANSCRIPT, NOTE] }))
-    expect(vm.primaryText).toEqual({ file: TRANSCRIPT.file, derivedFrom: AUDIO.file })
+    expect(vm.primaryText).toEqual({ file: TRANSCRIPT.file, authorship: 'spoken' })
   })
 
   it('falls back to the first note when there is no transcript', () => {
     const vm = vmOf(entry({ attachments: [NOTE] }))
-    expect(vm.primaryText).toEqual({ file: NOTE.file, derivedFrom: undefined })
+    expect(vm.primaryText).toEqual({ file: NOTE.file, authorship: 'authored' })
   })
 
   it('yields primaryText undefined and the audio as primary for an audio-only entry', () => {
@@ -66,7 +66,7 @@ describe('cardViewModel', () => {
 
   it('yields both primaryText and primaryAudio when an entry has a transcript', () => {
     const vm = vmOf(entry({ attachments: [AUDIO, TRANSCRIPT] }))
-    expect(vm.primaryText).toEqual({ file: TRANSCRIPT.file, derivedFrom: AUDIO.file })
+    expect(vm.primaryText).toEqual({ file: TRANSCRIPT.file, authorship: 'spoken' })
     expect(vm.primaryAudio).toEqual(AUDIO)
   })
 

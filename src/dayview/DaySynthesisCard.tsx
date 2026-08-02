@@ -5,9 +5,10 @@
  * between ScreenHeader and DayTimeline in DayScreen.tsx.
  *
  * The prose is generated, not authored: it renders in the quiet
- * derived-content treatment (bodySmall/textMuted — the same pairing #80
- * specs for machine inference) and is never editable — regenerate replaces
- * it wholesale via a new tap, there is no inline edit affordance.
+ * derived-content treatment (`type_.derived`/`tone.textDerived` — #80's
+ * authored-vs-generated pairing for machine inference) and is never
+ * editable — regenerate replaces it wholesale via a new tap, there is no
+ * inline edit affordance.
  */
 import { Button, Card, cx, tone, type_ } from '../ui'
 import type { UseDaySynthesisResult } from './useDaySynthesis'
@@ -30,9 +31,7 @@ export function DaySynthesisCard({ synthesis, assistantEnabled }: DaySynthesisCa
 
       {assistantEnabled && (
         <div className="mt-3 flex flex-col gap-2">
-          {prose && (
-            <p className={cx(type_.bodySmall, tone.textMuted, 'italic')}>{prose}</p>
-          )}
+          {prose && <p className={cx(type_.derived, tone.textDerived)}>{prose}</p>}
           {proseState === 'error' && (
             <p className={cx(type_.caption, tone.textFaint)}>
               Summary generation failed — the stat line above still stands.
