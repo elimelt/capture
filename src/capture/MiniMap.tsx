@@ -4,8 +4,8 @@
  * chunk (Leaflet JS + CSS) — only loaded when a card actually has a location.
  */
 import 'leaflet/dist/leaflet.css'
-import { useState } from 'react'
-import { Circle, CircleMarker, MapContainer, Popup, TileLayer } from 'react-leaflet'
+import { useEffect, useState } from 'react'
+import { Circle, CircleMarker, MapContainer, Popup, TileLayer, useMap } from 'react-leaflet'
 import type { GeoLocation } from '../contract/types'
 import { cx, motion, shape, tone, type_ } from '../ui'
 
@@ -15,6 +15,17 @@ const CLAY = '#C46D4D'
 const TILE_URL = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png'
 const TILE_ATTR =
   '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+
+// MapContainer reads `center`/`zoom` only on mount, so after a location amend
+// the map would keep showing the old spot (stale tiles/marker). Re-center
+// imperatively whenever the coordinate changes.
+function Recenter({ lat, lng, zoom }: { lat: number; lng: number; zoom: number }) {
+  const map = useMap()
+  useEffect(() => {
+    map.setView([lat, lng], zoom)
+  }, [map, lat, lng, zoom])
+  return null
+}
 
 function LocationLabel({ location }: { location: GeoLocation }) {
   const label = location.placeLabel ?? (location.address ? `near ${location.address}` : undefined)
@@ -47,6 +58,7 @@ export default function MiniMap({ location }: { location: GeoLocation }) {
             keyboard={false}
             className="h-full w-full"
           >
+            <Recenter lat={location.lat} lng={location.lng} zoom={15} />
             <TileLayer url={TILE_URL} attribution={TILE_ATTR} maxZoom={19} />
             <CircleMarker
               center={center}
@@ -80,6 +92,7 @@ export default function MiniMap({ location }: { location: GeoLocation }) {
           </div>
           <div className={cx('min-h-0 flex-1 overflow-hidden', shape.card, motion.scaleIn)}>
             <MapContainer center={center} zoom={16} scrollWheelZoom className="h-full w-full">
+              <Recenter lat={location.lat} lng={location.lng} zoom={16} />
               <TileLayer url={TILE_URL} attribution={TILE_ATTR} maxZoom={19} />
               {location.placeLabel && (
                 <Circle
