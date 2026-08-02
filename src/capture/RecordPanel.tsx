@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { Button, captureIcon, cx, motion, tone, type_ } from '../ui'
+import { Button, captureIcon, cx, motion, tap, tone, type_ } from '../ui'
 import type { Recorder } from './useRecorder'
 import { LevelMeter } from './LevelMeter'
 
@@ -20,13 +20,19 @@ interface RecordPanelProps {
   onDiscard: () => void
   onCamera: () => void
   onText: () => void
+  /** Contextual idle-state prompt (`capturePrompt`, computed by the caller). */
+  prompt: string
+  /** Count of today's entries, for the compact day-summary line. */
+  todayCount: number
 }
 
 /**
- * The capture control (A1/A2/A4): a large mic button flanked by camera and
- * text capture when idle — voice is the primary path, the others are one
- * tap away. While recording, a focused panel with live level bars, timer,
- * and discard.
+ * The capture control (A1/A2/A4): a large, dominant mic button when idle,
+ * with camera and text capture as smaller, subordinate affordances offset
+ * below it — voice is the primary path, the others are one tap away. A
+ * contextual prompt line and a compact day-summary line fill the space that
+ * used to sit empty above/below the button. While recording, a focused
+ * panel with live level bars, timer, and discard.
  */
 export function RecordPanel({
   recorder,
@@ -35,6 +41,8 @@ export function RecordPanel({
   onDiscard,
   onCamera,
   onText,
+  prompt,
+  todayCount,
 }: RecordPanelProps) {
   if (recorder.state === 'error') {
     return (
@@ -102,24 +110,28 @@ export function RecordPanel({
   }
 
   return (
-    <div className={cx('flex flex-col items-center gap-3 py-4', motion.fadeIn)}>
-      <div className="flex items-center gap-7">
+    <div className={cx('flex flex-col items-center gap-2 py-4', motion.fadeIn)}>
+      <button
+        onClick={onTap}
+        aria-label="Start recording"
+        className="flex h-28 w-28 items-center justify-center rounded-full bg-spruce text-white shadow-lg shadow-spruce/30 transition-transform active:scale-95 active:bg-spruce-deep dark:bg-spruce-dark dark:shadow-spruce-dark/20 dark:active:bg-spruce-deep-dark"
+      >
+        <MicIcon size={36} />
+      </button>
+      <p className={cx(type_.sub, tone.textSecondary, 'text-center')}>{prompt}</p>
+      {todayCount > 0 && (
+        <p className={cx(type_.caption, tone.textFaint)}>
+          {todayCount} {todayCount === 1 ? 'moment' : 'moments'} today
+        </p>
+      )}
+      <div className="flex items-center gap-6 pt-1">
         <SatelliteButton label="Take a photo" onClick={onCamera}>
           <CameraIcon />
         </SatelliteButton>
-        <button
-          onClick={onTap}
-          aria-label="Start recording"
-          className="flex h-28 w-28 items-center justify-center rounded-full bg-spruce text-white shadow-lg shadow-spruce/30 transition-transform active:scale-95 active:bg-spruce-deep dark:bg-spruce-dark dark:shadow-spruce-dark/20 dark:active:bg-spruce-deep-dark"
-        >
-          <MicIcon size={36} />
-        </button>
         <SatelliteButton label="Type an entry" onClick={onText}>
           <TextIcon />
         </SatelliteButton>
       </div>
-      {/* Location context removed — it's redundant with each entry's location
-          shown on its card. Satellite buttons are consistently icon-only. */}
     </div>
   )
 }
@@ -139,10 +151,11 @@ function SatelliteButton({
       onClick={onClick}
       aria-label={label}
       className={cx(
-        'flex h-14 w-14 items-center justify-center rounded-full border transition-transform active:scale-95',
+        tap,
+        'flex h-11 w-11 items-center justify-center rounded-full border transition-transform active:scale-95',
         tone.surface,
-        tone.borderStrong,
-        tone.accent,
+        tone.border,
+        tone.textMuted,
         tone.pressWash,
       )}
     >
