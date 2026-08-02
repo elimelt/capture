@@ -4,7 +4,8 @@ import type { Attachment } from '../contract/types'
 import { getBlob } from '../store/events'
 import { liveCaptions, liveTranscripts, type LiveTextStore } from '../store/livetext'
 import { IconButton, OverlayPortal, cx, layer, motion, tone, type_ } from '../ui'
-import { isCaption, isPhotoFile } from '../vision/plan'
+import { isPhotoFile } from '../vision/plan'
+import { groupAttachments } from './attachmentGroups'
 import { TextSheet } from './TextSheet'
 import { useAudioPlayback } from './useAudioPlayback'
 
@@ -25,10 +26,12 @@ function useLiveText(store: LiveTextStore): ReadonlyMap<string, string> {
  * Renders an entry's content beyond the primary clip (B7): note text inline
  * (tap to edit), extra audio clips as playback rows, photos as thumbnails
  * that expand to a viewer with removal. Machine transcripts (derivedFrom
- * set) are the spoken content of the entry, so they render first and as
- * primary text; user notes stay secondary, and machine photo captions render
- * secondary below their photos. Edited transcripts/captions keep their
- * derivedFrom link so they are never re-derived.
+ * set) are the spoken content of the entry, so they render first and at the
+ * main-text scale (`type_.bodyStrong`) alongside user notes; machine photo
+ * captions are descriptive metadata, so each photo pairs with its caption in
+ * one horizontal row (thumbnail left, smaller muted caption right). Edited
+ * transcripts/captions keep their derivedFrom link so they are never
+ * re-derived. Grouping/pairing itself is the pure `groupAttachments`.
  *
  * While a transcript or caption is still streaming in from its service, the
  * partial text appears in the same position via the transient live-text
@@ -41,15 +44,9 @@ export function AttachmentBody({ attachments, onEditText, onRemoveAttachment }: 
   )
   const liveT = useLiveText(liveTranscripts)
   const liveC = useLiveText(liveCaptions)
-  const captions = attachments.filter(isCaption)
-  const transcripts = attachments.filter(
-    (a) => a.kind === 'text' && a.derivedFrom !== undefined && !isCaption(a),
-  )
-  const notes = attachments.filter((a) => a.kind === 'text' && a.derivedFrom === undefined)
-  const allAudio = attachments.filter((a) => a.kind === 'audio')
+  const { transcripts, notes, audio, photoGroups, orphanCaptions } = groupAttachments(attachments)
   // The first clip plays from the card header; later ones render here.
-  const extraAudio = allAudio.slice(1)
-  const photos = attachments.filter((a) => a.kind === 'photo')
+  const extraAudio = audio.slice(1)
   // Streaming machine text for sources with no persisted derived text yet.
   // Once the amend lands the stored attachment wins, live text is ignored.
   const derivedSources = new Set(
@@ -62,14 +59,17 @@ export function AttachmentBody({ attachments, onEditText, onRemoveAttachment }: 
       .filter((a) => !derivedSources.has(a.file))
       .map((a) => ({ file: a.file, text: live.get(a.file) }))
       .filter((s): s is { file: string; text: string } => s.text !== undefined && s.text !== '')
-  const streamingTranscripts = streaming(liveT, allAudio)
-  const streamingCaptions = streaming(liveC, photos)
+  const streamingTranscripts = streaming(liveT, audio)
+  const streamingCaptions = streaming(
+    liveC,
+    photoGroups.map((g) => g.photo),
+  )
   if (
-    captions.length === 0 &&
     transcripts.length === 0 &&
     notes.length === 0 &&
     extraAudio.length === 0 &&
-    photos.length === 0 &&
+    photoGroups.length === 0 &&
+    orphanCaptions.length === 0 &&
     streamingTranscripts.length === 0
   ) {
     return null
@@ -78,29 +78,35 @@ export function AttachmentBody({ attachments, onEditText, onRemoveAttachment }: 
   return (
     <div className="mt-2 flex flex-col gap-2">
       {transcripts.map((a) => (
-        <NoteText key={a.file} attachment={a} primary onEdit={setEdit} />
+        <NoteText key={a.file} attachment={a} variant="transcript" onEdit={setEdit} />
       ))}
       {streamingTranscripts.map((s) => (
-        <StreamingText key={s.file} text={s.text} primary />
+        <StreamingText key={s.file} text={s.text} variant="transcript" />
       ))}
       {notes.map((a) => (
-        <NoteText key={a.file} attachment={a} onEdit={setEdit} />
+        <NoteText key={a.file} attachment={a} variant="note" onEdit={setEdit} />
       ))}
       {extraAudio.map((a) => (
         <AudioRow key={a.file} file={a.file} durationSec={a.durationSec} />
       ))}
-      {photos.length > 0 && (
-        <div className="flex flex-wrap gap-2">
-          {photos.map((a) => (
-            <PhotoThumb key={a.file} file={a.file} onRemove={() => onRemoveAttachment(a.file)} />
-          ))}
-        </div>
-      )}
-      {captions.map((a) => (
-        <NoteText key={a.file} attachment={a} onEdit={setEdit} />
-      ))}
-      {streamingCaptions.map((s) => (
-        <StreamingText key={s.file} text={s.text} />
+      {photoGroups.map(({ photo, captions }) => {
+        const live = streamingCaptions.find((s) => s.file === photo.file)
+        return (
+          <div key={photo.file} className="flex items-start gap-3">
+            <PhotoThumb file={photo.file} onRemove={() => onRemoveAttachment(photo.file)} />
+            {(captions.length > 0 || live) && (
+              <div className="flex min-w-0 flex-1 flex-col gap-1 pt-0.5">
+                {captions.map((c) => (
+                  <NoteText key={c.file} attachment={c} variant="caption" onEdit={setEdit} />
+                ))}
+                {live && <StreamingText text={live.text} variant="caption" />}
+              </div>
+            )}
+          </div>
+        )
+      })}
+      {orphanCaptions.map((a) => (
+        <NoteText key={a.file} attachment={a} variant="caption" onEdit={setEdit} />
       ))}
       {edit && (
         <TextSheet
@@ -155,19 +161,31 @@ function renderWithMath(text: string): React.ReactNode[] {
 }
 
 /**
+ * Type scale for entry text (design pass): transcripts are the entry's own
+ * voice and lead the card; notes share the main-text scale but read as
+ * secondary; photo captions are descriptive metadata — smaller, lighter.
+ */
+type TextVariant = 'transcript' | 'note' | 'caption'
+
+const TEXT_STYLE: Record<TextVariant, string> = {
+  transcript: cx(type_.bodyStrong, tone.textPrimary),
+  note: cx(type_.bodyStrong, tone.textSecondary),
+  caption: cx(type_.bodySmall, tone.textMuted),
+}
+
+/**
  * A transcript or caption still streaming in: rendered exactly like the
  * final NoteText (same tokens, same position) but read-only — there is
  * nothing to edit until the amend lands — with a pulsing cursor tick.
  */
-function StreamingText({ text, primary = false }: { text: string; primary?: boolean }) {
+function StreamingText({ text, variant }: { text: string; variant: TextVariant }) {
   return (
     <span
       aria-live="polite"
       className={cx(
         'block whitespace-pre-wrap break-words text-left',
         motion.fadeIn,
-        type_.body,
-        primary ? tone.textPrimary : tone.textSecondary,
+        TEXT_STYLE[variant],
       )}
     >
       {renderWithMath(text)}
@@ -181,11 +199,11 @@ function StreamingText({ text, primary = false }: { text: string; primary?: bool
 
 function NoteText({
   attachment,
-  primary = false,
+  variant,
   onEdit,
 }: {
   attachment: Attachment
-  primary?: boolean
+  variant: TextVariant
   onEdit: (target: { file: string; text: string; derivedFrom?: string }) => void
 }) {
   const { file, derivedFrom } = attachment
@@ -207,11 +225,7 @@ function NoteText({
       className={cx('text-left', motion.fadeIn)}
     >
       <span
-        className={cx(
-          'block whitespace-pre-wrap break-words',
-          type_.body,
-          primary ? tone.textPrimary : tone.textSecondary,
-        )}
+        className={cx('block whitespace-pre-wrap break-words', TEXT_STYLE[variant])}
       >
         {renderWithMath(text)}
       </span>
@@ -225,6 +239,7 @@ function AudioRow({ file, durationSec }: { file: string; durationSec?: number })
   return (
     <div className="flex items-center gap-2">
       <IconButton
+        variant="accent"
         aria-label={playback.playing ? 'Stop playback' : 'Play recording'}
         onClick={() => void playback.toggle()}
         className="relative overflow-hidden"
@@ -269,7 +284,7 @@ function PhotoThumb({ file, onRemove }: { file: string; onRemove: () => void }) 
       <button
         onClick={() => setExpanded(true)}
         aria-label="View photo"
-        className={motion.fadeIn}
+        className={cx('shrink-0', motion.fadeIn)}
       >
         <img
           src={url}

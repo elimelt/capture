@@ -15,7 +15,7 @@ export function Card({
         'border',
         tone.borderStrong,
         tone.surface,
-        'p-3 shadow-md shadow-ink/[0.08] dark:shadow-lg dark:shadow-black/25',
+        'p-4 shadow-md shadow-ink/[0.08] dark:shadow-lg dark:shadow-black/25',
         className,
       )}
     >

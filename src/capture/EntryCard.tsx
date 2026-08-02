@@ -94,55 +94,52 @@ export function EntryCard({
 
   return (
     <Card className={motion.riseIn}>
+      {/* Header: time + place grouped left; sync/duration/play pushed right. */}
       <div className="flex items-center gap-2">
-        <div className="min-w-0 flex-1">
-          <div className={cx('flex items-baseline gap-2', type_.body)}>
-            {/* Tapping the time opens the native iOS wheel picker (B8). */}
-            <span className="relative">
-              <button
-                onClick={() => {
-                  const el = timeInputRef.current
-                  if (!el) return
-                  if (typeof el.showPicker === 'function') el.showPicker()
-                  else el.focus()
-                }}
-                className={cx(
-                  'rounded-md font-semibold tabular-nums underline decoration-dotted underline-offset-4',
-                  tone.textPrimary,
-                  'decoration-line-strong dark:decoration-line-strong-dark',
-                )}
-              >
-                {timeLabel(entry.capturedAt)}
-              </button>
-              <input
-                ref={timeInputRef}
-                type="time"
-                value={localTimeOf(entry.capturedAt)}
-                onChange={(e) => {
-                  if (e.target.value) onSetTime(e.target.value)
-                }}
-                className="absolute inset-0 h-full w-full opacity-0"
-                tabIndex={-1}
-                aria-label="Change entry time"
-              />
+        <div className={cx('flex min-w-0 flex-1 items-baseline gap-2', type_.body)}>
+          {/* Tapping the time opens the native iOS wheel picker (B8); the
+              Edit sheet is the second, discoverable path to the same field. */}
+          <span className="relative shrink-0">
+            <button
+              onClick={() => {
+                const el = timeInputRef.current
+                if (!el) return
+                if (typeof el.showPicker === 'function') el.showPicker()
+                else el.focus()
+              }}
+              className={cx('rounded-md font-semibold tabular-nums', tone.textPrimary, tone.pressWash)}
+            >
+              {timeLabel(entry.capturedAt)}
+            </button>
+            <input
+              ref={timeInputRef}
+              type="time"
+              value={localTimeOf(entry.capturedAt)}
+              onChange={(e) => {
+                if (e.target.value) onSetTime(e.target.value)
+              }}
+              className="absolute inset-0 h-full w-full opacity-0"
+              tabIndex={-1}
+              aria-label="Change entry time"
+            />
+          </span>
+          {(entry.location?.placeLabel ?? entry.location?.address) && (
+            <span className={cx('truncate', type_.sub, tone.textMuted)}>
+              {entry.location.placeLabel ?? `near ${entry.location.address}`}
             </span>
-            {(entry.location?.placeLabel ?? entry.location?.address) && (
-              <span className={cx('truncate', type_.sub, tone.textMuted)}>
-                {entry.location.placeLabel ?? `near ${entry.location.address}`}
-              </span>
-            )}
-            <span className={cx('shrink-0', audio?.durationSec === undefined && 'ml-auto')}>
-              <SyncBadge status={syncStatus} />
-            </span>
-            {audio?.durationSec !== undefined && (
-              <span className={cx('ml-auto shrink-0 tabular-nums', type_.caption, tone.textFaint)}>
-                {audio.durationSec}s
-              </span>
-            )}
-          </div>
+          )}
         </div>
+        <span className="shrink-0">
+          <SyncBadge status={syncStatus} />
+        </span>
+        {audio?.durationSec !== undefined && (
+          <span className={cx('shrink-0 tabular-nums', type_.caption, tone.textFaint)}>
+            {audio.durationSec}s
+          </span>
+        )}
         {audio && (
           <IconButton
+            variant="accent"
             aria-label={playback.playing ? 'Stop playback' : 'Play recording'}
             onClick={() => void playback.toggle()}
             className="relative overflow-hidden"
@@ -176,7 +173,7 @@ export function EntryCard({
       {rec.state === 'recording' ? (
         <div
           className={cx(
-            'mt-2 flex items-center gap-2 rounded-xl bg-clay px-3 py-2 dark:bg-clay-dark',
+            'mt-3 flex items-center gap-2 rounded-xl bg-clay px-3 py-2 dark:bg-clay-dark',
             motion.scaleIn,
           )}
         >
@@ -203,31 +200,55 @@ export function EntryCard({
           </button>
         </div>
       ) : (
-        <div className="mt-2 flex items-center gap-1">
-          <Button variant="ghost" size="sm" onClick={() => setNoteOpen(true)}>
-            <NoteIcon size={14} /> note
-          </Button>
-          <Button variant="ghost" size="sm" onClick={() => photoInputRef.current?.click()}>
-            <PhotoIcon size={14} /> photo
-          </Button>
+        /* Action bar: icon-only (aria-label + title carry the names), add
+           actions left, edit + destructive delete right, above a hairline
+           divider that separates chrome from content. */
+        <div className={cx('-mx-4 mt-3 flex items-center gap-1 border-t px-2 pt-1', tone.border)}>
+          <IconButton variant="ghost" aria-label="Add note" title="Add note" onClick={() => setNoteOpen(true)}>
+            <NoteIcon size={16} />
+          </IconButton>
+          <IconButton
+            variant="ghost"
+            aria-label="Add photo"
+            title="Add photo"
+            onClick={() => photoInputRef.current?.click()}
+          >
+            <PhotoIcon size={16} />
+          </IconButton>
           {rec.state === 'error' ? (
             <Button variant="ghost" size="sm" onClick={rec.resetError}>
               mic unavailable
             </Button>
           ) : (
-            <Button variant="ghost" size="sm" onClick={() => void handleAudioTap()}>
-              <AudioIcon size={14} /> audio
-            </Button>
+            <IconButton
+              variant="ghost"
+              aria-label="Record audio"
+              title="Record audio"
+              onClick={() => void handleAudioTap()}
+            >
+              <AudioIcon size={16} />
+            </IconButton>
           )}
-          <Button variant="ghost" size="sm" onClick={() => setLocationOpen(true)}>
-            {entry.location ? <PinIcon /> : <PlusIcon />} location
-          </Button>
-          <Button variant="ghost" size="sm" onClick={() => setEditOpen(true)} className="ml-auto">
-            <SlidersIcon /> Edit
-          </Button>
-          <Button variant="dangerGhost" size="sm" onClick={onDelete}>
-            <TrashIcon /> Delete
-          </Button>
+          <IconButton
+            variant="ghost"
+            aria-label={entry.location ? 'Edit location' : 'Add location'}
+            title={entry.location ? 'Edit location' : 'Add location'}
+            onClick={() => setLocationOpen(true)}
+          >
+            {entry.location ? <PinIcon size={16} /> : <PlusIcon size={16} />}
+          </IconButton>
+          <IconButton
+            variant="ghost"
+            aria-label="Edit entry"
+            title="Edit entry"
+            onClick={() => setEditOpen(true)}
+            className="ml-auto"
+          >
+            <SlidersIcon size={16} />
+          </IconButton>
+          <IconButton variant="danger" aria-label="Delete entry" title="Delete entry" onClick={onDelete}>
+            <TrashIcon size={16} />
+          </IconButton>
         </div>
       )}
 

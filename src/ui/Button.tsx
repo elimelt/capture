@@ -59,10 +59,28 @@ export function Button({
   )
 }
 
+export type IconButtonVariant = 'outline' | 'ghost' | 'accent' | 'danger'
+
+const ICON_VARIANT: Record<IconButtonVariant, string> = {
+  outline: cx('border', tone.borderStrong, tone.textSecondary, tone.pressWash),
+  ghost: cx(tone.textSecondary, tone.pressWash),
+  /** Accent-washed fill + border for controls that must read as interactive
+   *  against the card surface (e.g. an entry's play button). */
+  accent: cx(
+    'border',
+    tone.borderStrong,
+    tone.accentWash,
+    tone.accent,
+    'active:bg-spruce/15 dark:active:bg-spruce-dark/20',
+  ),
+  /** Destructive icon actions — muted clay, wash on press. */
+  danger: cx(tone.danger, 'active:bg-clay-wash dark:active:bg-clay-wash-dark'),
+}
+
 interface IconButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   /** Required: icon-only buttons must still be accessible. */
   'aria-label': string
-  variant?: 'outline' | 'ghost'
+  variant?: IconButtonVariant
   children: ReactNode
 }
 
@@ -78,9 +96,7 @@ export function IconButton({
       className={cx(
         'inline-flex h-11 w-11 shrink-0 items-center justify-center transition-colors disabled:opacity-40',
         shape.pill,
-        variant === 'outline' && cx('border', tone.borderStrong),
-        tone.textSecondary,
-        tone.pressWash,
+        ICON_VARIANT[variant],
         className,
       )}
     >
