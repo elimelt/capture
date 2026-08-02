@@ -10,7 +10,8 @@ import { summarizeSyncStatuses } from './store/events'
 import { drainTranscriptions } from './transcribe/runner'
 import { drainCaptions } from './vision/runner'
 import { ReconnectPill } from './drive/ReconnectPill'
-import { Toast, cx, layer, tone, type_ } from './ui'
+import { Toast, cx, layer, shape, tone, type_ } from './ui'
+import { TABS, visibleTabs } from './navTabs'
 
 // Opt-in assistant: lazy so users who never enable it never download the
 // chat bundle (AI SDK + markdown renderer).
@@ -26,13 +27,6 @@ function enrichmentNoticeBody(transcribed: number, captioned: number): string {
   return parts.join(' · ')
 }
 
-const TABS = [
-  { to: '/', label: 'Capture' },
-  { to: '/day', label: 'Day' },
-  { to: '/chat', label: 'Chat', assistant: true },
-  { to: '/settings', label: 'Settings' },
-]
-
 export default function App() {
   const init = useAppStore((s) => s.init)
   const refresh = useAppStore((s) => s.refresh)
@@ -41,7 +35,7 @@ export default function App() {
   const lastError = useAppStore((s) => s.lastError)
   const clearError = useAppStore((s) => s.clearError)
   const assistantEnabled = useAppStore((s) => s.appSettings.assistantEnabled)
-  const tabs = TABS.filter((t) => !t.assistant || assistantEnabled)
+  const tabs = visibleTabs(TABS, assistantEnabled)
 
   // The HTML boot splash (index.html) covers the app until the store is
   // hydrated, so the first paint is real content, never a flash of empty
@@ -112,8 +106,12 @@ export default function App() {
     <div className={cx('min-h-dvh', tone.bg, tone.textPrimary)}>
       <div className="mx-auto flex min-h-dvh max-w-md flex-col">
         {/* C12: black-translucent status bar means content extends under the
-            iOS status bar; pad every screen below it. */}
-        <main className="flex-1 pb-24 pt-[env(safe-area-inset-top)]">
+            iOS status bar; pad every screen below it. Bottom padding is
+            computed from the nav's own height (min-h-14 + its safe-area
+            inset), not guessed — see the nav's dimensions below — plus a
+            1rem gutter, so the last card always clears the bar regardless
+            of how large a device's home-indicator inset is. */}
+        <main className="flex-1 pb-[calc(3.5rem+env(safe-area-inset-bottom)+1rem)] pt-[env(safe-area-inset-top)]">
           <ReconnectPill />
           <Routes>
             <Route path="/" element={<CaptureScreen />} />
@@ -154,7 +152,7 @@ export default function App() {
                 end={tab.to === '/'}
                 className={({ isActive }) =>
                   cx(
-                    'flex min-h-14 flex-1 items-center justify-center',
+                    'flex min-h-14 flex-1 flex-col items-center justify-center gap-1',
                     type_.sub,
                     isActive
                       ? cx('font-semibold', tone.accent)
@@ -162,7 +160,24 @@ export default function App() {
                   )
                 }
               >
-                {tab.label}
+                {({ isActive }) => (
+                  <>
+                    {tab.label}
+                    {/* Active indicator: a shape, not just color/weight, per
+                        the design review ("active-tab indication is almost
+                        entirely typographic"). Always rendered (transparent
+                        when inactive) so switching tabs never shifts
+                        layout; aria-current comes free from NavLink. */}
+                    <span
+                      aria-hidden="true"
+                      className={cx(
+                        'h-[3px] w-5',
+                        shape.pill,
+                        isActive ? tone.accentBg : 'bg-transparent',
+                      )}
+                    />
+                  </>
+                )}
               </NavLink>
             ))}
           </div>
