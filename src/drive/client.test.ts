@@ -321,7 +321,9 @@ describe('getStartPageToken', () => {
   it('fetches the changes cursor', async () => {
     const fetchMock = stubFetch(jsonResponse({ startPageToken: '4711' }))
     expect(await getStartPageToken('tok')).toBe('4711')
-    expect(String(fetchMock.mock.calls[0][0])).toContain('/changes/startPageToken')
+    const url = new URL(String(fetchMock.mock.calls[0][0]))
+    expect(url.pathname).toContain('/changes/startPageToken')
+    expect(url.searchParams.get('fields')).toBe('startPageToken')
   })
 })
 

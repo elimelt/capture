@@ -341,8 +341,9 @@ export interface ChangeList {
 
 /** The cursor for "everything from now on" — minted once, then persisted. */
 export async function getStartPageToken(token: string): Promise<string> {
+  const params = new URLSearchParams({ fields: 'startPageToken' })
   const res = await ensureOk(
-    await fetch(`${API}/changes/startPageToken`, { headers: bearer(token) }),
+    await fetch(`${API}/changes/startPageToken?${params}`, { headers: bearer(token) }),
   )
   return ((await res.json()) as { startPageToken: string }).startPageToken
 }
