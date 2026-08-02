@@ -10,7 +10,7 @@
  * toast). Deliberately calendar-flavored, not an EntryCard: no attachments,
  * location, or playback — those belong to captures.
  */
-import { Button, CalendarIcon, Card, EyeOffIcon, SlidersIcon, TrashIcon, cx, motion, tone, type_ } from '../ui'
+import { Button, CalendarIcon, EyeOffIcon, SlidersIcon, TimelineRow, TrashIcon, cx, motion, tone, type_ } from '../ui'
 import type { PseudoEntry } from '../gcal/overlay/pseudoEntry'
 
 function clock(ms: number): string {
@@ -23,8 +23,17 @@ export function pseudoTimeLabel(entry: Pick<PseudoEntry, 'allDay' | 'startMs' | 
   return `${clock(entry.startMs)} – ${clock(entry.endMs)}`
 }
 
+/** The single start-time (or "All day") shown in the narrow rail gutter — the
+ *  full range stays in the card header where there's room. */
+function pseudoRailTime(entry: Pick<PseudoEntry, 'allDay' | 'startMs'>): string {
+  return entry.allDay ? 'All day' : clock(entry.startMs)
+}
+
 interface PseudoEntryCardProps {
   entry: PseudoEntry
+  /** Timeline-rail position — trims the connecting line at the rail's ends. */
+  first?: boolean
+  last?: boolean
   /** Open the edit sheet (also fired by tapping the card content). */
   onEdit: () => void
   /** Hide from the Day view (toggleHidden → one overlay patch). */
@@ -33,9 +42,14 @@ interface PseudoEntryCardProps {
   onRemove: () => void
 }
 
-export function PseudoEntryCard({ entry, onEdit, onHide, onRemove }: PseudoEntryCardProps) {
+export function PseudoEntryCard({ entry, first = false, last = false, onEdit, onHide, onRemove }: PseudoEntryCardProps) {
   return (
-    <Card className={motion.riseIn}>
+    <TimelineRow
+      time={<span className="tabular-nums">{pseudoRailTime(entry)}</span>}
+      first={first}
+      last={last}
+      className={motion.riseIn}
+    >
       <button
         onClick={onEdit}
         aria-label={`Edit “${entry.title}”`}
@@ -97,6 +111,6 @@ export function PseudoEntryCard({ entry, onEdit, onHide, onRemove }: PseudoEntry
           <SlidersIcon /> Edit
         </Button>
       </div>
-    </Card>
+    </TimelineRow>
   )
 }

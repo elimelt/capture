@@ -14,6 +14,7 @@ export { Toast } from './Toast'
 export { FieldRow, Select, TextArea, TextInput, Toggle } from './fields'
 export { canCommitNumericDraft, commitNumericDraft, parseNumericDraft } from './numberDraft'
 export { ScreenHeader } from './ScreenHeader'
+export { TimelineRow } from './TimelineRow'
 export {
   CalendarIcon,
   CameraIcon,

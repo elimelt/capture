@@ -48,6 +48,11 @@ export const tone = {
 
   /** Pressed-state wash for bordered/ghost controls. */
   pressWash: 'active:bg-well dark:active:bg-well-dark',
+
+  /** Filled node marker on the timeline rail (`TimelineRow`) — the accent hue
+   *  so a node reads as a live point on the line, distinct from the hairline
+   *  `border` the line itself uses. */
+  railDot: 'bg-spruce dark:bg-spruce-dark',
 } as const
 
 export const shape = {

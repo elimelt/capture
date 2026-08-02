@@ -26,11 +26,18 @@ real sync row plus its pending-enrichment state to one of three *display* lifecy
 `'understanding'`, `'settled'`, `'failed'` — so "Queued" (infrastructure language) never
 reaches the card. `LifecycleBadge` renders that mapping.
 
+Entries render as nodes on a **timeline rail** (the shared `TimelineRow` primitive from
+`src/ui`): a fixed-width left gutter carries a vertical connecting line, a dot marking
+the node, and the captured time; the entry's content sits in the right column,
+horizontally aligned to the dot. Consecutive nodes render with no list gap so the rail
+reads as one continuous line, and each card is a flush node (no heavy per-card border or
+shadow) rather than a boxed card.
+
 `EntryCard` renders its content **unconditionally** (#102, inverting #78's collapse):
-time, place-label context, the entry's full primary text (no line clamp) or its primary
+place-label context, the entry's full primary text (no line clamp) or its primary
 clip's waveform fingerprint, every other note/transcript and extra audio clip
-(`AttachmentBody`), every photo in a tight capture-order grid (`PhotoGrid`), and the
-compact place card — nothing attachment-shaped is ever hidden. The only things that
+(`AttachmentBody`), every photo as its own row with the caption beside it (`PhotoGrid`),
+and the compact place card — nothing attachment-shaped is ever hidden. The only things that
 collapse are chrome: a single "+" affordance expands into a compact icon-only action
 menu (add note / add photo / add audio / location / edit / delete — each icon still
 carries an `aria-label`), and up to two **related memories** (#83 v1) stay behind their
@@ -414,9 +421,15 @@ the card action is icon-only but has the accessible label "Copy entry".
 **Purpose:** Maps `Entry[]` to `EntryCard`s and translates every card edit into a store
 `amend` call — the single place where card callbacks become contract events.
 
-**Export:** `EntryList({ entries, onDelete }: EntryListProps)` where `onDelete:
-(entryId: string) => void` bubbles delete requests up to the owning screen (B9), which
-hides the entry immediately and appends the revoke only after the undo window.
+**Export:** `EntryList({ entries, onDelete, firstOnRail, lastOnRail }: EntryListProps)`
+where `onDelete: (entryId: string) => void` bubbles delete requests up to the owning
+screen (B9), which hides the entry immediately and appends the revoke only after the
+undo window. `firstOnRail`/`lastOnRail` (both default `true`) let a parent that
+interleaves other rail nodes — `DayTimeline` weaving in `PseudoEntryCard`s — trim the
+connecting line only at the true ends of the merged rail, so a run of entries between
+calendar events keeps an unbroken line above and below it. `EntryList` renders as a
+fragment (no wrapper element) so consecutive `TimelineRow` gutters abut and the rail
+reads continuously.
 
 **Amend wiring per card:**
 
@@ -538,7 +551,7 @@ derived; exhaustive over attachment shapes with/without `derivedFrom` across all
 React; tested directly (`cardView.test.ts`). Builds on `groupAttachments`; never
 re-derives grouping semantics, only picks/orders among them. #102's core inversion:
 the card no longer has a content-hiding collapsed state, so this module's job changed
-from "what does the collapsed card show" to "what leads, and what does the photo grid
+from "what does the collapsed card show" to "what leads, and what do the photo rows
 render" — every attachment surfaces somewhere in `EntryCard`, and `extraCount` (the old
 "+N hidden" hint) is gone along with the content it used to count as hidden.
 
@@ -560,7 +573,7 @@ render" — every attachment surfaces somewhere in `EntryCard`, and `extraCount`
   attachment (the one whose waveform plays from the card header); `collapsedShowsLocation` mirrors
   the header's place-label/address condition; `photoGroups` is a pass-through of
   `groups.photoGroups` (every photo, paired with its captions, in capture order) — the
-  source for the card's always-visible thumbnail grid (`PhotoGrid`).
+  source for the card's always-visible photo rows (`PhotoGrid`).
 
 ### src/capture/cardView.test.ts
 
@@ -577,10 +590,12 @@ caption-attachment insertion order, a captionless photo pairing with an empty
 ### src/capture/EntryCard.tsx
 
 **Purpose:** One entry's card (#78, inverted by #102: **content is always visible;
-actions are what collapse**): header (editable time, place label, lifecycle badge,
-duration, play button), then unconditionally every note/transcript, every extra audio
-clip, every photo (tight grid), and the place card, then a footer holding a "Related"
-reveal and the single "+" action menu, plus the sheets/inputs those actions open.
+actions are what collapse**), rendered as a node on the timeline rail (`TimelineRow`):
+the captured time + rail dot in the gutter, then the content column with a header (place
+label, lifecycle badge, duration, play button), then unconditionally every
+note/transcript, every extra audio clip, every photo (one row each), and the place card,
+then a footer holding a "Related" reveal and the single "+" action menu, plus the
+sheets/inputs those actions open.
 
 **Exports:** `EntryCard(props: EntryCardProps)` and `timeLabel(iso: string): string`
 (locale time like "9:04 AM"). Props: `entry`, `maxClipSec`, `sync?: SyncStatusRow`, and
@@ -598,16 +613,20 @@ The card computes its own `EntryLifecycle` from `sync` + `hasPendingEnrichment(e
   one thing still allowed to stay behind a reveal) are separate, unrelated, view-local
   `useState`s — never persisted, never an event — so opening one never implies the
   other. The pure `cardViewModel(entry, groupAttachments(entry.attachments))` still
-  decides header layout and the photo grid's contents, but no longer decides what's
+  decides header layout and the photo rows' contents, but no longer decides what's
   visible at all.
-- **Header grouping:** one flex row — time + place label tightly grouped on the left,
-  sync badge + clip duration + play button pushed to the far right. The time label has
-  no underline decoration; it is still the tap target for the native picker (below), and
-  the Edit sheet provides the second, labelled path to the same field. The place label
-  renders only when `vm.collapsedShowsLocation` is true. Both are metadata, not content
-  (#85): the time button and place label are explicitly `type_.sub` (sans, tabular-nums
-  on the time) — the row no longer wraps in `type_.body`, which previously leaked serif
-  onto the time via inheritance.
+- **Rail gutter + header:** the editable time moved out of the header into the
+  `TimelineRow` `time` slot (`timeControl` — the same tap-to-edit button, now in the
+  gutter beside the rail dot). The header is one flex row holding only the place label on
+  the left with sync badge + clip duration + play button pushed to the far right. The
+  time button has no underline decoration; it is still the tap target for the native
+  picker (below), and the Edit sheet provides the second, labelled path to the same
+  field. The place label renders only when `vm.collapsedShowsLocation` is true. Both are
+  metadata, not content (#85): the time button and place label are quiet
+  `type_.caption`/`type_.sub` (sans, tabular-nums on the time), never serif.
+- **Rail position:** `first`/`last` props (threaded down from `EntryList`, defaulting
+  false) trim the connecting line at the true ends of the rail so a run of entries reads
+  as one continuous line, and the flush node drops the old heavy per-card border/shadow.
 - **Time editing (B8):** the time label is a button layered over an invisible
   `<input type="time">`; tapping calls `showPicker()` (fallback `focus()`) so iOS shows
   its native wheel picker. `onChange` fires `onSetTime` only for non-empty values.
@@ -631,7 +650,7 @@ The card computes its own `EntryLifecycle` from `sync` + `hasPendingEnrichment(e
   notes — with no separate clamped preview any more, so it and every other text render
   identically, full text, no line clamp, tap-to-edit), every streaming transcript, every
   extra audio clip, and any orphan caption. Then `PhotoGrid` mounts unconditionally with
-  `vm.photoGroups` (every photo, tight grid, capture order — see `PhotoGrid.tsx`). Then
+  `vm.photoGroups` (every photo, one row each, capture order — see `PhotoGrid.tsx`). Then
   the `PlaceCard` row (when `entry.location` is set) — leaflet-free, no network, no map
   tiles in the feed (#81); tapping it sets `mapOpen`, which mounts the lazy `MiniMap`
   full-screen dialog. Leaflet's chunk loads only on that explicit tap.
@@ -838,9 +857,8 @@ primary-text first line, else "Voice note"/"Photo", else empty).
 #102), classified along the authored-vs-generated axis (#80). Always mounted by
 `EntryCard` now — #102's "content is always visible" inversion removed the `expanded`
 gate this component used to render behind. Photos (and their removal) moved to
-`PhotoGrid.tsx` (#102: a tight thumbnail grid replaces the old one-thumbnail-per-row
-layout), so this component owns only text/audio and has no attachment-removal
-affordance of its own.
+`PhotoGrid.tsx` (#102, now laid out as one timeline row per photo — see below), so this
+component owns only text/audio and has no attachment-removal affordance of its own.
 
 **Export:** `AttachmentBody({ attachments, onEditText }: AttachmentBodyProps)`; also
 exports `useLiveText` (the shared `useSyncExternalStore` wiring for a `LiveTextStore`),
@@ -894,27 +912,29 @@ edit-title table (`EDIT_TITLE`) are both keyed by `Authorship`, so every call si
 
 ### src/capture/PhotoGrid.tsx
 
-**Purpose:** Tight thumbnail grid for an entry's photos (#102) — replaces the old
-one-64px-thumbnail-per-row-with-caption-beside layout (formerly in `AttachmentBody`)
-with a 3-across CSS grid, so photos read as content at a glance instead of hiding
-behind expansion. Always mounted by `EntryCard`, fed `cardViewModel(...).photoGroups`
+**Purpose:** An entry's photos as timeline rows (#102) — one row per photo, a
+fixed-size thumbnail on the left with its caption text horizontally aligned to its
+right, so a photo's related text reads beside its asset the way the rest of the timeline
+aligns content to its node. Replaces the earlier 3-across grid (caption stacked
+underneath), itself a replacement for the original one-thumbnail-per-row layout formerly
+in `AttachmentBody`. Always mounted by `EntryCard`, fed `cardViewModel(...).photoGroups`
 (every photo, capture order) — nothing photo-shaped is hidden any more.
 
 **Export:** `PhotoGrid({ photoGroups, onEditText, onRemoveAttachment }: PhotoGridProps)`.
 Renders `null` for an entry with no photos.
 
-**Behavior:** each tile keeps the full previous feature set, just laid out more
-tightly — `grid-cols-3 gap-1.5`, each cell an aspect-square thumbnail button. Tapping a
-thumbnail opens the existing full-screen `PhotoViewer` (with its own "Remove photo"
-action, wired to `onRemoveAttachment`); a persisted caption renders below its tile
-(`AttachmentBody`'s exported `AUTHORSHIP_STYLE.derived`/`EDIT_TITLE.derived` tokens,
-`line-clamp-2` — the one deliberate clamp left in the card, since an unclamped caption
-could blow out a grid cell's compactness) and is tappable to edit inline via the shared
-`TextSheet`, exactly like `AttachmentBody`'s `NoteText`; a still-**streaming** caption
-(subscribed via the exported `useLiveText(liveCaptions)`, keyed by the *photo's* file —
-the caption runner's source key) renders with `AttachmentBody`'s exported
-`StreamingText` in place of a persisted caption, and is not tappable (nothing to edit
-until the amend lands).
+**Behavior:** the container is a `flex flex-col gap-2` stack of rows; each row is a
+`flex items-start gap-3` — a fixed `h-20 w-20 shrink-0` thumbnail button on the left and
+a `min-w-0 flex-1` caption column top-aligned beside it. Tapping a thumbnail opens the
+existing full-screen `PhotoViewer` (with its own "Remove photo" action, wired to
+`onRemoveAttachment`); a persisted caption renders in the right column
+(`AttachmentBody`'s exported `AUTHORSHIP_STYLE.derived`/`EDIT_TITLE.derived` tokens, full
+text with no clamp now that it has the row's width to wrap into) and is tappable to edit
+inline via the shared `TextSheet`, exactly like `AttachmentBody`'s `NoteText`; a
+still-**streaming** caption (subscribed via the exported `useLiveText(liveCaptions)`,
+keyed by the *photo's* file — the caption runner's source key) renders with
+`AttachmentBody`'s exported `StreamingText` in place of a persisted caption, and is not
+tappable (nothing to edit until the amend lands).
 
 ### src/capture/PhotoViewer.tsx
 
@@ -1433,7 +1453,13 @@ DayTimelineProps)`.
   timeline carries real entries alone.
 - **Interleave:** `groupTimeline(buildTimeline(entries, pseudo))` — runs of
   consecutive real entries render through the shared `EntryList` (reusing its
-  card→amend wiring unchanged); each pseudo-entry renders a `PseudoEntryCard`.
+  card→amend wiring unchanged); each pseudo-entry renders a `PseudoEntryCard`. The
+  groups render in a single gapless `flex flex-col` so entries and calendar events share
+  **one continuous timeline rail** across group boundaries. `DayTimeline` is the one
+  place that knows the rail's true ends, so it passes `firstOnRail`/`lastOnRail` to each
+  `EntryList` run and `first`/`last` to each `PseudoEntryCard` (`g === 0` / `g ===
+  groups.length - 1`); every interior run/pseudo keeps its connecting line so the rail
+  never breaks mid-day.
 - **Edit:** tapping a pseudo-entry (or its Edit button) opens
   `EditPseudoEntrySheet`; the sheet's `onSave(patch)` goes through
   `useOverlays.saveOverlayPatch(entry, liveEvent, patch)` — one overlay event per
@@ -1455,13 +1481,19 @@ DayTimelineProps)`.
 **Purpose:** One calendar pseudo-entry's card — the merged view of a live calendar
 event plus its optional overlay (`mergePseudoEntry` output; the user's edits already
 win per field). Deliberately calendar-flavored, **not** an `EntryCard`: no
-attachments, location, or playback — those belong to captures.
+attachments, location, or playback — those belong to captures. Renders as a node on the
+shared timeline rail (`TimelineRow`), so calendar events and real entries read as one
+continuous line in the Day view.
 
-**Exports:** `PseudoEntryCard({ entry, onEdit, onHide, onRemove })` and
-`pseudoTimeLabel(entry)` ("9:00 AM – 10:30 AM", or "All day").
+**Exports:** `PseudoEntryCard({ entry, first, last, onEdit, onHide, onRemove })` and
+`pseudoTimeLabel(entry)` ("9:00 AM – 10:30 AM", or "All day"). `first`/`last` (default
+false) trim the rail line at its ends; `DayTimeline` sets them per group position.
 
 **Key behaviors:**
 
+- **Rail gutter:** the gutter's `time` slot shows a single start time (`pseudoRailTime`
+  — `clock(startMs)`, or "All day"), since the narrow gutter can't fit a range; the full
+  `pseudoTimeLabel` range stays inside the card header where there's room.
 - The card content is a full-width button (calendar glyph, time range, title, note)
   that opens the edit sheet via `onEdit`; the action row has ghost Hide
   (`EyeOffIcon`) and Edit (`SlidersIcon`) buttons. Time range is metadata (`type_.caption`,

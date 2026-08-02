@@ -5,13 +5,13 @@ import { localDateOf, localTimeOf, toLocalIso } from '../contract/time'
 import { useAppStore } from '../store/appStore'
 import type { SyncStatusRow } from '../store/db'
 import {
-  Card,
   ChevronDownIcon,
   CopyIcon,
   IconButton,
   PinIcon,
   PlusIcon,
   SlidersIcon,
+  TimelineRow,
   TrashIcon,
   captureIcon,
   cx,
@@ -58,6 +58,9 @@ interface EntryCardProps {
   maxClipSec: number
   /** Drive sync row for this entry's seq (SPEC §8.4); absent = never queued locally. */
   sync?: SyncStatusRow
+  /** Timeline-rail position — trims the connecting line at the rail's ends. */
+  first?: boolean
+  last?: boolean
   onDelete: () => void
   /** New time-of-day "HH:mm" on the entry's own date (B8). */
   onSetTime: (time: string) => void
@@ -78,6 +81,8 @@ export function EntryCard({
   entry,
   maxClipSec,
   sync,
+  first = false,
+  last = false,
   onDelete,
   onSetTime,
   onAddNote,
@@ -129,43 +134,41 @@ export function EntryCard({
     }
   }
 
+  // The captured time now lives in the rail gutter (`TimelineRow`), not the
+  // card header — tapping it still opens the native iOS wheel picker (B8), and
+  // the Edit sheet remains the second, discoverable path to the same field.
+  const timeControl = (
+    <span className="relative inline-block">
+      <button
+        onClick={() => {
+          const el = timeInputRef.current
+          if (!el) return
+          if (typeof el.showPicker === 'function') el.showPicker()
+          else el.focus()
+        }}
+        className={cx('rounded-md font-semibold', type_.caption, tone.textMuted, tone.pressWash)}
+      >
+        {timeLabel(entry.capturedAt)}
+      </button>
+      <input
+        ref={timeInputRef}
+        type="time"
+        value={localTimeOf(entry.capturedAt)}
+        onChange={(e) => {
+          if (e.target.value) onSetTime(e.target.value)
+        }}
+        className="absolute inset-0 h-full w-full opacity-0"
+        tabIndex={-1}
+        aria-label="Change entry time"
+      />
+    </span>
+  )
+
   return (
-    <Card className={motion.riseIn}>
-      {/* Header: time + place grouped left; sync/duration/audio pushed right. */}
+    <TimelineRow time={timeControl} first={first} last={last} className={motion.riseIn}>
+      {/* Header: place label grouped left; sync/duration/play pushed right. */}
       <div className="flex items-center gap-2">
         <div className="flex min-w-0 flex-1 items-baseline gap-2">
-          {/* Tapping the time opens the native iOS wheel picker (B8); the
-              Edit sheet is the second, discoverable path to the same field.
-              Time is metadata, not content (#85) — sans, tabular-nums. */}
-          <span className="relative shrink-0">
-            <button
-              onClick={() => {
-                const el = timeInputRef.current
-                if (!el) return
-                if (typeof el.showPicker === 'function') el.showPicker()
-                else el.focus()
-              }}
-              className={cx(
-                'rounded-md font-semibold tabular-nums',
-                type_.sub,
-                tone.textPrimary,
-                tone.pressWash,
-              )}
-            >
-              {timeLabel(entry.capturedAt)}
-            </button>
-            <input
-              ref={timeInputRef}
-              type="time"
-              value={localTimeOf(entry.capturedAt)}
-              onChange={(e) => {
-                if (e.target.value) onSetTime(e.target.value)
-              }}
-              className="absolute inset-0 h-full w-full opacity-0"
-              tabIndex={-1}
-              aria-label="Change entry time"
-            />
-          </span>
           {vm.collapsedShowsLocation && entry.location && (
             <span className={cx('truncate', type_.sub, tone.textMuted)}>
               {locationName(entry.location)}
@@ -264,7 +267,7 @@ export function EntryCard({
           </button>
         </div>
       ) : (
-        <div className={cx('-mx-4 mt-3 flex flex-wrap items-center gap-1 border-t px-2 pt-2', tone.border)}>
+        <div className={cx('mt-3 flex flex-wrap items-center gap-1 border-t pt-2', tone.border)}>
           {/* Related memories (#83 v1) stay behind their own quiet reveal
               (#102 explicitly allows this) — the one piece of content this
               card doesn't show unconditionally, since computing it is a
@@ -422,7 +425,7 @@ export function EntryCard({
           <MiniMap location={entry.location} onClose={() => setMapOpen(false)} />
         </Suspense>
       )}
-    </Card>
+    </TimelineRow>
   )
 }
 
@@ -445,7 +448,7 @@ function RelatedRows({
 }) {
   const today = localDateOf(toLocalIso(new Date()))
   return (
-    <div className={cx('-mx-4 mt-3 flex flex-col gap-1 border-t px-4 pt-2', tone.border)}>
+    <div className={cx('mt-3 flex flex-col gap-1 border-t pt-2', tone.border)}>
       <span className={cx(type_.overline, tone.textFaint)}>Related</span>
       {rows.map((row) => {
         const why = reasonLabel(row.reasons, {
