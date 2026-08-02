@@ -57,6 +57,22 @@ export interface GeocacheRow {
 }
 
 /**
+ * A calendar-overlay log event (schema `capture.calendar-overlay.v1`,
+ * SPEC §3.6/§5.6). The event shape belongs to gcal/overlay (store/ must stay
+ * app-agnostic and never import gcal/), so rows are stored opaquely here
+ * beyond the key + index fields; gcal/overlay/types.ts owns the strong typing
+ * and gcal/overlay/store.ts is the store's only reader/writer.
+ */
+export interface OverlayEventRow {
+  /** The overlay event's id — the identity and this row's key. */
+  id: string
+  /** Always 'calendar-overlay' today; indexed like `events` for symmetry. */
+  stream: string
+  /** Per-stream ordering hint, allocated from the shared meta counter. */
+  seq: number
+}
+
+/**
  * A persisted assistant conversation. Message shape belongs to assistant/
  * (store/ must stay app-agnostic), so messages are stored opaquely here;
  * assistant/history.ts owns the strong typing.
@@ -111,6 +127,16 @@ interface TimeboxDB extends DBSchema {
     key: string
     value: StoredChatRow
   }
+  /**
+   * The calendar-overlay append-only log (owned by gcal/overlay; SPEC §3.6,
+   * §5.6). Keyed by event `id` with a `by-stream` index, mirroring `events`.
+   * Local-only until the multi-stream sync engine lands.
+   */
+  overlayEvents: {
+    key: string
+    value: OverlayEventRow
+    indexes: { 'by-stream': string }
+  }
 }
 
 export type TimeboxDatabase = IDBPDatabase<TimeboxDB>
@@ -118,7 +144,7 @@ export type TimeboxDatabase = IDBPDatabase<TimeboxDB>
 let dbPromise: Promise<TimeboxDatabase> | undefined
 
 export function getDb(): Promise<TimeboxDatabase> {
-  dbPromise ??= openDB<TimeboxDB>('timebox', 5, {
+  dbPromise ??= openDB<TimeboxDB>('timebox', 8, {
     async upgrade(db, oldVersion, _newVersion, tx) {
       if (oldVersion < 1) {
         const events = db.createObjectStore('events', { keyPath: ['stream', 'seq'] })
@@ -176,6 +202,17 @@ export function getDb(): Promise<TimeboxDatabase> {
         events.createIndex('by-stream', 'stream')
         if (db.objectStoreNames.contains('sync')) db.deleteObjectStore('sync')
         db.createObjectStore('sync', { keyPath: 'id' })
+      }
+      // Versions 6 and 7 are reserved for the in-flight settings and chats
+      // stream migrations, which may land before or after v8 — so this body
+      // is self-contained and additive (guarded by a contains check) and
+      // composes with them in either order.
+      if (oldVersion < 8 && !db.objectStoreNames.contains('overlayEvents')) {
+        // v8: the calendar-overlay append-only log (SPEC §3.6, §5.6), owned
+        // by gcal/overlay and stored opaquely here. Keyed by event id with a
+        // by-stream index, mirroring `events`; existing stores untouched.
+        const overlay = db.createObjectStore('overlayEvents', { keyPath: 'id' })
+        overlay.createIndex('by-stream', 'stream')
       }
     },
   })

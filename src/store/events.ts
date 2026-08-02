@@ -281,7 +281,7 @@ export async function deleteBlob(file: string): Promise<void> {
 export async function wipeAll(): Promise<void> {
   const db = await getDb()
   const tx = db.transaction(
-    ['events', 'blobs', 'sync', 'places', 'geocache', 'meta', 'chats'],
+    ['events', 'blobs', 'sync', 'places', 'geocache', 'meta', 'chats', 'overlayEvents'],
     'readwrite',
   )
   await Promise.all([
@@ -292,6 +292,7 @@ export async function wipeAll(): Promise<void> {
     tx.objectStore('geocache').clear(),
     tx.objectStore('meta').clear(),
     tx.objectStore('chats').clear(),
+    tx.objectStore('overlayEvents').clear(),
   ])
   await tx.done
 }
