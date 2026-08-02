@@ -8,7 +8,9 @@ import { localDateOf, toLocalIso } from '../contract/time'
 import { useAppStore } from '../store/appStore'
 import { usePendingDelete } from '../capture/usePendingDelete'
 import { Button, IconButton, ScreenHeader, Toast, cx, motion } from '../ui'
+import { DaySynthesisCard } from './DaySynthesisCard'
 import { DayTimeline } from './DayTimeline'
+import { useDaySynthesis } from './useDaySynthesis'
 
 function shiftDate(date: string, days: number): string {
   const d = new Date(`${date}T12:00:00`)
@@ -31,19 +33,29 @@ export default function DayScreen() {
   const navigate = useNavigate()
   const entries = useAppStore((s) => s.entries)
   const revoke = useAppStore((s) => s.revoke)
+  const appSettings = useAppStore((s) => s.appSettings)
   const del = usePendingDelete(revoke)
 
   const today = localDateOf(toLocalIso(new Date()))
   const date = params.date && /^\d{4}-\d{2}-\d{2}$/.test(params.date) ? params.date : today
+  const title = dayTitle(date, today)
 
   const dayEntries = entries
     .filter((e) => !e.revoked && e.id !== del.pendingId && localDateOf(e.capturedAt) === date)
     .sort((a, b) => a.capturedAt.localeCompare(b.capturedAt))
 
+  const synthesis = useDaySynthesis(
+    date,
+    dayEntries,
+    title,
+    appSettings.assistantEnabled,
+    appSettings.assistantModel,
+  )
+
   return (
     <div className={cx('flex flex-col gap-4 p-4', motion.fadeIn)}>
       <ScreenHeader
-        title={dayTitle(date, today)}
+        title={title}
         subtitle={`${dayEntries.length} ${dayEntries.length === 1 ? 'entry' : 'entries'}`}
         trailing={
           <div className="flex items-center gap-1">
@@ -70,6 +82,8 @@ export default function DayScreen() {
           </div>
         }
       />
+
+      <DaySynthesisCard synthesis={synthesis} assistantEnabled={appSettings.assistantEnabled} />
 
       <DayTimeline
         date={date}

@@ -651,6 +651,139 @@ covers `needsPlacePrompt` (prompts only for enabled, unlabelled locations).
   onDeleteEntry emptyTitle>` — the merged local + calendar timeline (below). The
   screen passes only the day's filtered real entries; the calendar fetch, overlays,
   and empty state live inside the timeline.
+- **Day-as-reward-loop artifact (#82):** between `ScreenHeader` and `DayTimeline`,
+  `<DaySynthesisCard synthesis assistantEnabled>` renders the deterministic stat
+  line plus, when `appSettings.assistantEnabled` is true, the opt-in daily prose
+  affordance. `useDaySynthesis(date, dayEntries, title, appSettings.assistantEnabled,
+  appSettings.assistantModel)` supplies both; see below.
+
+### src/dayview/synthesis.ts
+
+**Purpose:** Pure deterministic day synthesis (#82) — the always-on stat line, no
+I/O, tested directly (`synthesis.test.ts`, no jsdom).
+
+**Exports:**
+
+- `interface DaySynthesis { moments: number; places: number; statLine: string }`.
+- `daySynthesis(entries: readonly Entry[]): DaySynthesis` — `moments` is
+  `entries.length`; `places` is the count of distinct `location.placeLabel`s
+  (entries without a label, or with only a bare coordinate, don't count);
+  `statLine` is `"N moments · M places"` with the places segment omitted when
+  zero, and the empty string for an empty day (`DaySynthesisCard` renders nothing
+  in that case). Singular/plural nouns per count.
+- `interface EntryTextSignal { id: string; textLength: number }` and
+  `synthesisInputHash(entries, texts: readonly EntryTextSignal[]): string` — an
+  FNV-1a hash over each entry's id + folded text length (entries missing a
+  `texts` row count as length 0), sorted by id before hashing so it is stable
+  under reordering. Used as the derived-prose cache key (`synthesisCache.ts`):
+  it changes when an entry is added, removed/revoked, or amended in a way that
+  changes its folded text — never on envelope metadata (location, seq) alone.
+
+### src/dayview/prosePrompt.ts
+
+**Purpose:** Pure prompt assembly for the opt-in daily prose — no I/O, no SDK,
+tested directly (`prosePrompt.test.ts`).
+
+**Export:** `buildDaySummaryPrompt(dateLabel: string, digestText: string):
+{ system: string; user: string }` — the two chat messages sent to the LLM.
+Byte-stable for a fixed `(dateLabel, digestText)` pair (cache-key sanity: the
+same digest always produces the same request). Takes only rendered digest text
+(the same `formatDigest` output the assistant tools already send — transcripts,
+notes, place labels, media counts) and never touches blob/binary fields.
+
+### src/dayview/dayDigest.ts
+
+**Purpose:** Builds the digest text the daily prose is generated from. Not pure
+(reads text-attachment blobs via `getBlob`); untested directly (I/O), kept
+deliberately tiny.
+
+**Export:** `buildDayDigest(entries): Promise<{ items: DigestItem[]; text: string
+}>` — `items` mirrors `entries` positionally (so callers can zip it with
+`entries` for `synthesisInputHash`'s per-entry text lengths without a second
+pass); `text` is `formatDigest` on the chronologically sorted items. Re-implements
+`assistant/tools.ts`'s `toDigestItem` locally rather than importing it:
+`tools.ts` imports the `ai` package (for `tool`/`jsonSchema`), and importing it
+from `dayview/` would pull the AI SDK chunk into the Day screen's bundle — the
+whole point of #82 requirement 7. `formatDigest`/`DigestItem` themselves live in
+`assistant/context.ts`, which has no SDK dependency, so importing those is safe
+and keeps the digest format identical to what the chat assistant sends.
+
+### src/dayview/daySummaryClient.ts
+
+**Purpose:** The opt-in prose's network call (#82) — a single direct `fetch` to
+the OpenAI-compatible chat-completions endpoint, deliberately **not**
+`assistant/transport.ts`'s `DirectChatTransport`/`ToolLoopAgent` (that pulls in
+`ai` + `@ai-sdk/openai-compatible`, the same chunk `dayDigest.ts` avoids above;
+it is already `ChatScreen`'s own lazy chunk, excluded from the SW precache in
+`vite.config.ts`). No streaming, no tools, no history — one request, one
+completion.
+
+**Export:** `fetchDaySummary(prompt: DaySummaryPrompt, model: string):
+Promise<string | undefined>` — posts to `` `${ASSISTANT_BASE_URL}/chat/completions` ``
+(imported from `assistant/config.ts`, which has no SDK dependency either) with
+`stream: false`; returns the trimmed completion text, or `undefined` on any
+failure (offline, non-2xx, malformed body, empty completion) — never throws, so
+a failed generation never blocks or replaces the deterministic stat line
+already on screen.
+
+### src/dayview/synthesisCache.ts
+
+**Purpose:** The derived-data cache the daily prose lives in (#82 decision,
+recorded in the issue: derived, rebuildable data must not enter the append-only
+event log — SPEC §3.2 #5). Backed by the existing IndexedDB `meta` key-value
+store (`store/db.ts`), one row per day.
+
+**Exports:** `interface DaySynthesisCacheEntry { date; inputHash; prose;
+generatedAt }`; `readDaySynthesisCache(date)` / `writeDaySynthesisCache(entry)` —
+best-effort, never throw (same convention as `places/geocode.ts`'s cache).
+Keyed `` `daySynthesis:<date>` ``. The deterministic stat line itself is not
+cached — `daySynthesis` is cheap enough to recompute every render.
+
+### src/dayview/useDaySynthesis.ts
+
+**Purpose:** Wires the always-on stat line to the explicit-tap-only prose.
+
+**Export:** `useDaySynthesis(date, entries, dateLabel, assistantEnabled, model):
+UseDaySynthesisResult` — `{ stat: DaySynthesis; prose?: string; proseState:
+'idle' | 'loading' | 'ready' | 'error'; canGenerate: boolean; generate: () =>
+void }`.
+
+**Key behaviors:**
+
+- `stat` is computed synchronously from `entries` every render (`daySynthesis`)
+  — no gate, no opt-in check, zero network.
+- On mount and whenever the day's actual content changes (a stable
+  `id:lastEventSeq` join, not `entries`' array identity, which DayScreen
+  recreates every render), an effect reads the entry's digest, computes
+  `synthesisInputHash`, and checks `synthesisCache.ts` for a matching row —
+  **cache lookup only, never a network call.** A miss or stale hash (day's
+  entries changed since the cached prose was generated) leaves `prose`
+  undefined and `proseState: 'idle'`.
+- `generate()` is the **only** path that calls the network
+  (`daySummaryClient.fetchDaySummary`); nothing in this hook or `DayScreen`
+  calls it automatically. On success it writes the new `{inputHash, prose}` row
+  to the cache and sets `proseState: 'ready'`; on failure (including no
+  completion text) it sets `proseState: 'error'` without touching `stat`.
+- `canGenerate` additionally requires `assistantEnabled` — the hook enforces the
+  AI opt-in gate itself as a second line of defense, even though `DaySynthesisCard`
+  already hides the affordance entirely when the setting is off.
+
+### src/dayview/DaySynthesisCard.tsx
+
+**Purpose:** Presentational half of the artifact — renders `useDaySynthesis`'s
+output between `ScreenHeader` and `DayTimeline`.
+
+**Export:** `DaySynthesisCard({ synthesis, assistantEnabled })`.
+
+**Behavior:** renders nothing (`null`) when `stat.statLine` is empty (an empty
+day). Otherwise a `Card` with the stat line always shown; the "Generate
+summary"/"Regenerate summary" button and any cached/fresh prose render only
+when `assistantEnabled` is true — the affordance and the prose are both
+invisible when the opt-in is off, not just disabled. Prose renders in the quiet
+derived-content treatment (`type_.bodySmall`/`tone.textMuted`, italic) — the
+same pairing #80 specs for machine inference — and is plain read-only text with
+no edit affordance; regenerating replaces it wholesale via a new tap. A failed
+generation shows a quiet caption-level note without hiding the stat line.
 
 ### src/dayview/DayTimeline.tsx
 
@@ -830,3 +963,25 @@ re-throw, matching the appStore `guard` convention.
 - **Don't edit `EntryCard` for calendar needs:** pseudo-entries have their own card;
   real entries flow through `EntryList` unchanged so capture-card behavior stays
   identical on both screens.
+- **Day synthesis prose never leaves the event log path unaffected (#82):** the
+  cached prose (`synthesisCache.ts`, IndexedDB `meta` key `daySynthesis:<date>`)
+  is derived, rebuildable data, never a capture/amend/revoke event, never synced,
+  and never read by `fold`. Losing it (wipe, cache miss) only means the next
+  explicit "Generate summary" tap regenerates it; it never blocks or corrupts the
+  entries it summarizes.
+- **The daily prose only ever fires on an explicit tap:** `useDaySynthesis`'s
+  mount/content-change effect *only* reads the cache — it never calls
+  `fetchDaySummary`. Any change that makes the prose regenerate on screen open
+  (rather than on `generate()`) violates the #82/#89 product decision and must
+  be reverted.
+- **The AI opt-in gates the daily prose affordance, not just the call:**
+  `DaySynthesisCard` renders no "Generate summary" button, no prose, and no
+  error note at all when `appSettings.assistantEnabled` is false — `useDaySynthesis`
+  additionally refuses to generate in that state as a second guard. Only the
+  deterministic stat line is visible with the opt-in off.
+- **Never import `assistant/transport.ts` (or `assistant/tools.ts`) from
+  `dayview/`:** both pull in the `ai`/`@ai-sdk/openai-compatible` packages
+  (ChatScreen's own lazy chunk). The daily prose instead uses a direct `fetch`
+  (`daySummaryClient.ts`) and a local digest builder (`dayDigest.ts`) that only
+  import the SDK-free `assistant/config.ts`/`assistant/context.ts`, keeping the
+  Day screen in the main bundle.
