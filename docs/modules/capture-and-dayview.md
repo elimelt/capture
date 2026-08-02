@@ -22,6 +22,13 @@ add/remove), and `revoke` deletes them. All writes land in the append-only local
 log (`src/store/events.ts`, folded per `src/contract`) and are eagerly drained to Google
 Drive; `SyncBadge` reflects the per-event-id upload status from `src/store/db.ts`.
 
+Each `EntryCard` defaults to a **collapsed** state (#78): time, place-label context,
+the entry's primary text (clamped to two lines) or its primary clip's play button, and
+one overflow affordance — no unlabeled action icons. Tapping the card content or the
+overflow button **expands** the card (view-local `useState`, never persisted, never an
+event) to reveal the full attachment body, a location preview, and the same edit
+affordances as labelled buttons (icon + text) instead of a bare icon row.
+
 ### `src/dayview`
 
 Screen 2 (SPEC §4.2): one merged, time-sorted per-day timeline of local entries and
@@ -150,51 +157,102 @@ hides the entry immediately and appends the revoke only after the undo window.
 It also reads `streamSettings.maxClipSec` and looks up each entry's sync status by
 `entry.id` from `syncStatuses`.
 
+### src/capture/cardView.ts
+
+**Purpose:** Pure view-model for the collapsed-vs-expanded entry card (#78) — no I/O, no
+React; tested directly (`cardView.test.ts`). Builds on `groupAttachments`; never
+re-derives grouping semantics, only picks a primary among them.
+
+**Exports:**
+
+- `CardViewModel` — `{ primaryText?: { file: string; derivedFrom?: string };
+  primaryAudio?: Attachment; collapsedShowsLocation: boolean; extraCount: number }`.
+- `cardViewModel(entry, groups): CardViewModel` — `primaryText` is the first transcript,
+  else the first user note (undefined for an audio-only or photo-only entry);
+  `primaryAudio` is the first audio attachment (the one that plays from the card
+  header); `collapsedShowsLocation` mirrors the header's place-label/address condition;
+  `extraCount` is the count of attachments that are neither `primaryText` nor
+  `primaryAudio` — everything the collapsed card doesn't surface, driving the overflow
+  button's "+N" hint. Actions (edit/delete/etc.) are not attachments and are never
+  counted.
+
+### src/capture/cardView.test.ts
+
+Vitest unit tests for `cardViewModel`: all-empty model for an attachment-and-location-
+free entry, transcript-over-note primacy, audio-only entries (`primaryText` undefined,
+audio as primary), exact hidden-attachment counting, and `collapsedShowsLocation` for
+place label / address / bare-coordinate / no-location cases.
+
 ### src/capture/EntryCard.tsx
 
-**Purpose:** One entry's card: header (editable time, place label, sync badge, duration,
-play button), attachment body, optional mini map, action row, and the sheets/inputs those
-actions open.
+**Purpose:** One entry's card, defaulting to a **collapsed** state and expanding
+in-place to reveal everything else (#78): header (editable time, place label, sync
+badge, duration, play button), collapsed primary-text preview or full attachment body +
+mini map when expanded, labelled action row (expanded only), and the sheets/inputs
+those actions open.
 
 **Exports:** `EntryCard(props: EntryCardProps)` and `timeLabel(iso: string): string`
 (locale time like "9:04 AM"). Props: `entry`, `maxClipSec`, `syncStatus?`, and callbacks
 `onDelete`, `onSetTime(time)`, `onAddNote(text)`, `onAddPhoto(file)`,
 `onAddAudio(result)`, `onEditText(oldFile, text, derivedFrom?)`,
-`onRemoveAttachment(file)`, `onSetLocation(location | null)`, `onApplyEdit(patch)`.
+`onRemoveAttachment(file)`, `onSetLocation(location | null)`, `onApplyEdit(patch)` —
+unchanged by the collapse/expand work, so `EntryList`'s amend wiring needed no changes.
 
 **Key behaviors:**
 
-- **Header grouping:** one flex row — time + place label tightly grouped on the left,
-  sync badge + clip duration + play button pushed to the far right. The time label has
-  no underline decoration; it is still the tap target for the native picker (below),
-  and the Edit sheet provides the second, labelled path to the same field.
+- **Collapsed by default (#78):** `expanded` is `useState(false)`, view-local only —
+  never persisted, never an event; a fresh card (e.g. after a list re-render) always
+  starts collapsed. The pure `cardViewModel(entry, groupAttachments(entry.attachments))`
+  decides what the collapsed card shows.
+- **Header grouping (always visible, collapsed or expanded):** one flex row — time +
+  place label tightly grouped on the left, sync badge + clip duration + play button
+  pushed to the far right. The time label has no underline decoration; it is still the
+  tap target for the native picker (below), and the Edit sheet provides the second,
+  labelled path to the same field. The place label renders only when
+  `vm.collapsedShowsLocation` is true.
 - **Time editing (B8):** the time label is a button layered over an invisible
   `<input type="time">`; tapping calls `showPicker()` (fallback `focus()`) so iOS shows
   its native wheel picker. `onChange` fires `onSetTime` only for non-empty values.
 - **Primary clip playback (B10):** the *first* audio attachment plays from the header
   via `useAudioPlayback(audio?.file)` as an `accent`-variant `IconButton` (accent wash +
   border so it reads as interactive against the card); while playing, a progress fill
-  widens behind the ▶/■ icon. Later clips render inside `AttachmentBody`.
-- **Per-card recorder:** "+ audio" uses its own `useRecorder()` instance so entries can
-  hold multiple clips; while recording, the action row is replaced by a compact timer
-  bar with Discard/Done. If that recorder errors, the "+ audio" button becomes a
-  "mic unavailable" button that just calls `rec.resetError`.
+  widens behind the ▶/■ icon. This is the collapsed card's "play" affordance; later
+  clips render inside `AttachmentBody`, expanded only.
+- **Collapsed content:** when collapsed and `vm.primaryText` is set, `PrimaryTextPreview`
+  (private) loads the text via `getBlob` (same stale-guarded pattern as
+  `AttachmentBody`'s `NoteText`) and renders it `line-clamp-2`, styled `bodyStrong` in
+  `textPrimary` (transcript) or `textSecondary` (note); tapping it expands the card
+  rather than opening the inline editor — editing lives behind expansion. Audio-only
+  entries show no separate content block; the header play button already represents the
+  primary clip.
+- **Expanded content:** the full `AttachmentBody` (all attachments, inline editing) plus
+  the `MiniMap` location preview (when `entry.location` is set) mount only once
+  `expanded` is true — strictly lazier than before, since `MiniMap`'s chunk now loads
+  only for an expanded card with a location, not every collapsed one.
+- **Per-card recorder:** "+ audio"/"Add audio" uses its own `useRecorder()` instance so
+  entries can hold multiple clips; while recording, the footer (labelled actions or the
+  overflow toggle) is replaced by a compact timer bar with Discard/Done, regardless of
+  collapse state (recording can only start from the expanded footer, so the card is
+  already expanded whenever this bar shows). If that recorder errors, "Add audio"
+  becomes a "mic unavailable" button that just calls `rec.resetError`.
 - **Lazy Leaflet:** `MiniMap` and `LocationSheet` are `lazy()` imports wrapped in
-  `Suspense fallback={null}`, keeping the Leaflet JS+CSS chunk out of the initial bundle
-  and loading it only for cards that show or edit a location.
-- **Header labels:** shows `location.placeLabel` or `near <address>` when present; shows
-  `durationSec`s for the primary clip; `SyncBadge` reflects `syncStatus`.
-- Hidden photo input (camera capture) and a `TextSheet` for "+ note" mirror the
+  `Suspense fallback={null}`, keeping the Leaflet JS+CSS chunk out of the initial bundle.
+- Hidden photo input (camera capture) and a `TextSheet` for "Add note" mirror the
   capture-screen patterns.
-- **Action bar:** a full-bleed hairline divider separates the card's content from a
-  footer of icon-only 44 px `IconButton`s (no text labels; names live in `aria-label`
-  and `title`): add actions on the left — note/photo/audio render the same glyphs as
-  the main CTA (text cursor/camera/mic via `captureIcon` from `src/ui`, so an entry's add
-  actions share the capture control's visual language) plus location
-  (`PinIcon`/`PlusIcon`) — and on the right, Edit (`SlidersIcon` — the text cursor already
-  means *text* here) opening `EditEntrySheet` (Save → `onApplyEdit(patch)`), then
-  Delete (`TrashIcon`, `danger` variant — muted clay) at the far edge. A recorder
-  error swaps the audio button for a labelled "mic unavailable" reset button.
+- **Labelled action row (expanded only, #78):** a full-bleed hairline divider separates
+  the card's content from a footer of `Button` (`ghost`/`dangerGhost`, `sm`) rows — icon
+  *and* text label this time, answering the design review's "six unlabeled icons are
+  conceptually ambiguous" complaint: "Add note", "Add photo", "Add audio" (note/photo/
+  audio render the same glyphs as the main CTA via `captureIcon` from `src/ui`), then
+  "Location" (`PinIcon`/`PlusIcon`), then, pushed right, "Edit" (`SlidersIcon` — the
+  text cursor already means *text* here) opening `EditEntrySheet` (Save →
+  `onApplyEdit(patch)`), then "Delete" (`TrashIcon`, `dangerGhost` variant).
+- **Overflow/expand affordance:** a real `<button aria-expanded>` (never a hover- or
+  gesture-only trap) below the content, labelled "Show more" (plus a `vm.extraCount`
+  "+N" hint when attachments are hidden) or "Show less", with a `ChevronDownIcon` that
+  rotates 180° on expand. It is the collapsed card's only extra chrome, and it, along
+  with tapping the collapsed primary-text preview, is the way to reach the expanded
+  state.
 
 ### src/capture/editPlan.ts
 
@@ -700,6 +758,13 @@ re-throw, matching the appStore `guard` convention.
   requesting a new one commits the previous immediately.
 - **First audio attachment is special:** it plays from the card header and supplies the
   header duration; `AttachmentBody` renders only clips 2..n.
+- **Card expansion is view state, never contract state (#78):** `EntryCard`'s `expanded`
+  flag is local `useState`, never written to the event log and never read back from it —
+  the append-only log carries user data, not UI state. Every card starts collapsed.
+- **The six-icon action row only exists expanded:** the collapsed card renders no
+  add/edit/delete affordances at all, only the pure-view-model-driven overflow button;
+  all edit flows (note/photo/audio/location/edit/delete) are reachable exactly as
+  before, just one tap further behind expansion.
 - **Leaflet is always lazy:** `MiniMap` and `LocationSheet` load as separate chunks;
   `MiniMap` must re-center imperatively (`Recenter`) because `MapContainer` ignores
   `center` prop changes after mount.
