@@ -47,7 +47,7 @@ interface DayTimelineProps {
   /** Copy one real entry as labeled plain text. */
   onCopyEntry: (entry: Entry) => void
   /** Open an assistant conversation focused on one real entry ("Ask AI"). */
-  onAskEntry?: (entry: Entry) => void
+  onAskEntry?: (entry: Entry, intent: string) => void
   /** EmptyState title when the merged timeline has nothing at all. */
   emptyTitle: string
 }

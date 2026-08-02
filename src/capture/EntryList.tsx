@@ -15,7 +15,7 @@ interface EntryListProps {
   /** Request a plain-text representation of an entry from the parent. */
   onCopy?: (entry: Entry) => void
   /** Open an assistant conversation focused on an entry (card "Ask AI"). */
-  onAsk?: (entry: Entry) => void
+  onAsk?: (entry: Entry, intent: string) => void
   /**
    * Timeline-rail continuity (the merged Day view splits its rail into runs of
    * consecutive entries separated by calendar pseudo-entries): whether this

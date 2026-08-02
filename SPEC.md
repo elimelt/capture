@@ -1174,10 +1174,12 @@ separable by construction.
 
 - Off by default (`AppSettings.assistantEnabled`). The assistant has no tab of
   its own: the `/chat` route is reached from an entry card's "Ask AI" action
-  (shown only once enabled), which opens a conversation focused on that entry
-  (the system prompt embeds the entry's plain-text rendering). The chat bundle
-  is lazy-loaded, and no request leaves the device until the user sends a
-  message.
+  (shown only once enabled). That action first asks what the user wants to do;
+  submitting the intent opens a conversation focused on the entry (the system
+  prompt embeds the entry's plain-text rendering) and sends the intent as the
+  first user turn so the agent can answer or perform the requested action. The
+  chat bundle is lazy-loaded, and no request leaves the device before the user
+  submits that intent.
 - Endpoint: `https://llm.elimelt.com/v1` — OpenAI-compatible, CORS-gated to the
   app origin, no API key. Model is user-selectable from a curated list
   (`AppSettings.assistantModel`, default `gpt-oss:20b`).

@@ -380,7 +380,7 @@ export default function CaptureScreen() {
             onCopy={(entry) => void copyEntry(entry)}
             onAsk={
               appSettings.assistantEnabled
-                ? (entry) => navigate('/chat', { state: { entryId: entry.id } })
+                ? (entry, intent) => navigate('/chat', { state: { entryId: entry.id, intent } })
                 : undefined
             }
             newestFirst

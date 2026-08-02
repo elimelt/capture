@@ -69,9 +69,10 @@ add-on (always an amend — see below), either an `EmptyState` or an `EntryList`
 **only today's most recent entry** (SPEC §4.1's latest-entry card — the full day lives
 on the Day screen, which is what keeps the two views distinct; the list gets
 `newestFirst` so the card's attachment sub-timeline also reads newest-first, matching
-the screen's direction, and — when `assistantEnabled` — `onAsk`, which navigates to
-`/chat` with `{ state: { entryId } }` to open an entry-focused assistant
-conversation), an optional `TextSheet`
+the screen's direction, and — when `assistantEnabled` — `onAsk`, which opens an intent
+sheet and, on submit, navigates to `/chat` with `{ state: { entryId, intent } }` to
+open an entry-focused assistant conversation and immediately send the intent), an
+optional `TextSheet`
 (plain text capture, and a second instance for the accelerator's note add-on), and one
 of three toasts (captured-with-Undo, deleted-with-Undo, discarded).
 
@@ -627,8 +628,10 @@ The card computes its own `EntryLifecycle` from `sync` + `hasPendingEnrichment(e
   location" (`PlusIcon`/`PinIcon`), "Edit entry" (`SlidersIcon` — opens
   `EditEntrySheet`), "Copy entry" (`CopyIcon`, only when `onCopy` is provided),
   "Ask AI about this entry" (`SparkleIcon`, only when `onAsk` is provided — the
-  screens pass it only when `assistantEnabled`; it navigates to `/chat` with the
-  entry id in router state, opening an entry-focused assistant conversation), and
+  screens pass it only when `assistantEnabled`; it opens an intent `TextSheet`, then
+  navigates to `/chat` with the entry id and submitted intent in router state,
+  opening an entry-focused assistant conversation whose first user turn is that
+  intent), and
   "Delete entry" (`TrashIcon`, `danger` variant) pushed to the right edge
   (`ml-auto`) so the destructive action stands apart. Every action still carries the
   same glyph as the main CTA/edit affordances via `captureIcon` (`src/ui`), and

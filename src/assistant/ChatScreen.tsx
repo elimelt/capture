@@ -189,11 +189,13 @@ let dispatchedNavKey: string | null = null
 export default function ChatScreen() {
   const model = useAppStore((s) => s.appSettings.assistantModel)
   const location = useLocation()
-  const entryId =
-    typeof (location.state as { entryId?: unknown } | null)?.entryId === 'string'
-      ? (location.state as { entryId: string }).entryId
-      : undefined
+  const dispatch = (location.state as { entryId?: unknown; intent?: unknown } | null) ?? {}
+  const entryId = typeof dispatch.entryId === 'string' ? dispatch.entryId : undefined
+  const intent = typeof dispatch.intent === 'string' ? dispatch.intent : undefined
   const isNewDispatch = entryId !== undefined && dispatchedNavKey !== location.key
+  const [intentToSend, setIntentToSend] = useState<string | undefined>(() =>
+    isNewDispatch ? intent : undefined,
+  )
 
   const [chat, setChat] = useState<Chat<UIMessage> | null>(() =>
     cache && !isNewDispatch
@@ -207,6 +209,7 @@ export default function ChatScreen() {
   useEffect(() => {
     if (entryId !== undefined && dispatchedNavKey !== location.key) {
       dispatchedNavKey = location.key
+      setIntentToSend(intent)
       setChat(getChat(model, freshSeed(), entryId))
       return
     }
@@ -221,7 +224,7 @@ export default function ChatScreen() {
     return () => {
       cancelled = true
     }
-  }, [model, entryId, location.key])
+  }, [model, entryId, intent, location.key])
 
   if (!chat) return null
 
@@ -229,6 +232,7 @@ export default function ChatScreen() {
     <ChatView
       chat={chat}
       model={model}
+      initialIntent={intentToSend}
       onReset={() => setChat(getChat(model, freshSeed()))}
       onLoadChat={(stored) => setChat(getChat(model, stored))}
     />
@@ -238,11 +242,13 @@ export default function ChatScreen() {
 function ChatView({
   chat,
   model,
+  initialIntent,
   onReset,
   onLoadChat,
 }: {
   chat: Chat<UIMessage>
   model: string
+  initialIntent?: string
   onReset: () => void
   onLoadChat: (stored: StoredChat) => void
 }) {
@@ -251,6 +257,7 @@ function ChatView({
   const [historyOpen, setHistoryOpen] = useState(false)
   const navigate = useNavigate()
   const keyboardInset = useKeyboardInset()
+  const sentInitialIntent = useRef<string | null>(null)
   // Entry-focused conversation (opened from a card's "Ask AI"): different
   // empty-state copy/suggestions; the module cache carries the focus.
   const entryFocused = cache?.chat === chat && cache.focusEntryId !== undefined
@@ -259,6 +266,16 @@ function ChatView({
   const pinnedRef = useRef(true)
 
   const busy = status === 'submitted' || status === 'streaming'
+
+  // An entry dispatch has already collected the user's intent in the prompt
+  // sheet. Send it as the first chat turn so the agent can immediately use the
+  // entry context and take the requested action.
+  useEffect(() => {
+    if (!initialIntent || sentInitialIntent.current === initialIntent) return
+    sentInitialIntent.current = initialIntent
+    pinnedRef.current = true
+    void sendMessage({ text: initialIntent })
+  }, [initialIntent, sendMessage])
 
   // Mid-turn submits queue instead of racing the stream (the SDK starts a
   // second concurrent request if sendMessage runs while one is in flight).

@@ -117,7 +117,7 @@ export default function DayScreen() {
         onCopyEntry={(entry) => void copyEntry(entry)}
         onAskEntry={
           assistantEnabled
-            ? (entry) => navigate('/chat', { state: { entryId: entry.id } })
+            ? (entry, intent) => navigate('/chat', { state: { entryId: entry.id, intent } })
             : undefined
         }
         emptyTitle={`Nothing logged ${date === today ? 'yet today' : 'this day'}`}
