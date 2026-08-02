@@ -203,7 +203,7 @@ function segmentKeyOf(row: SyncStatusRow): string | null {
 }
 
 /**
- * Group eligible items into commit units (SPEC §5.7, §8.4). Items a crashed
+ * Group queued items into commit units (SPEC §5.7, §8.4). Items a crashed
  * drain already assigned to a segment regroup under that exact segment
  * (membership, name, and id are pinned by the persisted assignment); the
  * rest form runs of consecutive same-partition items — a run of ≥ 2 becomes
