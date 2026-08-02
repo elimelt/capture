@@ -8,8 +8,10 @@ by calling **read tools** over the zustand store and IndexedDB — it never embe
 whole log in the prompt — and, on explicit user request, can **create or update entries**
 through two narrow write tools that append ordinary capture/amend events via the store's
 own actions (the single write path; the append-only log is never mutated). Conversations
-are persisted to the IndexedDB `chats` store so they survive iOS killing the standalone
-PWA, and are browsable/searchable from a history sheet.
+are event-sourced in the `assistant-chats` system stream (SPEC §3.1, §10.1) — so they
+survive iOS killing the standalone PWA *and* sync to Drive through the same manual
+multi-stream cycle as everything else — and are browsable/searchable from a history
+sheet. Deleting a chat is a soft-delete (`revoke`; SPEC §11).
 
 The feature is gated by `AppSettings.assistantEnabled`; none of this code loads until the
 user enables it (`ChatScreen` is imported lazily by the app shell).
@@ -21,7 +23,9 @@ Responsibilities by file:
 - `tools.ts` — the three read tools (`list_entries`, `search_entries`, `get_places`) and
   the two write tools (`create_entry`, `update_entry`), plus the `EntryWriter` boundary.
 - `transport.ts` — `ChatTransport` that runs a `ToolLoopAgent` in-process and streams UI chunks.
-- `history.ts` — chat persistence (IndexedDB `chats` store) plus pure title/search helpers.
+- `chatSync.ts` — chats as events in the `assistant-chats` stream: create/append/revoke
+  writers over `store/events.ts` and fold-based readers.
+- `history.ts` — pure title/search helpers plus thin CRUD delegates to `chatSync.ts`.
 - `sendQueue.ts` — pure state machine for mid-turn message queueing and steering.
 - `ChatScreen.tsx` — the chat UI, wiring everything above together.
 - `ChatHistorySheet.tsx` — bottom sheet listing/searching/deleting past conversations.
@@ -159,15 +163,59 @@ Notable behaviors:
   `UIMessage<unknown, never, …>` (no data parts), and this chat uses the plain `UIMessage`
   shape (text plus generic tool parts), so the widening is safe.
 
+### src/assistant/chatSync.ts
+
+Chats as a synced stream: every conversation lives in the `assistant-chats` system
+stream, reusing the generic event contract and `contract/fold` **unmodified** and
+writing exclusively through `store/events.ts` (the single write path), so chat events
+get sync rows + blobs and the multi-stream `drainSync` pushes/pulls them like any
+other stream's.
+
+The mapping onto the entry model:
+
+- **Create chat** = one `capture` event with no attachments; the event's `id` **is**
+  the chat id from then on.
+- **Every message** (including the first) = one `amend` targeting the chat id,
+  carrying one `text`/`application/json` attachment whose blob is a
+  `capture.chatmessage.v1` envelope — `{ schema, message: UIMessage }`, wrapping the
+  third-party message shape so the payload can version independently of the `ai`
+  package.
+- **Delete chat** = one `revoke` (**soft-delete**, SPEC §11): the chat leaves every
+  list, but its events and message blobs stay in the local log and, once synced, in
+  Drive; true erasure is the same out-of-band Drive-file deletion as for any entity.
+
+Cross-device convergence is inherited, not implemented: fold applies amends in
+`compareEvents` order (seq → loggedAt → id), which is exactly message order, so two
+devices appending to one chat offline converge to the same deterministic order on
+every replica with zero custom merge code.
+
+Exports:
+
+- `CHATS_STREAM = 'assistant-chats'`, `CHAT_MESSAGE_PAYLOAD_SCHEMA = 'capture.chatmessage.v1'`,
+  `interface ChatMessagePayload` — pinned against the duplicates in
+  `store/migrateChatsV1.ts` by a test (store/ must not import assistant/).
+- `createChat(): Promise<string>`, `appendChatMessage(chatId, message)`,
+  `deleteChatStream(chatId)` — the three writers.
+- `interface SyncedChat` — `{ id, createdAt, updatedAt, messages: UIMessage[] }`;
+  `createdAt` is the capture's `loggedAt`, `updatedAt` the `loggedAt` of the last
+  event that touched the chat.
+- `loadChat(id)`, `loadAllChats()` (most recently touched first),
+  `loadMostRecentChat()` — full loads; read all of the relevant chats' blobs.
+- `loadChatSummaries(): Promise<ChatSummarySource[]>` — the summary source with an
+  explicit **perf contract**: at most one blob read per chat (the first attachment,
+  which is always the first message, for the title; `messageCount` comes free from
+  `attachments.length`). Unreadable/foreign payload blobs are skipped, never thrown.
+- `messagesSince(persistedCount, messages)` — pure persistence-on-settle helper for
+  `ChatScreen` (the messages not yet appended), unit-testable without mounting.
+
 ### src/assistant/history.ts
 
-Chat persistence over the IndexedDB `chats` store (via `getDb()` from `../store/db`; the
-store itself and the v2→v3 migration live there). Each conversation is one row; "New
-chat" starts a fresh row, past rows stay browsable, and Settings → wipe clears the store
-wholesale (`wipeAll` in `store/events`).
+Pure presentation helpers over the synced chats plus thin CRUD delegates to
+`chatSync.ts` — the module keeps the API the history sheet and chat screen consume.
+"New chat" starts a fresh conversation, past ones stay browsable, delete is a soft
+revoke, and Settings → wipe clears the whole log (`wipeAll` in `store/events`).
 
-- `interface StoredChat` — `{ id, createdAt, updatedAt, messages: UIMessage[] }`;
-  timestamps are ISO local time and the **caller** bumps `updatedAt` on every save.
+- `type StoredChat = SyncedChat` — the conversation shape the UI renders.
 - `interface ChatSummary` — `{ id, createdAt, updatedAt, title, messageCount }`; what the
   history list renders (no message payloads).
 - `chatTitle(messages: UIMessage[]): string` — text of the first `user` message,
@@ -176,12 +224,10 @@ wholesale (`wipeAll` in `store/events`).
   word-AND match: every whitespace-separated query word must appear somewhere in the
   conversation's concatenated text (any message, any order). Empty/whitespace query
   returns everything. Pure so the history sheet can filter as-you-type without touching idb.
-- `loadChat(id): Promise<StoredChat | undefined>`, `saveChat(chat): Promise<void>`
-  (upsert), `deleteChat(id): Promise<void>`.
-- `loadAllChats(): Promise<StoredChat[]>` — all rows sorted by `updatedAt` descending.
-- `listChats(): Promise<ChatSummary[]>` — summaries in the same order.
-- `loadMostRecentChat(): Promise<StoredChat | undefined>` — boot hydration ("pick up
-  where the user left off").
+- `listChats(): Promise<ChatSummary[]>` — summaries via `loadChatSummaries()` +
+  `chatTitle` (inherits the ≤ one-blob-per-chat contract).
+- `deleteChat(id)` — delegates to `deleteChatStream`.
+- Re-exports `loadChat`, `loadAllChats`, `loadMostRecentChat` from `chatSync.ts`.
 
 ### src/assistant/sendQueue.ts
 
@@ -226,21 +272,28 @@ the events queue for the normal manual sync.
 
 Conversation lifecycle:
 
-- A **module-scope `cache`** (`{ model, chatId, createdAt, chat }`) keeps the active
-  `Chat` instance alive across tab switches within one JS lifetime. `getChat(model, seed)`
-  returns the cached chat when model and id match; for the same conversation with a
-  different model it re-creates the transport but **carries over the live messages**;
-  otherwise it builds a fresh `Chat` from the seed's stored messages.
+- A **module-scope `cache`** (`{ model, chatId, createdAt, persisted, persistedCount, chat }`)
+  keeps the active `Chat` instance alive across tab switches within one JS lifetime.
+  `getChat(model, seed)` returns the cached chat when model and id match; for the same
+  conversation with a different model it re-creates the transport but **carries over
+  the live messages** (and persistence bookkeeping); otherwise it builds a fresh
+  `Chat` from the seed's stored messages (`persisted`/`persistedCount` seeded from
+  `seed.messages.length`).
 - On first mount in a JS lifetime, a `useEffect` hydrates the most recent conversation
-  from IndexedDB (`loadMostRecentChat`), falling back to `freshSeed()`
-  (`crypto.randomUUID()`, empty messages). Until hydration resolves the component renders
-  `null`.
-- **Persistence**: each settled turn (`status === 'ready'` or `'error'`, non-empty
-  messages) is saved via `saveChat` with a bumped `updatedAt` — not per-delta, since
-  streaming would hammer idb. Each save upserts the full message array, so interleaved
-  queued turns can't drop persistence; the settle effect that flushes the queue is
-  declared after the persist effect so the settled snapshot saves before the next turn
-  starts.
+  from the stream (`loadMostRecentChat`), falling back to `freshSeed()`
+  (`crypto.randomUUID()` as an ephemeral id, empty messages). Until hydration resolves
+  the component renders `null`.
+- **Persistence**: on each settled turn (`status === 'ready'` or `'error'`, non-empty
+  messages) only the messages new since the last settle (`messagesSince` over the
+  cache's `persistedCount`) are appended — one `appendChatMessage` amend per message;
+  never per-delta (streaming would hammer idb) and never a whole-conversation
+  rewrite. The chat's capture event is minted lazily by `createChat()` on the first
+  persisted turn (swapping the ephemeral seed id for the event id), so an untouched
+  "New chat" never touches the log. `persistedCount` advances synchronously before
+  the async writes, so a re-fired effect (StrictMode double-invoke) can't append
+  duplicates and an interleaved queued turn's settle appends only its own new
+  messages; the settle effect that flushes the queue is declared after the persist
+  effect so the settled turn is handed to persistence before the next turn starts.
 - **Mid-turn queueing** (`sendQueue.ts`): the machine state lives in a ref (the
   authority — event handlers must see post-transition state immediately) mirrored to a
   `queued` useState for rendering; `dispatch` applies a transition and executes its
@@ -296,8 +349,9 @@ Rendering details:
   "No matches." when the filter empties a non-empty list.
 - Each row shows `chatTitle`, a short date (time-of-day if updated today, else
   `Mon D`), and the message count; tapping a row calls `onSelect(chat)`.
-- Delete removes the row from idb and reloads the list; deleting the active conversation
-  additionally calls `onDeleteActive` so the caller resets to a fresh chat.
+- Delete appends a `revoke` (soft-delete — the events stay in the log and on Drive) and
+  reloads the list; deleting the active conversation additionally calls `onDeleteActive`
+  so the caller resets to a fresh chat.
 - The list has a fixed height (`h-[60dvh]`, not max-) so the sheet stays tall while
   typing a search; `overscroll-contain` stops rubber-banding from reaching the page.
 
@@ -318,13 +372,31 @@ Covers `formatDigest` rendering (empty log, day grouping, time/place/text/media 
 stability, plus the config↔settings pin: `DEFAULT_ASSISTANT_MODEL` is on the curated
 list and equals the settings default.
 
+### src/assistant/chatSync.test.ts
+
+Covers the stream mapping end to end against fake-indexeddb (with only `Date` faked so
+timestamps are controllable): the registry pin (`assistant-chats` ∈ `SYSTEM_STREAMS`)
+and the constant pin against `store/migrateChatsV1.ts`; `messagesSince` unit cases;
+capture-with-no-attachments chat creation (event id = chat id); message-order
+preservation across N appends; `loadAllChats`/`loadMostRecentChat` last-touched
+ordering; createdAt/updatedAt stamping; unreadable-payload tolerance; soft-delete
+(revoked chats leave every list while `listEvents` and the message blobs keep
+everything, plus the new revoke); cross-device offline-append merge via `importEvents`
+with a colliding seq converging in `compareEvents` order with no dupes/drops (and
+idempotent re-import, and post-merge local appends landing last); the summaries perf
+contract (a `getBlob` spy asserts ≤ one blob read per chat for `loadChatSummaries`
+and `listChats`); a golden byte-for-byte `capture.chatmessage.v1` envelope test
+including a `dynamic-tool` (tool-invocation) part; and the fresh-install migration
+marker.
+
 ### src/assistant/history.test.ts
 
 Covers `chatTitle` (first user message, truncation, fallbacks), `searchChats` (word-AND,
-case-insensitive, cross-message), CRUD round-trips against fake-indexeddb (upsert, sorted
-summaries, most-recent hydration, delete, erasure by `wipeAll`), and the v2→v3 migration
-of the legacy single conversation from the `meta` store key `assistant:chat` into a
-`chats` row.
+case-insensitive, cross-message), CRUD round-trips against the event-sourced backing
+(append-by-message round-trip, sorted summaries, most-recent hydration, revoke-delete
+leaving the log intact, erasure by `wipeAll`), and the composed migration of the legacy
+single conversation: `meta['assistant:chat']` → v3 `chats` row → `assistant-chats`
+stream events, with the intermediate row kept as the rollback artifact.
 
 ### src/assistant/sendQueue.test.ts
 
@@ -406,9 +478,17 @@ targets just this file.
   persists like any settled turn. Aborting mid-tool-call cannot deadlock the write
   tools' `enqueueWrite` chain — in-flight `execute` promises settle on their own and
   the chain continues past rejections.
-- **Persistence cadence**: chats are saved only on settled turns (`ready`/`error`), so a
-  mid-stream app kill loses the in-flight assistant turn; `updatedAt` is set by the
-  caller, not by `saveChat`.
+- **Persistence cadence**: chats are persisted only on settled turns (`ready`/`error`) —
+  one amend event per newly-settled message — so a mid-stream app kill loses the
+  in-flight assistant turn. Timestamps derive from event `loggedAt`, not caller
+  arguments.
+- **Chats sync like everything else**: chat events live in the `assistant-chats`
+  stream and ride the ordinary manual multi-stream sync — no chat-specific sync code,
+  no automatic triggers. A pull that imports another device's messages shows up on the
+  next conversation load/mount, not live.
+- **Chat deletion is soft** (SPEC §11): `deleteChatStream` appends a `revoke`; the
+  conversation's events and blobs remain in the local log and in Drive. True erasure
+  is manual Drive-file deletion, as for every other entity.
 - **`search_entries` cost**: it reads every non-revoked entry's text blobs from
   IndexedDB on each call — fine at personal-log scale, but it is a full scan.
 - **Module-scope chat cache** in `ChatScreen.tsx` means the active conversation survives

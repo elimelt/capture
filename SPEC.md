@@ -151,8 +151,8 @@ a skill prompt — not a migration.
 user logs into them through the capture UI, and a skill interprets them. The app also
 owns **system streams** — append-only event logs with no capture UI, no skill, and no
 `Stream` definition, used to sync app-level state through the exact same log + Drive
-engine (`settings` — content conventions in §3.7 — and `assistant-chats`, whose
-conventions ship separately, are both registered). System streams reuse the generic event envelope (§3.3), folder layout
+engine (both are registered: `settings` — content conventions in §3.7 — and
+`assistant-chats` — content conventions in §10.1). System streams reuse the generic event envelope (§3.3), folder layout
 (§5.1), and upload/pull engines (§8.4/§8.5) unchanged; they are never the on-screen
 capture stream, so every sync cycle covers **all registered streams** (system +
 capture), not just the current one.
@@ -988,9 +988,32 @@ separable by construction.
   Writes go through the store's normal capture/amend actions, appending
   ordinary events to the append-only log (never mutating it) that sync through
   the usual manual queue; it can never revoke entries, change settings, or
-  trigger sync. The current conversation persists locally (IndexedDB) so it
-  survives app restarts; "New chat" or a data wipe clears it. Nothing is
-  stored server-side.
+  trigger sync. Nothing is stored server-side.
+
+**Conversations are a stream.** Chat history is event-sourced in the
+`assistant-chats` system stream (§3.1), reusing the generic event envelope
+(§3.3/§5.2), folder layout (§5.1), fold, and upload/pull engines (§8.4/§8.5)
+unchanged — satisfying the §5.5 invariant literally:
+
+- **Create chat** = a `capture` event with no attachments; the event's `id` is
+  the chat id.
+- **Every message** (each settled turn's new messages; never mid-stream
+  deltas) = an `amend` targeting the chat id, carrying one
+  `text`/`application/json` attachment whose blob is a versioned
+  `capture.chatmessage.v1` envelope `{ schema, message }` wrapping the UI
+  message.
+- **Delete chat** = a `revoke` targeting the chat id — **soft-delete**: the
+  conversation disappears from the app, but its events and message blobs
+  remain in the local log and, once synced, in the user's Drive (§11).
+
+Because the fold applies amends in the standard total order (seq → loggedAt →
+id), message order is deterministic and two devices appending to the same
+conversation offline converge with no chat-specific merge logic. Conversations
+therefore survive app restarts *and* follow the user across devices via the
+ordinary manual sync; a data wipe clears them locally like any other stream.
+Legacy locally-stored conversations are migrated into the stream once, by an
+idempotent IndexedDB upgrade migration guarded by applied-state (not version
+number); the legacy store is retained as a rollback artifact.
 
 ---
 
@@ -1011,6 +1034,11 @@ separable by construction.
 - **User manually deletes log files in Drive** (the out-of-band erasure escape hatch,
   §4.5): consumers must tolerate gaps in the seq numbering; the app reconciles by
   treating missing local-known events as erased.
+- **Deleted chats are soft-deleted by construction** (§10.1): deleting a conversation
+  appends a `revoke`, so its full message history remains in the local log and — once
+  synced — in the user's Drive forever, exactly like every other revoked entity. The
+  only true erasure is the same out-of-band Drive-file deletion above; the app never
+  removes chat events or blobs.
 - **Assistant lacks audio understanding**: the skill must report unprocessable entries
   (§6.2 step 2), and the user can add a text note to those entries; provider capability
   is listed in the skill doc's compatibility table.

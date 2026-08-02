@@ -1,16 +1,16 @@
 import 'fake-indexeddb/auto'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { UIMessage } from 'ai'
 import { openDB } from 'idb'
 import { getDb, resetDbCache } from '../store/db'
-import { wipeAll } from '../store/events'
+import { listEvents, wipeAll } from '../store/events'
+import { CHATS_STREAM, appendChatMessage, createChat } from './chatSync'
 import {
   chatTitle,
   deleteChat,
   listChats,
   loadChat,
   loadMostRecentChat,
-  saveChat,
   searchChats,
   type StoredChat,
 } from './history'
@@ -28,6 +28,14 @@ beforeEach(async () => {
   ;(await getDb()).close()
   resetDbCache()
   await deleteDb('timebox')
+  // Only Date is faked (fake-indexeddb needs real task scheduling); tests
+  // advance the clock to separate createdAt/updatedAt stamps.
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date('2026-08-02T10:00:00'))
+})
+
+afterEach(() => {
+  vi.useRealTimers()
 })
 
 const conversation: UIMessage[] = [
@@ -41,6 +49,13 @@ const conversation: UIMessage[] = [
 
 function makeChat(id: string, updatedAt: string, messages: UIMessage[] = conversation): StoredChat {
   return { id, createdAt: '2026-01-01T00:00:00.000Z', updatedAt, messages }
+}
+
+/** Create a conversation in the assistant-chats stream; returns the chat id. */
+async function seedChat(messages: UIMessage[] = conversation): Promise<string> {
+  const id = await createChat()
+  for (const m of messages) await appendChatMessage(id, m)
+  return id
 }
 
 describe('chatTitle', () => {
@@ -102,76 +117,79 @@ describe('searchChats', () => {
   })
 })
 
-describe('assistant chat persistence', () => {
+describe('assistant chat persistence (event-sourced)', () => {
   it('returns undefined for a missing chat', async () => {
     expect(await loadChat('nope')).toBeUndefined()
   })
 
-  it('round-trips a saved conversation', async () => {
-    const chat = makeChat('c1', '2026-01-02T00:00:00.000Z')
-    await saveChat(chat)
-    expect(await loadChat('c1')).toEqual(chat)
+  it('round-trips a conversation appended message by message', async () => {
+    const id = await seedChat()
+    expect((await loadChat(id))?.messages).toEqual(conversation)
   })
 
-  it('upserts on save', async () => {
-    await saveChat(makeChat('c1', '2026-01-02T00:00:00.000Z'))
-    const updated = makeChat('c1', '2026-01-03T00:00:00.000Z', conversation.slice(0, 1))
-    await saveChat(updated)
-    expect(await loadChat('c1')).toEqual(updated)
-    expect(await listChats()).toHaveLength(1)
-  })
-
-  it('lists summaries sorted by updatedAt desc', async () => {
-    await saveChat(makeChat('older', '2026-01-02T00:00:00.000Z'))
-    await saveChat(makeChat('newer', '2026-01-05T00:00:00.000Z', conversation.slice(0, 1)))
+  it('lists summaries sorted by last-touched desc, one title blob per chat', async () => {
+    const older = await seedChat()
+    vi.setSystemTime(new Date('2026-08-02T11:00:00'))
+    const newer = await seedChat(conversation.slice(0, 1))
     expect(await listChats()).toEqual([
-      {
-        id: 'newer',
-        createdAt: '2026-01-01T00:00:00.000Z',
-        updatedAt: '2026-01-05T00:00:00.000Z',
+      expect.objectContaining({
+        id: newer,
         title: 'What did I do today?',
         messageCount: 1,
-      },
-      {
-        id: 'older',
-        createdAt: '2026-01-01T00:00:00.000Z',
-        updatedAt: '2026-01-02T00:00:00.000Z',
+      }),
+      expect.objectContaining({
+        id: older,
         title: 'What did I do today?',
         messageCount: 2,
-      },
+      }),
     ])
   })
 
   it('loads the most recent chat for boot hydration', async () => {
     expect(await loadMostRecentChat()).toBeUndefined()
-    await saveChat(makeChat('older', '2026-01-02T00:00:00.000Z'))
-    await saveChat(makeChat('newer', '2026-01-05T00:00:00.000Z'))
-    expect((await loadMostRecentChat())?.id).toBe('newer')
+    await seedChat()
+    vi.setSystemTime(new Date('2026-08-02T11:00:00'))
+    const newer = await seedChat()
+    expect((await loadMostRecentChat())?.id).toBe(newer)
   })
 
-  it('deletes a single chat, leaving the rest', async () => {
-    await saveChat(makeChat('c1', '2026-01-02T00:00:00.000Z'))
-    await saveChat(makeChat('c2', '2026-01-03T00:00:00.000Z'))
-    await deleteChat('c1')
-    expect((await listChats()).map((c) => c.id)).toEqual(['c2'])
+  it('deletes (revokes) a single chat, leaving the rest and the log intact', async () => {
+    const doomed = await seedChat()
+    vi.setSystemTime(new Date('2026-08-02T11:00:00'))
+    const kept = await seedChat()
+    const eventCount = (await listEvents(CHATS_STREAM)).length
+    await deleteChat(doomed)
+    expect((await listChats()).map((c) => c.id)).toEqual([kept])
+    // Soft-delete: one revoke appended, nothing removed (SPEC §11).
+    expect(await listEvents(CHATS_STREAM)).toHaveLength(eventCount + 1)
   })
 
   it('is erased by a full data wipe', async () => {
-    await saveChat(makeChat('c1', '2026-01-02T00:00:00.000Z'))
+    await seedChat()
     await wipeAll()
     expect(await listChats()).toEqual([])
   })
 
-  it('migrates the legacy single conversation from meta on upgrade to v3', async () => {
-    // Seed a v2-shaped DB (meta store only — the v3 upgrade touches nothing
-    // else) with the old single-conversation key, before the first getDb().
+  it('migrates the legacy single conversation from meta through to the stream', async () => {
+    // Seed a v2-shaped DB with the old single-conversation meta key, before
+    // the first getDb(). Upgrading composes two migrations: v3 turns the meta
+    // key into a legacy `chats` row, then migrateChatsV1 turns that row into
+    // capture + amend events in the assistant-chats stream.
     const legacy = await openDB('timebox', 2, {
       upgrade(db) {
+        db.createObjectStore('events', { keyPath: ['stream', 'seq'] }).createIndex(
+          'by-stream',
+          'stream',
+        )
+        db.createObjectStore('blobs', { keyPath: 'file' })
+        db.createObjectStore('sync', { keyPath: ['stream', 'seq'] })
+        db.createObjectStore('places', { keyPath: 'id' })
         db.createObjectStore('meta')
       },
     })
     await legacy.put('meta', conversation, 'assistant:chat')
     legacy.close()
+    resetDbCache()
 
     const chats = await listChats()
     expect(chats).toHaveLength(1)
@@ -180,5 +198,7 @@ describe('assistant chat persistence', () => {
     expect((await loadChat(chats[0].id))?.messages).toEqual(conversation)
     const db = await getDb()
     expect(await db.get('meta', 'assistant:chat')).toBeUndefined()
+    // The intermediate chats row survives as the rollback artifact.
+    expect(await db.count('chats')).toBe(1)
   })
 })
