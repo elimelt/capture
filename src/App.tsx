@@ -7,10 +7,11 @@ import { applyAppBadge, badgeCount } from './notify/badge'
 import { showAppNotification } from './notify/local'
 import { useAppStore } from './store/appStore'
 import { summarizeSyncStatuses } from './store/events'
+import { syncProgressFraction } from './store/syncProgress'
 import { drainTranscriptions } from './transcribe/runner'
 import { drainCaptions } from './vision/runner'
 import { ReconnectPill } from './drive/ReconnectPill'
-import { Toast, cx, layer, shape, tone, type_ } from './ui'
+import { ProgressBar, Toast, cx, layer, shape, tone, type_ } from './ui'
 import { TABS, visibleTabs } from './navTabs'
 
 // Opt-in assistant: lazy so users who never enable it never download the
@@ -36,6 +37,8 @@ export default function App() {
   const clearError = useAppStore((s) => s.clearError)
   const assistantEnabled = useAppStore((s) => s.appSettings.assistantEnabled)
   const enrichmentEnabled = useAppStore((s) => s.appSettings.enrichmentEnabled)
+  const syncing = useAppStore((s) => s.syncing)
+  const syncProgress = useAppStore((s) => s.syncProgress)
   const tabs = visibleTabs(TABS, assistantEnabled)
 
   // The HTML boot splash (index.html) covers the app until the store is
@@ -157,7 +160,7 @@ export default function App() {
                 end={tab.to === '/'}
                 className={({ isActive }) =>
                   cx(
-                    'flex min-h-14 flex-1 flex-col items-center justify-center gap-1',
+                    'relative flex min-h-14 flex-1 flex-col items-center justify-center gap-1',
                     type_.sub,
                     isActive
                       ? cx('font-semibold', tone.accent)
@@ -167,6 +170,24 @@ export default function App() {
               >
                 {({ isActive }) => (
                   <>
+                    {/* Global sync affordance: syncing is manual-only and can
+                        run long (many attachments/batches/streams), so a
+                        subtle indicator on the Settings tab — where "Sync
+                        now" lives — makes progress visible from any screen,
+                        not just while Settings is open. Determinate once the
+                        current stream's upload total is known, an
+                        indeterminate sweep otherwise (e.g. a pull page).
+                        aria-hidden: purely visual — the link's accessible
+                        name must stay "Settings", not gain a stray percent
+                        from the progressbar role; the live progress text
+                        already exists in Settings itself. */}
+                    {tab.to === '/settings' && syncing && (
+                      <span aria-hidden="true" className="absolute inset-x-3 top-0">
+                        <ProgressBar
+                          fraction={syncProgress ? syncProgressFraction(syncProgress) : null}
+                        />
+                      </span>
+                    )}
                     {tab.label}
                     {/* Active indicator: a shape, not just color/weight, per
                         the design review ("active-tab indication is almost
