@@ -151,8 +151,8 @@ a skill prompt — not a migration.
 user logs into them through the capture UI, and a skill interprets them. The app also
 owns **system streams** — append-only event logs with no capture UI, no skill, and no
 `Stream` definition, used to sync app-level state through the exact same log + Drive
-engine (`settings` and `assistant-chats` are registered; their event conventions ship
-separately). System streams reuse the generic event envelope (§3.3), folder layout
+engine (`settings` — content conventions in §3.7 — and `assistant-chats`, whose
+conventions ship separately, are both registered). System streams reuse the generic event envelope (§3.3), folder layout
 (§5.1), and upload/pull engines (§8.4/§8.5) unchanged; they are never the on-screen
 capture stream, so every sync cycle covers **all registered streams** (system +
 capture), not just the current one.
@@ -351,6 +351,45 @@ renders pseudo-entries on its merged timeline (§4.2). The sync wiring for this 
 follow-up work: the log is **local-only** for now — unlike the system streams of §3.1,
 it does not reuse the `capture.event.v1` envelope or stores, so the multi-stream sync
 engine (§8.4/§8.5) needs overlay-aware wiring before it can carry it (§5.6).
+
+### 3.7 Settings (event-sourced system stream)
+
+App-wide and per-stream settings sync through the `settings` system stream (§3.1)
+rather than device-local storage. Every settings change appends one ordinary
+`capture` event — the §3.3 envelope unchanged, `capturedAt` = append time, no
+location, never `amend`/`revoke` — whose single attachment is a
+`text`/`application/json` file carrying a versioned payload:
+
+```json
+{
+  "schema": "capture.settings.v1",
+  "op": "set",
+  "key": "app.locationEnabled",
+  "value": false
+}
+```
+
+`op` is `"set"` (with a `value`: string, number, or boolean) or `"unset"` (no
+`value`; the key reverts to its compiled-in default). Keys are namespaced
+`app.<field>` for app-wide settings and `stream.<id>.<field>` for per-stream ones.
+Like the event record itself, the payload bytes are canonical: fixed key order
+(`schema`, `op`, `key`, `value`), 2-space indent, trailing newline, `value`
+omitted for `unset`.
+
+- **Fold: last-write-wins per key.** Effective settings = every payload applied in
+  the standard event order (seq → loggedAt → id, §3.2); missing keys fall back to
+  defaults. This is the same total order as the entry fold, so replicas converge
+  deterministically with no additional tiebreak or merge logic.
+- **Diff on save.** Saving settings emits one event per key whose value actually
+  changed; a no-op save appends nothing. Keys classified device-local (none today)
+  never emit events.
+- **Engine reuse is total.** Partitioning (`log/<YYYY-MM-DD>/`), filenames, the
+  upload queue, and the pull engine are the unmodified generic mechanics
+  (§5.1, §8.4, §8.5) — the §5.5 invariant holds.
+- **Migration.** On first upgrade, legacy locally-stored settings whose values
+  differ from defaults are seeded as `set` events and queued for upload like any
+  other local append. The migration is state-guarded and idempotent, so parallel
+  schema migrations can land in any order.
 
 ---
 
@@ -976,6 +1015,11 @@ separable by construction.
 - **Timezone travel / DST**: entries carry offset + IANA zone; skill instructed to use
   each entry's own offset; Day view renders device-local.
 - **Clock skew**: device clock is authoritative; acceptable for this domain.
+- **Concurrent settings edits on two devices**: last write wins *per key* — settings
+  events fold in the standard seq → loggedAt → id order (§3.7), so the event that
+  orders later silently wins that key while unrelated keys merge cleanly. Accepted:
+  settings are low-stakes toggles, and the one-time migration only seeds keys that
+  differ from defaults, so independently-migrating devices rarely collide.
 - **iOS mic regression in a point release**: runtime feature-check at tap; text-entry
   fallback (§4.1); never gate the app on audio.
 

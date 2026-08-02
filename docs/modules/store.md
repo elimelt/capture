@@ -6,11 +6,11 @@
 It has two halves:
 
 - **IndexedDB repositories** (`db.ts`, `events.ts`, `places.ts`, `settings.ts`,
-  plus the read-only `space.ts` accounting): the
-  on-device replica of the append-only event log (SPEC §3.2), the upload-queue state,
-  attachment blobs, places, the reverse-geocode cache, settings, and persisted assistant
-  chats. All data is keyed by stream so adding a stream is configuration, not a schema
-  change.
+  the `migrateSettingsV1.ts` upgrade step, plus the read-only `space.ts` accounting):
+  the on-device replica of the append-only event log (SPEC §3.2), the upload-queue
+  state, attachment blobs, places, the reverse-geocode cache, settings (event-sourced
+  on the `settings` system stream), and persisted assistant chats. All data is keyed
+  by stream so adding a stream is configuration, not a schema change.
 - **UI state** (`appStore.ts`): a Zustand store that caches the folded entry list and
   settings in memory, delegates every write to the repositories, and wires Drive
   auth state and the manual sync action (`src/drive`) into state the components render.
@@ -44,8 +44,8 @@ Defines the IndexedDB schema (via the `idb` package) and owns the singleton conn
 Key exports:
 
 - `getDb(): Promise<TimeboxDatabase>` — opens (once, memoized in a module-level promise)
-  the `timebox` database at **version 8** and runs versioned upgrades (versions 6 and 7
-  are reserved for the in-flight settings and chats stream migrations).
+  the `timebox` database at **version 9** and runs versioned upgrades (version 7 is
+  reserved for the in-flight chats stream migration).
 - `resetDbCache(): void` — test hook; forgets the cached connection promise.
 - `type TimeboxDatabase = IDBPDatabase<TimeboxDB>`.
 - `type SyncStatus = 'queued' | 'uploaded' | 'error'` — user-facing rollup.
@@ -78,7 +78,7 @@ Object stores (schema `TimeboxDB`):
 | `sync` | event `id` | `SyncStatusRow` |
 | `places` | `id` | `Place` |
 | `geocache` | rounded `"lat,lng"` | `GeocacheRow` |
-| `meta` | string (out-of-line) | `unknown` — settings + per-stream seq counters |
+| `meta` | string (out-of-line) | `unknown` — per-stream seq counters, sync stamps, migration markers, legacy settings |
 | `chats` | `id` | `StoredChatRow` |
 | `overlayEvents` | event `id` (+ `by-stream` index) | `OverlayEventRow` — the calendar-overlay log, **owned by `gcal/overlay`**; local-only until wired into sync |
 
@@ -94,10 +94,16 @@ conversation from `meta['assistant:chat']` into a chat row; v4 adds `geocache`; 
 re-keys `events` and `sync` by `id` instead of `[stream, seq]` — by **dropping and
 recreating** both stores rather than migrating rows, since the local log is a replica
 of Drive and a pull rebuilds it; v8 adds `overlayEvents` (id-keyed, `by-stream` index —
-SPEC §3.6/§5.6). v6/v7 are reserved for the in-flight settings and chats stream
-migrations, so the v8 body is self-contained, additive, and guarded by a
-`contains('overlayEvents')` check — it composes with those migrations landing in
-either order.
+SPEC §3.6/§5.6), self-contained, additive, and guarded by a `contains('overlayEvents')`
+check so it composes with the parallel stream migrations landing in either order; v9
+seeds legacy flat settings into `settings`-stream events via `migrateSettingsV1(tx)` —
+called on **every** upgrade rather than under an `oldVersion` check, because parallel
+workstreams claim their own version numbers and can land in any order (v8 shipped
+first; v7 — the chats stream migration — is still in flight), so a device may already
+sit at a higher version without this migration having run; the call is state-guarded
+by a meta marker instead (see migrateSettingsV1.ts). Any branch adding a migration
+must raise the version above the current max so `upgrade()` fires; each state-guarded
+block then self-selects.
 
 ### src/store/events.ts
 
@@ -169,21 +175,73 @@ local-only; labels travel to Drive only inside entry metadata).
 
 ### src/store/settings.ts
 
-App-wide and per-stream settings stored as values in the `meta` store.
+App-wide and per-stream settings, event-sourced on the `settings` system stream
+(SPEC §3.7): every change is one `capture` event appended through the standard
+`events.ts` pipeline — so it gets a queued sync row and blob, and syncs through the
+ordinary drive queue/pull like any other stream — with a single
+`text`/`application/json` attachment carrying a versioned `capture.settings.v1`
+payload (`{ op: 'set' | 'unset', key, value? }`). Effective state is a per-key
+**last-write-wins fold** in `compareEvents` order (seq → loggedAt → id — the same
+total order as the entry fold), so settings converge across devices with no extra
+tiebreak logic. The stream only ever uses `capture` events (never amend/revoke).
 
 - `interface AppSettings { locationEnabled: boolean; assistantEnabled: boolean; assistantModel: string }`
-  — assistant is opt-in and off by default (SPEC §10.1); defaults are
-  `{ locationEnabled: true, assistantEnabled: false, assistantModel: 'gpt-oss:20b' }`.
+  — assistant is opt-in and off by default (SPEC §10.1); defaults
+  `APP_SETTINGS_DEFAULTS = { locationEnabled: true, assistantEnabled: false, assistantModel: 'gpt-oss:20b' }`.
 - `interface StreamSettings { maxClipSec: number; keepAudioLocally: boolean }` —
-  defaults `{ maxClipSec: 60, keepAudioLocally: true }`.
-- `getSettings(): Promise<AppSettings>` / `saveSettings(settings): Promise<void>` —
-  key `settings:app`.
-- `getStreamSettings(stream): Promise<StreamSettings>` /
-  `saveStreamSettings(stream, settings): Promise<void>` — key `settings:stream:<stream>`.
+  defaults `STREAM_SETTINGS_DEFAULTS = { maxClipSec: 60, keepAudioLocally: true }`.
+- `getSettings()` / `saveSettings(next)` / `getStreamSettings(stream)` /
+  `saveStreamSettings(stream, next)` — **signatures unchanged** from the legacy
+  meta-backed version, so no call site changed. Getters always do a fresh
+  `listEvents('settings')` + blob reads + fold (no materialized cache — the zustand
+  store remains the in-memory cache via `loadSettings()`); saves **diff** against the
+  current effective state and emit one event per *changed* key only, so a no-op save
+  appends zero events.
+- Keys are namespaced `app.<field>` and `stream.<id>.<field>`
+  (`appSettingsKey`/`streamSettingsKey`; entry helpers
+  `appSettingsEntries`/`streamSettingsEntries`).
+- `SETTINGS_STREAM` (`'settings'`), `SETTINGS_PAYLOAD_SCHEMA`
+  (`'capture.settings.v1'`), `type SettingsValue = string | number | boolean`,
+  `type SettingsPayload = SettingsSetPayload | SettingsUnsetPayload`.
+- `serializeSettingsPayload(p)` — canonical payload bytes (fixed key order
+  schema/op/key/value, 2-space indent, trailing newline, `value` omitted for
+  `unset`); a wire contract like `contract/serialize.ts`, golden-tested.
+  `parseSettingsPayload(json)` returns `undefined` (never throws) on
+  malformed/foreign content so one bad attachment can't poison the fold.
+- `foldSettingsPayloads(events, payloadOf)` — the pure LWW reducer (capture events
+  only, `compareEvents` order; entity-shaped `contract/fold.ts` is not used here).
+- `diffSettings(next, effective)` — the pure diff primitive shared with the v9
+  migration. It skips `LOCAL_ONLY_SETTINGS_KEYS` — an empty `ReadonlySet` today,
+  the one-line extension point for a future setting that must never leave the
+  device.
 
-Both getters spread stored values over defaults (`{ ...DEFAULTS, ...stored }`), so a
-partial or missing stored object yields complete settings — this is the forward-migration
-path when new settings fields are added.
+Missing keys fall back to compiled-in defaults, so adding a settings field still
+needs no migration; folded values whose runtime type doesn't match the field's
+default are ignored (`typeof` check), so junk in the stream can't corrupt typed
+settings. `unset` payloads revert a key to its default.
+
+### src/store/migrateSettingsV1.ts
+
+The v9 migration (SPEC §3.7): legacy flat settings (`meta['settings:app']` and
+`meta['settings:stream:<id>']` for every `BUILTIN_STREAMS` id) are seeded as
+`settings`-stream events, hand-constructed inside the upgrade transaction the way
+the v2/v3/v5 migrations write rows (`append()` can't run there): each payload gets
+a full append — event record, payload blob, **queued** sync row, and the
+`nextSeq:settings` counter written back once — so the next "Sync now" pushes the
+seeds like any other local append.
+
+- Only keys whose (type-valid) legacy value **differs from its default** migrate,
+  sharply reducing cross-device LWW collisions when several devices migrate
+  independently.
+- **State-guarded, not version-guarded**: `migrateSettingsV1(tx)` is called from
+  `db.ts` on every upgrade and no-ops once its meta marker
+  (`SETTINGS_MIGRATION_MARKER = 'migrated:settings-stream-v1'`) exists. Parallel
+  workstreams claim their own IndexedDB version numbers and can land in any order,
+  so a device may already sit at a higher version without this migration having run —
+  a bare `oldVersion` guard alone would silently skip it. Idempotent by construction; a
+  fresh install (no legacy keys) just writes the marker.
+- Legacy meta keys are deliberately **kept** as an inert rollback artifact
+  (cleanup deferred to a later PR).
 
 ### src/store/space.ts
 
@@ -369,8 +427,27 @@ and delete (including unknown-id no-op).
 
 ### src/store/settings.test.ts
 
-Verifies default fallbacks, round-trips, the partial-object merge over defaults, and
-per-stream independence of stream settings.
+Verifies default fallbacks, round-trips, per-stream independence
+(`stream.<id>.*` namespacing), the event-sourcing mechanics (no-op saves append
+zero events; only changed keys emit events; appends go through the standard
+pipeline — queued sync row + json attachment), `unset` reverting to defaults,
+LWW convergence of `foldSettingsPayloads` (input-order independence; seq
+collisions broken by loggedAt then id), cross-device merges via `importEvents`
+(deterministic outcomes; identical merged event sets fold identically on both
+replicas), and the `capture.settings.v1` payload contract (golden byte shapes
+for set/unset, parse round-trip, malformed-payload rejection).
+
+### src/store/migrateSettingsV1.test.ts
+
+Runs the v9 migration against a raw-IndexedDB replica of the v5 schema seeded
+with legacy settings: events created only for keys differing from defaults (and
+the getters then reflect them), migrated events are push-ready (queued sync
+rows, monotonic seq from 1, bumped `nextSeq:settings`) and round-trip
+`parseEvent(serializeEvent(...))`, idempotency (a second run adds nothing),
+fresh-install no-op (marker written, zero events), the state-guard semantics
+(the migration still applies on a later upgrade when a parallel migration
+claimed the version bump first), legacy meta keys kept as rollback artifacts,
+and wrong-typed legacy fields ignored.
 
 ## Key invariants & gotchas
 
@@ -405,9 +482,14 @@ per-stream independence of stream settings.
   used locally and in Drive, which is what makes re-uploads idempotent.
 - **`db.ts` caches the connection**; tests (and anything deleting the database) must
   call `resetDbCache()` or they will reuse a closed/stale handle.
-- **Settings getters merge over defaults**, so adding a settings field never needs a DB
-  migration — but saved objects are stored whole, so `saveSettings` expects a complete
-  `AppSettings`.
+- **Settings are an event-sourced stream.** `settings.ts` never touches `meta`
+  (the legacy `settings:*` keys remain only as migration input/rollback artifacts):
+  reads re-fold the `settings` stream per call, writes append through `events.ts` —
+  the single-write-path rule holds for settings too, and settings events pulled from
+  another device change `getSettings()` output with no extra plumbing. Missing keys
+  fall back to compiled-in defaults, so adding a settings field still needs no DB
+  migration; `saveSettings`/`saveStreamSettings` still expect complete objects and
+  diff internally.
 - **`store/` stays stream- and app-agnostic**: chat messages are `unknown[]` here
   (typing owned by `assistant/history.ts`), calendar-overlay rows are the opaque
   `OverlayEventRow` (typing and all reads/writes owned by `gcal/overlay/store.ts`),

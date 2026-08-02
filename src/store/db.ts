@@ -4,6 +4,7 @@
  */
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
 import type { LogEvent } from '../contract/types'
+import { migrateSettingsV1 } from './migrateSettingsV1'
 
 export type SyncStatus = 'queued' | 'uploaded' | 'error'
 
@@ -86,7 +87,7 @@ export interface StoredChatRow {
   messages: unknown[]
 }
 
-interface TimeboxDB extends DBSchema {
+export interface TimeboxDB extends DBSchema {
   /**
    * The local replica of the append-only log. Keyed by event `id` (the
    * identity — SPEC §3.3 fold): two devices appending offline can mint the
@@ -144,7 +145,7 @@ export type TimeboxDatabase = IDBPDatabase<TimeboxDB>
 let dbPromise: Promise<TimeboxDatabase> | undefined
 
 export function getDb(): Promise<TimeboxDatabase> {
-  dbPromise ??= openDB<TimeboxDB>('timebox', 8, {
+  dbPromise ??= openDB<TimeboxDB>('timebox', 9, {
     async upgrade(db, oldVersion, _newVersion, tx) {
       if (oldVersion < 1) {
         const events = db.createObjectStore('events', { keyPath: ['stream', 'seq'] })
@@ -203,9 +204,9 @@ export function getDb(): Promise<TimeboxDatabase> {
         if (db.objectStoreNames.contains('sync')) db.deleteObjectStore('sync')
         db.createObjectStore('sync', { keyPath: 'id' })
       }
-      // Versions 6 and 7 are reserved for the in-flight settings and chats
-      // stream migrations, which may land before or after v8 — so this body
-      // is self-contained and additive (guarded by a contains check) and
+      // Version 7 is reserved for the in-flight chats stream migration,
+      // which may land before or after v8/v9 — so this body is
+      // self-contained and additive (guarded by a contains check) and
       // composes with them in either order.
       if (oldVersion < 8 && !db.objectStoreNames.contains('overlayEvents')) {
         // v8: the calendar-overlay append-only log (SPEC §3.6, §5.6), owned
@@ -214,6 +215,18 @@ export function getDb(): Promise<TimeboxDatabase> {
         const overlay = db.createObjectStore('overlayEvents', { keyPath: 'id' })
         overlay.createIndex('by-stream', 'stream')
       }
+      // v9: settings become an event-sourced system stream; legacy meta
+      // settings are seeded into `settings`-stream events. Deliberately NOT
+      // `if (oldVersion < 9)`: parallel workstreams claim their own version
+      // numbers and can land in any order (v8 above shipped first; v7 is
+      // still in flight), so a device may already sit at a higher version
+      // without this migration having run. The call is state-guarded
+      // instead — migrateSettingsV1 no-ops once its meta marker exists (and
+      // on fresh installs, where there is nothing to migrate) — so running
+      // it on every upgrade is idempotent. Any branch adding a migration
+      // must raise the version above the current max so upgrade() fires;
+      // each state-guarded block then self-selects.
+      await migrateSettingsV1(tx)
     },
   })
   return dbPromise

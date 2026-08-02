@@ -141,7 +141,9 @@ describe('db migration to v8 (overlayEvents added)', () => {
     resetDbCache()
 
     const db = await getDb()
-    expect(db.version).toBe(8)
+    // ≥ 8 rather than a pin: later state-guarded migrations (settings v9,
+    // chats) raise the version without affecting the overlay store.
+    expect(db.version).toBeGreaterThanOrEqual(8)
     expect([...db.objectStoreNames].sort()).toEqual([
       'blobs',
       'chats',
