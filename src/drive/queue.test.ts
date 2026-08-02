@@ -100,6 +100,21 @@ describe('drainStream', () => {
     expect(drive.uploadFile).not.toHaveBeenCalled()
   })
 
+  it('re-bootstraps and drains when the cached tree lacks the stream', async () => {
+    const event = await captureWithAudio()
+    // Seed a cached tree bootstrapped for a different stream only.
+    const { saveTree, emptyStreamTree } = await import('./tree')
+    await saveTree({ rootId: 'root-0', streams: { other: emptyStreamTree('f-0', 'l-0', 'r-0') } })
+
+    const { drainStream } = await import('./queue')
+    const res = await drainStream('tok', 'timelog')
+
+    expect(res.outcome).toBe('drained')
+    expect(res.uploaded).toBe(1)
+    const { eventRecordName } = await import('../contract/filenames')
+    expect(drive.uploadOrder).toContain(eventRecordName(event))
+  })
+
   it('stops and asks to reconnect on a 401', async () => {
     await captureWithAudio()
     const { drainStream } = await import('./queue')

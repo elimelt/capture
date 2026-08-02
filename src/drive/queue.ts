@@ -112,8 +112,8 @@ export async function drainStream(token: string, stream: string): Promise<DrainR
   const pending = await listPendingSync(stream)
   if (pending.length === 0) return { outcome: 'idle', uploaded: 0 }
 
-  const tree = (await getTree()) ?? (await ensureTree(token, [stream]))
-  if (!tree.streams[stream]) await ensureTree(token, [stream])
+  let tree = (await getTree()) ?? (await ensureTree(token, [stream]))
+  if (!tree.streams[stream]) tree = await ensureTree(token, [stream])
 
   const now = Date.now()
   let uploaded = 0
