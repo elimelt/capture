@@ -103,6 +103,10 @@ describe('fold', () => {
       amend(2, ['aaaaaa'], undefined, [note]),
     ]
     expect(fold(events)[0].attachments).toEqual([audio, note])
+    expect(fold(events)[0].attachmentLoggedAt).toEqual({
+      [audio.file]: '2026-08-02T09:00:00-04:00',
+      [note.file]: '2026-08-02T12:00:00-04:00',
+    })
   })
 
   it('hides attachments named in patch.removeAttachments', () => {

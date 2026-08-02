@@ -17,6 +17,13 @@ const entry: Entry = {
     { kind: 'text', file: 'transcript.txt', mimeType: 'text/plain', derivedFrom: 'recording.m4a' },
     { kind: 'text', file: 'description.txt', mimeType: 'text/plain', derivedFrom: 'desk.jpg' },
   ],
+  attachmentLoggedAt: {
+    'recording.m4a': '2026-08-02T09:04:12-04:00',
+    'desk.jpg': '2026-08-02T09:04:30-04:00',
+    'note.txt': '2026-08-02T09:05:00-04:00',
+    'transcript.txt': '2026-08-02T09:05:08-04:00',
+    'description.txt': '2026-08-02T09:05:12-04:00',
+  },
   lastEventSeq: 12,
   revoked: false,
 }
@@ -39,20 +46,32 @@ describe('formatEntryPlainText', () => {
     expect(result).toContain('- Location: Downtown office — 40.7128, -74.006 (±12 m)')
     expect(result).toContain('- Audio: 1 recording · 18.5s total')
     expect(result).toContain('- Photos: 1')
-    expect(result).toContain('### Note\n    Plan the afternoon')
-    expect(result).toContain('### Voice transcript\n    I reviewed the launch checklist.')
-    expect(result).toContain('### Image description\n    A laptop beside a notebook.')
+    expect(result).toContain('  - Recording · 2026-08-02 09:04:12 (UTC-04:00) · 18.5s')
+    expect(result).toContain('  - Photo · 2026-08-02 09:04:30 (UTC-04:00)')
+    expect(result).toContain('### Note · 2026-08-02 09:05:00 (UTC-04:00)\n    Plan the afternoon')
+    expect(result).toContain(
+      '### Voice transcript · 2026-08-02 09:05:08 (UTC-04:00)\n    I reviewed the launch checklist.',
+    )
+    expect(result).toContain(
+      '### Image description · 2026-08-02 09:05:12 (UTC-04:00)\n    A laptop beside a notebook.',
+    )
     expect(getBlob).toHaveBeenCalledTimes(3)
   })
 
   it('handles missing text blobs and zero-offset timestamps', async () => {
     const result = await formatEntryPlainText(
-      { ...entry, capturedAt: '2026-08-02T13:04:11Z', deviceTz: 'UTC', location: undefined },
+      {
+        ...entry,
+        capturedAt: '2026-08-02T13:04:11Z',
+        deviceTz: 'UTC',
+        location: undefined,
+        attachmentLoggedAt: undefined,
+      },
       async () => undefined,
     )
 
     expect(result).toContain('- Time zone: UTC+00:00 · UTC')
-    expect(result).toContain('### Note\n    (text unavailable)')
+    expect(result).toContain('### Note · 2026-08-02 09:00:00 (UTC-04:00)\n    (text unavailable)')
     expect(result).not.toContain('- Location:')
   })
 })

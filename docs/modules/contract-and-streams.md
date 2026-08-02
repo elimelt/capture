@@ -64,7 +64,9 @@ Key exports:
 - `LogEvent = CaptureEvent | AmendEvent | RevokeEvent`.
 - `Entry` — the folded, user-visible view of a capture after later amends/revokes:
   `{ id, seq, stream, loggedAt, capturedAt, deviceTz, location?, attachments,
-  lastEventSeq, revoked }`. Never serialized; derived state only.
+  attachmentLoggedAt?, lastEventSeq, revoked }`. `attachmentLoggedAt` records
+  each visible attachment's originating event timestamp by filename. Never
+  serialized; derived state only.
 
 All events share the (non-exported) `EventBase` envelope: `schema`, `id` (short,
 crypto-random — **the identity**), `seq` (per-stream sequence assigned at append; an
