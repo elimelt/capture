@@ -13,7 +13,9 @@ export { FieldRow, Select, TextArea, TextInput, Toggle } from './fields'
 export { canCommitNumericDraft, commitNumericDraft, parseNumericDraft } from './numberDraft'
 export { ScreenHeader } from './ScreenHeader'
 export {
+  CalendarIcon,
   CameraIcon,
+  EyeOffIcon,
   MicIcon,
   PinIcon,
   PlusIcon,

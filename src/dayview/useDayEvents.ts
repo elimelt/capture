@@ -17,7 +17,7 @@ export type DayEventsState =
   | { kind: 'not-connected' }
   | { kind: 'no-calendar' }
   | { kind: 'loading' }
-  | { kind: 'ready'; events: CalEvent[]; calendarName: string }
+  | { kind: 'ready'; events: CalEvent[]; calendarId: string; calendarName: string }
   | { kind: 'auth-error' }
   | { kind: 'error' }
 
@@ -44,7 +44,11 @@ export function useDayEvents(date: string, reloadKey = 0): DayEventsState {
       }
       try {
         const events = await listEvents(token, { calendarId: target.id, ...dayRange(date) })
-        if (live) setState({ kind: 'ready', events, calendarName: target.summary })
+        // calendarId rides along for the overlay layer: buildPseudoEntries
+        // matches overlays per calendar, and new overlays target it (§3.6).
+        if (live) {
+          setState({ kind: 'ready', events, calendarId: target.id, calendarName: target.summary })
+        }
       } catch (err) {
         if (!live) return
         setState({ kind: err instanceof CalendarError && err.isAuth ? 'auth-error' : 'error' })

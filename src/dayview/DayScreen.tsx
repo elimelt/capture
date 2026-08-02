@@ -1,12 +1,14 @@
-/** Screen 2 — Day (SPEC §4.2). Local entries timeline + read-only calendar (M4). */
+/**
+ * Screen 2 — Day (SPEC §4.2). One merged, time-sorted timeline of local
+ * entries and calendar pseudo-entries (editable overlays — §3.6), rendered
+ * by DayTimeline.
+ */
 import { useNavigate, useParams } from 'react-router-dom'
 import { localDateOf, toLocalIso } from '../contract/time'
 import { useAppStore } from '../store/appStore'
-import { EntryList } from '../capture/EntryList'
 import { usePendingDelete } from '../capture/usePendingDelete'
-import { Button, EmptyState, IconButton, ScreenHeader, Toast, cx, motion } from '../ui'
-import { CalendarEvents } from './CalendarEvents'
-import { useDayEvents } from './useDayEvents'
+import { Button, IconButton, ScreenHeader, Toast, cx, motion } from '../ui'
+import { DayTimeline } from './DayTimeline'
 
 function shiftDate(date: string, days: number): string {
   const d = new Date(`${date}T12:00:00`)
@@ -37,8 +39,6 @@ export default function DayScreen() {
   const dayEntries = entries
     .filter((e) => !e.revoked && e.id !== del.pendingId && localDateOf(e.capturedAt) === date)
     .sort((a, b) => a.capturedAt.localeCompare(b.capturedAt))
-
-  const events = useDayEvents(date)
 
   return (
     <div className={cx('flex flex-col gap-4 p-4', motion.fadeIn)}>
@@ -71,13 +71,12 @@ export default function DayScreen() {
         }
       />
 
-      <CalendarEvents state={events} />
-
-      {dayEntries.length === 0 ? (
-        <EmptyState title={`Nothing logged ${date === today ? 'yet today' : 'this day'}`} />
-      ) : (
-        <EntryList entries={dayEntries} onDelete={del.request} />
-      )}
+      <DayTimeline
+        date={date}
+        entries={dayEntries}
+        onDeleteEntry={del.request}
+        emptyTitle={`Nothing logged ${date === today ? 'yet today' : 'this day'}`}
+      />
 
       {del.toastOpen && (
         <Toast actionLabel="Undo" onAction={del.undo}>
