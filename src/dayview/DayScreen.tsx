@@ -1,10 +1,12 @@
-/** Screen 2 — Day (SPEC §4.2). M1: local entries timeline; calendar/results arrive M4. */
+/** Screen 2 — Day (SPEC §4.2). Local entries timeline + read-only calendar (M4). */
 import { useNavigate, useParams } from 'react-router-dom'
 import { localDateOf, toLocalIso } from '../contract/time'
 import { useAppStore } from '../store/appStore'
 import { EntryList } from '../capture/EntryList'
 import { usePendingDelete } from '../capture/usePendingDelete'
 import { Button, EmptyState, IconButton, ScreenHeader, Toast, cx, motion } from '../ui'
+import { CalendarEvents } from './CalendarEvents'
+import { useDayEvents } from './useDayEvents'
 
 function shiftDate(date: string, days: number): string {
   const d = new Date(`${date}T12:00:00`)
@@ -36,6 +38,8 @@ export default function DayScreen() {
     .filter((e) => !e.revoked && e.id !== del.pendingId && localDateOf(e.capturedAt) === date)
     .sort((a, b) => a.capturedAt.localeCompare(b.capturedAt))
 
+  const events = useDayEvents(date)
+
   return (
     <div className={cx('flex flex-col gap-4 p-4', motion.fadeIn)}>
       <ScreenHeader
@@ -66,6 +70,8 @@ export default function DayScreen() {
           </div>
         }
       />
+
+      <CalendarEvents state={events} />
 
       {dayEntries.length === 0 ? (
         <EmptyState title={`Nothing logged ${date === today ? 'yet today' : 'this day'}`} />
