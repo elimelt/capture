@@ -240,6 +240,91 @@ export async function listChildren(token: string, parentId: string): Promise<Dri
   return children
 }
 
+/** Metadata of one file, as `files.get` returns it (parent resolution — §8.5). */
+export interface FileMetadata {
+  id: string
+  name: string
+  mimeType: string
+  parents?: string[]
+}
+
+/** Read one file's metadata (id, name, mimeType, parents) by id. */
+export async function getFileMetadata(token: string, fileId: string): Promise<FileMetadata> {
+  const params = new URLSearchParams({ fields: 'id, name, mimeType, parents' })
+  const res = await ensureOk(
+    await fetch(`${API}/files/${fileId}?${params}`, { headers: bearer(token) }),
+  )
+  return (await res.json()) as FileMetadata
+}
+
+/** The file payload of one change entry (absent when access was lost). */
+export interface ChangedFile {
+  id: string
+  name: string
+  mimeType: string
+  trashed?: boolean
+  parents?: string[]
+  appProperties?: Record<string, string>
+}
+
+/** One entry of the changes feed (§8.5). */
+export interface DriveChange {
+  fileId: string
+  /** True when the file was permanently deleted or left our visibility. */
+  removed?: boolean
+  file?: ChangedFile
+}
+
+export interface ChangeList {
+  changes: DriveChange[]
+  /** Cursor to persist: where the next changes pull resumes from. */
+  newStartPageToken: string
+}
+
+/** The cursor for "everything from now on" — minted once, then persisted. */
+export async function getStartPageToken(token: string): Promise<string> {
+  const res = await ensureOk(
+    await fetch(`${API}/changes/startPageToken`, { headers: bearer(token) }),
+  )
+  return ((await res.json()) as { startPageToken: string }).startPageToken
+}
+
+/**
+ * Drain the changes feed from a persisted cursor, following pagination to the
+ * end, and return every change plus the next cursor. With drive.file scope
+ * the feed only ever contains files this app created — exactly the set the
+ * pull engine cares about. `restrictToMyDrive` keeps shared-drive and
+ * shared-with-me noise out (the timebox/ tree lives in My Drive by
+ * construction). Throws DriveError 410 when the cursor has expired — the
+ * caller must fall back to a full listing and re-mint via getStartPageToken.
+ */
+export async function listChanges(token: string, pageToken: string): Promise<ChangeList> {
+  const changes: DriveChange[] = []
+  let cursor = pageToken
+  for (;;) {
+    const params = new URLSearchParams({
+      pageToken: cursor,
+      pageSize: '1000',
+      spaces: 'drive',
+      restrictToMyDrive: 'true',
+      fields:
+        'nextPageToken, newStartPageToken, changes(fileId, removed, file(id, name, mimeType, trashed, parents, appProperties))',
+    })
+    const res = await ensureOk(await fetch(`${API}/changes?${params}`, { headers: bearer(token) }))
+    const data = (await res.json()) as {
+      nextPageToken?: string
+      newStartPageToken?: string
+      changes?: DriveChange[]
+    }
+    if (data.changes) changes.push(...data.changes)
+    if (data.nextPageToken) {
+      cursor = data.nextPageToken
+      continue
+    }
+    return { changes, newStartPageToken: data.newStartPageToken ?? cursor }
+  }
+}
+
 /**
  * Overwrite an existing file's media in place, leaving its name/parents alone.
  * Used to update the app-owned config.json (the target-calendar selection —
