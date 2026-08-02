@@ -95,6 +95,18 @@ describe('buildInstructions', () => {
     expect(prompt).toContain(`Current local time: ${hour} (${deviceTz()}).`)
   })
 
+  it('affirms the write capability so the model does not act read-only', () => {
+    // Regression: with only "write, but only when the user explicitly asks",
+    // small models refused writes / claimed to be read-only. The prompt must
+    // state the capability and the affirmative triggers for each write tool.
+    const prompt = buildInstructions(NOW)
+    expect(prompt).toContain('you are not read-only')
+    expect(prompt).toContain('add, create, log, note, or record')
+    expect(prompt).toContain('call create_entry')
+    expect(prompt).toContain('call update_entry')
+    expect(prompt).toContain('Do not claim you cannot modify the log')
+  })
+
   it('truncates the time to the hour so the prompt is prefix-cache-stable', () => {
     const a = buildInstructions(new Date('2026-08-02T12:07:31-04:00'))
     const b = buildInstructions(new Date('2026-08-02T12:54:09-04:00'))

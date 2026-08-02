@@ -161,7 +161,7 @@ export function createAssistantTools(
 
     create_entry: tool({
       description:
-        'Create a new log entry with the given note text, captured at the current time. Use only when the user explicitly asks to log something.',
+        'Create a new log entry with the given note text, captured at the current time. Call this when the user asks to add, log, note, or record something; never use it unrequested.',
       inputSchema: jsonSchema<{ text: string }>({
         type: 'object',
         properties: { text: { type: 'string', description: 'Note text of the new entry.' } },
@@ -189,7 +189,7 @@ export function createAssistantTools(
 
     update_entry: tool({
       description:
-        'Update an existing log entry by id — the "(id …)" suffix in list/search results. Can replace the entry’s note text and/or set its capture time of day (the date is kept). Transcripts of recorded audio are never touched.',
+        'Update an existing log entry by id — the "(id …)" suffix in list/search results. Call this when the user asks to change, fix, correct, or move an entry. Can replace the entry’s note text and/or set its capture time of day (the date is kept). Transcripts of recorded audio are never touched.',
       inputSchema: jsonSchema<{ id: string; text?: string; time?: string }>({
         type: 'object',
         properties: {
