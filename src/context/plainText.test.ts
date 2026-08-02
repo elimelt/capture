@@ -29,7 +29,7 @@ const entry: Entry = {
 }
 
 describe('formatEntryPlainText', () => {
-  it('labels text by source and includes time-zone, location, and media metadata', async () => {
+  it('renders one compact, timestamp-ordered entry timeline with source labels', async () => {
     const getBlob = vi.fn(async (file: string) => {
       const text: Record<string, string> = {
         'note.txt': 'Plan the afternoon',
@@ -41,20 +41,15 @@ describe('formatEntryPlainText', () => {
 
     const result = await formatEntryPlainText(entry, getBlob)
 
-    expect(result).toContain('## 2026-08-02 09:04:11')
-    expect(result).toContain('- Time zone: UTC-04:00 · America/New_York')
+    expect(result).toContain('## 2026-08-02 09:04:11 · entry-1 · America/New_York (UTC-04:00)')
     expect(result).toContain('- Location: Downtown office — 40.7128, -74.006 (±12 m)')
-    expect(result).toContain('- Audio: 1 recording · 18.5s total')
-    expect(result).toContain('- Photos: 1')
-    expect(result).toContain('  - Recording · 2026-08-02 09:04:12 (UTC-04:00) · 18.5s')
-    expect(result).toContain('  - Photo · 2026-08-02 09:04:30 (UTC-04:00)')
-    expect(result).toContain('### Note · 2026-08-02 09:05:00 (UTC-04:00)\n    Plan the afternoon')
-    expect(result).toContain(
-      '### Voice transcript · 2026-08-02 09:05:08 (UTC-04:00)\n    I reviewed the launch checklist.',
-    )
-    expect(result).toContain(
-      '### Image description · 2026-08-02 09:05:12 (UTC-04:00)\n    A laptop beside a notebook.',
-    )
+    expect(result).toContain('- 09:04:12 · Audio recording · 18.5s')
+    expect(result).toContain('- 09:04:30 · Photo')
+    expect(result).toContain('- 09:05:00 · Note\n  > Plan the afternoon')
+    expect(result).toContain('- 09:05:08 · Voice transcript · source at 09:04:12\n  > I reviewed the launch checklist.')
+    expect(result).toContain('- 09:05:12 · Image description · source at 09:04:30\n  > A laptop beside a notebook.')
+    expect(result.indexOf('- 09:04:12')).toBeLessThan(result.indexOf('- 09:05:00'))
+    expect(result.indexOf('- 09:05:00')).toBeLessThan(result.indexOf('- 09:05:08'))
     expect(getBlob).toHaveBeenCalledTimes(3)
   })
 
@@ -70,21 +65,23 @@ describe('formatEntryPlainText', () => {
       async () => undefined,
     )
 
-    expect(result).toContain('- Time zone: UTC+00:00 · UTC')
-    expect(result).toContain('### Note · 2026-08-02 09:00:00 (UTC-04:00)\n    (text unavailable)')
+    expect(result).toContain('## 2026-08-02 13:04:11 · entry-1 · UTC (UTC+00:00)')
+    expect(result).toContain('- 09:00:00 · Note\n  > (text unavailable)')
     expect(result).not.toContain('- Location:')
   })
 })
 
 describe('formatEntriesPlainText', () => {
-  it('separates entries without reading non-text attachments', async () => {
+  it('adds day context and avoids repeating a shared time zone per entry', async () => {
     const second = { ...entry, id: 'entry-2', attachments: [] }
     const getBlob = vi.fn(async () => new Blob(['hello']))
 
     const result = await formatEntriesPlainText([entry, second], getBlob)
 
-    expect(result).toContain('entry-1\n')
-    expect(result).toContain('\n\n## 2026-08-02 09:04:11')
+    expect(result).toContain('# Day export\n- Entries: 2\n- Date: 2026-08-02\n- Time zone: America/New_York (UTC-04:00)')
+    expect(result).toContain('## 2026-08-02 09:04:11 · entry-1\n')
+    expect(result).toContain('\n\n## 2026-08-02 09:04:11 · entry-2\n')
+    expect(result).not.toContain('entry-1 · America/New_York')
     expect(getBlob).toHaveBeenCalledTimes(3)
   })
 })

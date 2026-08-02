@@ -38,67 +38,86 @@ function formatLocation(entry: Entry): string | undefined {
 
 function formatText(text: string): string {
   const trimmed = text.trim()
-  if (!trimmed) return '    (empty)'
+  if (!trimmed) return '  > (empty)'
   return trimmed
     .split(/\r?\n/)
-    .map((line) => `    ${line}`)
+    .map((line) => `  > ${line}`)
     .join('\n')
 }
 
-function formatTimestamp(timestamp: string): string {
-  const date = timestamp.slice(0, 10)
-  const time = timestamp.slice(11, 19)
-  return `${date} ${time} (${utcOffset(timestamp)})`
+function formatTime(timestamp: string): string {
+  return timestamp.slice(11, 19)
 }
 
-function attachmentTimestamp(entry: Entry, attachment: Attachment): string {
+function entryZone(entry: Entry): string {
+  return `${escapeLabel(entry.deviceTz)} (${utcOffset(entry.capturedAt)})`
+}
+
+function sourceTimestamp(
+  attachment: Attachment,
+  attachments: readonly Attachment[],
+  attachmentLoggedAt: Record<string, string> | undefined,
+  entryLoggedAt: string,
+): string | undefined {
+  if (attachment.derivedFrom === undefined) return undefined
+  const source = attachments.find((candidate) => candidate.file === attachment.derivedFrom)
+  return source === undefined ? undefined : attachmentTimestamp({ attachmentLoggedAt, loggedAt: entryLoggedAt }, source)
+}
+
+function attachmentTimestamp(
+  entry: Pick<Entry, 'attachmentLoggedAt' | 'loggedAt'>,
+  attachment: Attachment,
+): string {
   return entry.attachmentLoggedAt?.[attachment.file] ?? entry.loggedAt
 }
 
 /** Render one folded entry, reading only its text attachments through getBlob. */
-export async function formatEntryPlainText(entry: Entry, getBlob: GetBlob): Promise<string> {
-  const audio = entry.attachments.filter((attachment) => attachment.kind === 'audio')
-  const photos = entry.attachments.filter((attachment) => attachment.kind === 'photo')
-  const totalAudioDuration = audio.reduce(
-    (total, attachment) => total + (attachment.durationSec ?? 0),
-    0,
-  )
+async function formatEntry(
+  entry: Entry,
+  getBlob: GetBlob,
+  includeTimezone: boolean,
+): Promise<string> {
   const location = formatLocation(entry)
   const lines = [
-    `## ${entry.capturedAt.slice(0, 10)} ${entry.capturedAt.slice(11, 19)}`,
-    `- Time zone: ${utcOffset(entry.capturedAt)} · ${escapeLabel(entry.deviceTz)}`,
-    `- Entry: ${entry.id}`,
-    `- Audio: ${audio.length} recording${audio.length === 1 ? '' : 's'}${
-      audio.length > 0 ? ` · ${totalAudioDuration}s total` : ''
+    `## ${entry.capturedAt.slice(0, 10)} ${formatTime(entry.capturedAt)} · ${entry.id}${
+      includeTimezone ? ` · ${entryZone(entry)}` : ''
     }`,
-    `- Photos: ${photos.length}`,
   ]
   if (location) lines.push(`- Location: ${location}`)
 
-  for (const attachment of audio) {
-    lines.push(
-      `  - Recording · ${formatTimestamp(attachmentTimestamp(entry, attachment))}${
-        attachment.durationSec !== undefined ? ` · ${attachment.durationSec}s` : ''
-      }`,
-    )
-  }
-  for (const attachment of photos) {
-    lines.push(`  - Photo · ${formatTimestamp(attachmentTimestamp(entry, attachment))}`)
-  }
+  const ordered = [...entry.attachments].sort((a, b) =>
+    attachmentTimestamp(entry, a).localeCompare(attachmentTimestamp(entry, b)),
+  )
+  for (const attachment of ordered) {
+    const timestamp = attachmentTimestamp(entry, attachment)
+    if (attachment.kind === 'audio') {
+      lines.push(
+        `- ${formatTime(timestamp)} · Audio recording${
+          attachment.durationSec !== undefined ? ` · ${attachment.durationSec}s` : ''
+        }`,
+      )
+      continue
+    }
+    if (attachment.kind === 'photo') {
+      lines.push(`- ${formatTime(timestamp)} · Photo`)
+      continue
+    }
 
-  const textAttachments = entry.attachments.filter((attachment) => attachment.kind === 'text')
-  for (const attachment of textAttachments) {
+    const sourceTime = sourceTimestamp(attachment, entry.attachments, entry.attachmentLoggedAt, entry.loggedAt)
+    const sourceSuffix = sourceTime === undefined ? '' : ` · source at ${formatTime(sourceTime)}`
     const blob = await getBlob(attachment.file)
     const text = await blob?.text()
     lines.push(
-      '',
-      `### ${sourceKind(attachment, entry.attachments)} · ${formatTimestamp(
-        attachmentTimestamp(entry, attachment),
-      )}`,
+      `- ${formatTime(timestamp)} · ${sourceKind(attachment, entry.attachments)}${sourceSuffix}`,
       formatText(text ?? '(text unavailable)'),
     )
   }
   return lines.join('\n')
+}
+
+/** Render one folded entry, including its local time-zone context. */
+export async function formatEntryPlainText(entry: Entry, getBlob: GetBlob): Promise<string> {
+  return formatEntry(entry, getBlob, true)
 }
 
 /** Render entries in their supplied order, separated by a blank line. */
@@ -106,5 +125,16 @@ export async function formatEntriesPlainText(
   entries: readonly Entry[],
   getBlob: GetBlob,
 ): Promise<string> {
-  return (await Promise.all(entries.map((entry) => formatEntryPlainText(entry, getBlob)))).join('\n\n')
+  const zones = new Set(entries.map(entryZone))
+  const dates = new Set(entries.map((entry) => entry.capturedAt.slice(0, 10)))
+  const context = [
+    '# Day export',
+    `- Entries: ${entries.length}`,
+    dates.size === 1 ? `- Date: ${[...dates][0]}` : `- Dates: ${[...dates].sort().join(' → ')}`,
+    ...(zones.size === 1 ? [`- Time zone: ${[...zones][0]}`] : ['- Time zones: recorded per entry']),
+    '- Each item below is ordered by its recorded timestamp; attachment timestamps are when they were added.',
+  ]
+  if (entries.length === 0) return context.join('\n')
+  const rendered = await Promise.all(entries.map((entry) => formatEntry(entry, getBlob, zones.size !== 1)))
+  return `${context.join('\n')}\n\n${rendered.join('\n\n')}`
 }
