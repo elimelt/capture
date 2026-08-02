@@ -27,13 +27,16 @@ import { LifecycleBadge } from './LifecycleBadge'
 import { entryLifecycle, hasPendingEnrichment } from './lifecycle'
 import { groupAttachments } from './attachmentGroups'
 import { cardViewModel } from './cardView'
+import { PlaceCard } from './PlaceCard'
+import { locationName } from './placeCardModel'
 import { reasonLabel, relativeDayLabel } from './related'
 import { useAudioPlayback } from './useAudioPlayback'
 import { useRecorder, type RecordingResult } from './useRecorder'
 import { useRelated, type RelatedRow } from './useRelated'
 
 // Leaflet-backed; lazy so its chunk (JS + CSS) stays out of the initial
-// bundle and only loads for cards that show or edit a location.
+// bundle and now only loads once a card's `PlaceCard` row is explicitly
+// tapped (#81) — not for every located card in view.
 const MiniMap = lazy(() => import('./MiniMap'))
 const LocationSheet = lazy(() =>
   import('./LocationSheet').then((m) => ({ default: m.LocationSheet })),
@@ -88,6 +91,9 @@ export function EntryCard({
   const [noteOpen, setNoteOpen] = useState(false)
   const [locationOpen, setLocationOpen] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
+  // The full-screen interactive map (#81): opened explicitly from the
+  // PlaceCard row, never mounted alongside it — Leaflet loads only here.
+  const [mapOpen, setMapOpen] = useState(false)
   const photoInputRef = useRef<HTMLInputElement>(null)
   const timeInputRef = useRef<HTMLInputElement>(null)
   const audio = entry.attachments.find((a) => a.kind === 'audio')
@@ -150,9 +156,9 @@ export function EntryCard({
               aria-label="Change entry time"
             />
           </span>
-          {vm.collapsedShowsLocation && (
+          {vm.collapsedShowsLocation && entry.location && (
             <span className={cx('truncate', type_.sub, tone.textMuted)}>
-              {entry.location?.placeLabel ?? `near ${entry.location?.address}`}
+              {locationName(entry.location)}
             </span>
           )}
         </div>
@@ -204,11 +210,7 @@ export function EntryCard({
             onRemoveAttachment={onRemoveAttachment}
           />
           {entry.location && (
-            <div className="mt-2">
-              <Suspense fallback={null}>
-                <MiniMap location={entry.location} />
-              </Suspense>
-            </div>
+            <PlaceCard location={entry.location} onExpand={() => setMapOpen(true)} />
           )}
           {/* Related memories (#83 v1): a minimum-score threshold already
               gated `related` server-side (relatedEntries) — an empty array
@@ -344,6 +346,14 @@ export function EntryCard({
             onClear={() => onSetLocation(null)}
             onClose={() => setLocationOpen(false)}
           />
+        </Suspense>
+      )}
+      {/* The interactive map (#81): the PlaceCard row's onExpand is the only
+          way in, so Leaflet's chunk loads on explicit request, never
+          alongside the place card itself. */}
+      {mapOpen && entry.location && (
+        <Suspense fallback={null}>
+          <MiniMap location={entry.location} onClose={() => setMapOpen(false)} />
         </Suspense>
       )}
     </Card>
