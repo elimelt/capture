@@ -1,0 +1,86 @@
+/**
+ * capture.event.v1 — the stream-agnostic event record (SPEC §5.2, §3.3).
+ * These types are the serialized Drive contract; no domain fields allowed.
+ */
+
+export const EVENT_SCHEMA = 'capture.event.v1'
+
+export interface GeoLocation {
+  lat: number
+  lng: number
+  accuracyM: number
+  placeLabel?: string
+}
+
+export type AttachmentKind = 'audio' | 'text' | 'photo'
+
+export interface Attachment {
+  kind: AttachmentKind
+  /** Filename within the entry's log partition (see filenames.ts). */
+  file: string
+  mimeType: string
+  durationSec?: number
+}
+
+interface EventBase {
+  schema: typeof EVENT_SCHEMA
+  /** Short unique id within the stream. */
+  id: string
+  /** Per-stream monotonic sequence number. */
+  seq: number
+  stream: string
+  /** Append time, ISO-8601 with local offset. Partition key. */
+  loggedAt: string
+  /** IANA zone of the device at append time. */
+  deviceTz: string
+}
+
+export interface CaptureEvent extends EventBase {
+  type: 'capture'
+  /** Domain time the entry refers to, ISO-8601 with local offset. */
+  capturedAt: string
+  location?: GeoLocation
+  attachments: Attachment[]
+}
+
+export interface AmendPatch {
+  capturedAt?: string
+  location?: GeoLocation
+}
+
+export interface AmendEvent extends EventBase {
+  type: 'amend'
+  /** Ids of the capture events being amended. */
+  targets: string[]
+  patch?: AmendPatch
+  /** Additional attachments appended to the target entries. */
+  attachments?: Attachment[]
+}
+
+export interface RevokeEvent extends EventBase {
+  type: 'revoke'
+  /** Ids of the capture events being revoked. */
+  targets: string[]
+}
+
+export type LogEvent = CaptureEvent | AmendEvent | RevokeEvent
+
+/**
+ * Entry — the folded, user-visible view of a capture event after applying
+ * later amend/revoke events (SPEC §3.3). Never serialized; derived state.
+ */
+export interface Entry {
+  id: string
+  /** Seq of the originating capture event. */
+  seq: number
+  stream: string
+  loggedAt: string
+  /** Effective time (after amendments). */
+  capturedAt: string
+  deviceTz: string
+  location?: GeoLocation
+  attachments: Attachment[]
+  /** Highest seq of any event that affected this entry. */
+  lastEventSeq: number
+  revoked: boolean
+}
