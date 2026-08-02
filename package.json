@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:integration": "VITEST_INTEGRATION=1 vitest run src/assistant/transport.integration.test.ts",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "check:bundle-size": "node scripts/check-bundle-size.mjs"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^3.0.20",

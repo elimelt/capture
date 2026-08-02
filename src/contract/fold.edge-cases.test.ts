@@ -3,9 +3,24 @@
  * adversarial conditions: seq collisions, concurrent amends, reordering, etc.
  */
 import { describe, expect, it } from 'vitest'
-import type { AmendEvent, CaptureEvent } from './types'
+import type { AmendEvent, CaptureEvent, LogEvent, RevokeEvent } from './types'
 import { EVENT_SCHEMA } from './types'
 import { compareEvents, fold } from './fold'
+
+/** All N! orderings of `items` (small N only — issue #70's exhaustive-permutation
+ * fold test uses this at N=5, i.e. 120 orderings, which needs no dependency:
+ * `fast-check` is deliberately not pulled in for one array shuffle). */
+function permutations<T>(items: readonly T[]): T[][] {
+  if (items.length <= 1) return [items.slice()]
+  const [head, ...rest] = items
+  const result: T[][] = []
+  for (const perm of permutations(rest)) {
+    for (let i = 0; i <= perm.length; i++) {
+      result.push([...perm.slice(0, i), head, ...perm.slice(i)])
+    }
+  }
+  return result
+}
 
 const STREAM = 'timelog'
 const TZ = 'America/New_York'
@@ -48,6 +63,19 @@ function amend(
     deviceTz: TZ,
     targets,
     ...(patch ? { patch } : {}),
+  }
+}
+
+function revoke(seq: number, id: string, loggedAt: string, targets: string[]): RevokeEvent {
+  return {
+    schema: EVENT_SCHEMA,
+    type: 'revoke',
+    id,
+    seq,
+    stream: STREAM,
+    loggedAt,
+    deviceTz: TZ,
+    targets,
   }
 }
 
@@ -149,5 +177,39 @@ describe('fold determinism with seq collisions (Design C)', () => {
     // Later id (zzzzzz > aaaaaa) should win
     const entries = fold([capture, amendA, amendB])
     expect(entries[0].capturedAt).toBe('2026-08-02T07:00:00-04:00')
+  })
+})
+
+describe('fold exhaustive-permutation invariant (issue #70)', () => {
+  it('folds a 5-event mixed capture/amend/revoke log identically under all 120 orderings', () => {
+    // A mixed log: two independent captures, an amend on one, a revoke of the
+    // other, and a second amend on the already-amended one — deliberately not
+    // a chain of "arrives after its target" since fold must tolerate any
+    // arrival order (SPEC: fold is deterministic and arrival-order-tolerant).
+    const events: LogEvent[] = [
+      cap(1, 'aaaaaa', '2026-08-02T09:00:00-04:00'),
+      cap(2, 'bbbbbb', '2026-08-02T09:05:00-04:00'),
+      amend(3, 'cccccc', '2026-08-02T09:10:00-04:00', ['aaaaaa'], {
+        capturedAt: '2026-08-02T08:30:00-04:00',
+      }),
+      revoke(4, 'dddddd', '2026-08-02T09:15:00-04:00', ['bbbbbb']),
+      amend(5, 'eeeeee', '2026-08-02T09:20:00-04:00', ['aaaaaa'], {
+        capturedAt: '2026-08-02T08:45:00-04:00',
+      }),
+    ]
+
+    const orderings = permutations(events)
+    expect(orderings).toHaveLength(120)
+
+    const expected = fold(events)
+    for (const ordering of orderings) {
+      expect(fold(ordering)).toEqual(expected)
+    }
+
+    // Sanity: the invariant under test actually exercises something —
+    // 'bbbbbb' is revoked (dropped) and 'aaaaaa' carries the later (higher
+    // seq) amend's effect, not the earlier one.
+    expect(expected.map((e) => e.id)).toEqual(['aaaaaa'])
+    expect(expected[0].capturedAt).toBe('2026-08-02T08:45:00-04:00')
   })
 })

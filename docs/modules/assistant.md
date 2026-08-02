@@ -40,7 +40,10 @@ Responsibilities by file:
 
 Static assistant configuration.
 
-- `ASSISTANT_BASE_URL = 'https://llm.elimelt.com/v1'` — the OpenAI-compatible endpoint.
+- `ASSISTANT_BASE_URL = ENDPOINTS.assistant` (`https://llm.elimelt.com/v1`) — the
+  OpenAI-compatible endpoint, re-exported from the build-config module `src/config.ts`
+  (issue #69). The transcription/vision endpoints live in the separate
+  `src/enrich/config.ts` fork/self-host seam (issue #62) — not duplicated here.
 - `ASSISTANT_MODELS` — curated list of models known to exist on the endpoint; the first
   entry is the default. Currently a single entry: `gpt-oss:20b` ("GPT-OSS 20B"), the only
   hosted model that emits well-formed `tool_calls`, which the assistant relies on to read

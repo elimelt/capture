@@ -17,20 +17,29 @@ npm run test:watch         # vitest in watch mode
 npm run test:integration   # VITEST_INTEGRATION=1 — hits live LLM endpoint
 npm run lint               # oxlint
 npm run build              # tsc -b (type-check both projects) && vite build
+npm run check:bundle-size  # post-build: entry chunk budget + no AI SDK leakage
 npm run preview            # serve the production build locally
 ```
 
 - The default suite must stay hermetic. The one network-dependent test
   (`src/assistant/transport.integration.test.ts`) is excluded unless
   `VITEST_INTEGRATION=1`; run it only when touching the assistant transport
-  and network access is available.
+  and network access is available. It also runs on a weekly schedule
+  (`.github/workflows/integration.yml`, issue #71) so transport rot surfaces
+  as a red run instead of only when a human remembers to run it locally —
+  deliberately not wired into `ci.yml`/`deploy.yml`, since a flaky/down
+  external endpoint must never block a PR or deploy.
 - **CI:** every pull request and push to `main` runs
   `.github/workflows/ci.yml` (`npm ci`, `npm test`, `npx tsc -b`,
-  `npm run lint`, `npm run build`).
+  `npm run lint`, `npm run build`, `npm run check:bundle-size`).
+  `check:bundle-size` (`scripts/check-bundle-size.mjs`, issue #71) guards the
+  lazy-assistant-chunk architectural promise below: it fails if the entry
+  chunk exceeds a byte budget or contains an AI-SDK marker string, and if the
+  assistant's `ChatScreen-*.js` chunk goes missing.
 - **Deploy model:** every push to `main` triggers
   `.github/workflows/deploy.yml`, which runs `npm ci`, `npm test`,
-  `npm run build`, then deploys to GitHub Pages. Never push to `main` with
-  failing tests — a push is a deploy.
+  `npm run build`, `npm run check:bundle-size`, then deploys to GitHub Pages.
+  Never push to `main` with failing tests — a push is a deploy.
 
 ### Always open a PR
 

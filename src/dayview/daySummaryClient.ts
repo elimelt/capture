@@ -14,13 +14,12 @@
  *   tool_calls, and a small num_predict budget gets consumed entirely by its
  *   `reasoning` field, returning empty `content`. Only the native API honors
  *   `think: false` (same reason vision/api.ts uses it), so the prose runs on
- *   the non-reasoning gemma path instead.
+ *   the non-reasoning gemma path instead — the same endpoint as vision/api.ts
+ *   (`VISION_CHAT_URL`, `src/enrich/config.ts`, issue #62), since both are
+ *   native `/api/chat` calls on the LLM host.
  */
-import { ASSISTANT_BASE_URL } from '../assistant/config'
+import { VISION_CHAT_URL as CHAT_URL } from '../enrich/config'
 import type { DaySummaryPrompt } from './prosePrompt'
-
-/** Native chat endpoint on the same host as the OpenAI-compat /v1. */
-const CHAT_URL = `${ASSISTANT_BASE_URL.replace(/\/v1$/, '')}/api/chat`
 /** Non-reasoning model for one-shot prose; no tool_calls needed here. */
 const MODEL = 'gemma4:e4b'
 const MAX_TOKENS = 120

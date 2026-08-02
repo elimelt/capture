@@ -1329,17 +1329,23 @@ and keeps the digest format identical to what the chat assistant sends.
 ### src/dayview/daySummaryClient.ts
 
 **Purpose:** The opt-in prose's network call (#82) — a single direct `fetch` to
-the OpenAI-compatible chat-completions endpoint, deliberately **not**
-`assistant/transport.ts`'s `DirectChatTransport`/`ToolLoopAgent` (that pulls in
-`ai` + `@ai-sdk/openai-compatible`, the same chunk `dayDigest.ts` avoids above;
-it is already `ChatScreen`'s own lazy chunk, excluded from the SW precache in
-`vite.config.ts`). No streaming, no tools, no history — one request, one
-completion.
+the LLM host's **native** (Ollama-style) `/api/chat` endpoint, deliberately
+**not** `assistant/transport.ts`'s `DirectChatTransport`/`ToolLoopAgent` (that
+pulls in `ai` + `@ai-sdk/openai-compatible`, the same chunk `dayDigest.ts`
+avoids above; it is already `ChatScreen`'s own lazy chunk, excluded from the SW
+precache in `vite.config.ts`) and **not** the assistant's own model or its
+OpenAI-compat `/v1` endpoint either: the chat default (`gpt-oss:20b`) is a
+reasoning model whose small `num_predict` budget is consumed entirely by its
+`reasoning` field on this endpoint, returning empty `content`; only the native
+API honors `think: false` (same reason `vision/api.ts` uses it), so the prose
+runs on the non-reasoning `gemma4:e4b` path instead — the same host+path as
+photo captioning (`VISION_CHAT_URL`, `src/enrich/config.ts`, issue #62). No
+streaming, no tools, no history — one request, one completion.
 
-**Export:** `fetchDaySummary(prompt: DaySummaryPrompt, model: string):
-Promise<string | undefined>` — posts to `` `${ASSISTANT_BASE_URL}/chat/completions` ``
-(imported from `assistant/config.ts`, which has no SDK dependency either) with
-`stream: false`; returns the trimmed completion text, or `undefined` on any
+**Export:** `fetchDaySummary(prompt: DaySummaryPrompt): Promise<string | undefined>`
+— posts to `VISION_CHAT_URL` with `model: 'gemma4:e4b'`, `think: false`,
+`stream: false`, and a 120-token `num_predict` budget; returns the trimmed
+`message.content` from the native response shape, or `undefined` on any
 failure (offline, non-2xx, malformed body, empty completion) — never throws, so
 a failed generation never blocks or replaces the deterministic stat line
 already on screen.

@@ -9,7 +9,6 @@
  * doesn't tombstone, a race that isn't serialized — shows up here even if
  * a mock-based test would stay green.
  */
-import 'fake-indexeddb/auto'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { getDb, resetDbCache } from '../store/db'
 import { useAppStore } from '../store/appStore'

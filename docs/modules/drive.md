@@ -286,6 +286,17 @@ Never a blocking modal. Rendered by `src/App.tsx`.
 
 ### Test files
 
+`bootstrap.test.ts`, `queue.test.ts`, and `pull.test.ts` below all share one in-memory
+Drive-client fake, `src/drive/testing/fakeDrive.ts` (issue #70) — the client-contract
+details (409-on-pregenerated-id, folder/file addressing by `(name, parentId)`, the
+journal-backed changes feed with cursors/trash/appProperties, upload-order recording,
+and the `failNext`/`failName`/`fail` injection knobs) live there once instead of being
+re-implemented per suite. Each test file still owns its own literal
+`vi.mock('./client', () => driveClientMock())` call (`vi.mock` hoisting requires that),
+assigns a fresh `fakeDrive()` to `setActiveFakeDrive()` in `beforeEach`, and calls
+`useFreshIndexedDb()` (`src/testing/freshDb.ts`) instead of hand-rolling the
+`fake-indexeddb` reset dance.
+
 - `src/drive/token.test.ts` — verifies token round-trip/clear against fake IndexedDB, the 60s expiry-skew behavior of `tokenValid`, and the `getValidAccessToken` / `connectionState` derivations.
 - `src/drive/auth.test.ts` — with a stubbed GIS global, covers `connect` (token persistence, expiry from `expires_in`, single reused token client, `drive.file` scope, prompt override, error rejection) and `disconnect` (revoke + local clear, clear-only when no token passed).
 - `src/drive/client.test.ts` — with stubbed `fetch`, covers query building/escaping in `findFile`, folder creation (with `appProperties`), multipart-vs-resumable selection in `uploadFile`, pre-generated-id metadata + 409-as-success (and 409 still thrown without a `fileId`), `generateIds`, `DriveError` status classification, `readFileText`/`readFileBlob`, `listChildren` (non-trashed query, `nextPageToken` pagination), `getFileMetadata`, `getStartPageToken`, and `listChanges` (params, pagination, 410).
