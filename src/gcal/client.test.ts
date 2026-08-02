@@ -55,6 +55,8 @@ describe('listEvents', () => {
             htmlLink: 'https://cal/e1',
             start: { dateTime: '2026-08-02T09:00:00Z' },
             end: { dateTime: '2026-08-02T10:00:00Z' },
+            updated: '2026-08-01T12:00:00.000Z',
+            recurringEventId: 'series1',
           },
         ],
       }),
@@ -65,7 +67,13 @@ describe('listEvents', () => {
       timeMax: '2026-08-03T00:00:00-04:00',
     })
     expect(events).toHaveLength(1)
-    expect(events[0]).toMatchObject({ id: 'e1', summary: 'Work', allDay: false })
+    expect(events[0]).toMatchObject({
+      id: 'e1',
+      summary: 'Work',
+      allDay: false,
+      updated: '2026-08-01T12:00:00.000Z',
+      recurringEventId: 'series1',
+    })
 
     const [url] = fetchMock.mock.calls[0]
     const parsed = new URL(String(url))
@@ -74,6 +82,9 @@ describe('listEvents', () => {
     expect(parsed.searchParams.get('singleEvents')).toBe('true')
     expect(parsed.searchParams.get('orderBy')).toBe('startTime')
     expect(parsed.searchParams.get('timeMin')).toBe('2026-08-02T00:00:00-04:00')
+    // The overlay layer needs these two threaded through (SPEC §3.6).
+    expect(parsed.searchParams.get('fields')).toContain('updated')
+    expect(parsed.searchParams.get('fields')).toContain('recurringEventId')
   })
 })
 

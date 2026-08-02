@@ -98,7 +98,10 @@ export async function listEvents(
     singleEvents: 'true',
     orderBy: 'startTime',
     maxResults: '250',
-    fields: 'items(id,summary,htmlLink,status,start(date,dateTime),end(date,dateTime))',
+    // `updated` feeds the overlay dirty-check fast path and `recurringEventId`
+    // the instance-level overlay identity (SPEC §3.6); parseEvent threads both.
+    fields:
+      'items(id,summary,htmlLink,status,start(date,dateTime),end(date,dateTime),updated,recurringEventId)',
   })
   const res = await ensureOk(
     await fetch(`${API}/calendars/${encodeURIComponent(calendarId)}/events?${params}`, {
