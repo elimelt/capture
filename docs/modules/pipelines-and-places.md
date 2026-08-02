@@ -9,14 +9,18 @@ reverse geocoding).
 ### `src/transcribe` — audio transcription pipeline
 
 Turns captured audio attachments into machine transcripts after the fact, so capture
-stays instant and offline-first. Split into three files following the **plan / runner /
-api** pattern:
+stays instant and offline-first. Split into four files following the **plan / runner /
+api** pattern (plus a pure streaming core):
 
 - `plan.ts` — pure function over the event log: which audio attachments still need a
   transcript.
-- `api.ts` — HTTP client for the Whisper-compatible transcription service.
-- `runner.ts` — the drain loop: reads pending work from the plan, calls the API, and
-  appends the result to the store as an amend event with a `derivedFrom` text
+- `api.ts` — HTTP client for the Whisper-compatible transcription service. Streams:
+  partial transcripts are surfaced per segment while the request runs.
+- `stream.ts` — pure streaming core: incremental SSE parsing and transcript assembly,
+  no I/O.
+- `runner.ts` — the drain loop: reads pending work from the plan, calls the API
+  (publishing streamed partials to `src/store/livetext.ts` for the entry card), and
+  appends the final result to the store as an amend event with a `derivedFrom` text
   attachment.
 
 The transcript is just another attachment in the append-only log, so it flows to Drive
@@ -26,11 +30,12 @@ code.
 ### `src/vision` — image analysis pipeline
 
 The photo twin of `src/transcribe`: captions photo attachments using a vision LLM. Same
-plan / runner / api split, same amend-with-`derivedFrom` output shape, same skip/backoff
-failure handling. The only structural additions are photo-specific: client-side
-downscaling before upload (`api.ts`) and a filename-based discriminator to tell photo
-captions apart from audio transcripts (`plan.ts`), since both are `kind: 'text'`
-attachments with `derivedFrom` set.
+plan / stream / runner / api split, same streamed-partials-then-final-amend flow, same
+amend-with-`derivedFrom` output shape, same skip/backoff failure handling. The only
+structural additions are photo-specific: client-side downscaling before upload
+(`api.ts`), NDJSON rather than SSE as the stream format (`stream.ts`), and a
+filename-based discriminator to tell photo captions apart from audio transcripts
+(`plan.ts`), since both are `kind: 'text'` attachments with `derivedFrom` set.
 
 ### `src/places` — place matching & geocoding
 
@@ -56,12 +61,26 @@ Both pipelines share the same architecture:
    because the pending list itself is built from the folded entries.
 2. **API** (`api.ts`): a single exported async function that talks to one external
    service, with a 60 s timeout, and throws descriptive `Error`s on non-OK HTTP or
-   malformed responses. Returns trimmed text (possibly empty).
-3. **Runner** (`runner.ts`): the impure drain. It loads events via
+   malformed responses. Returns trimmed text (possibly empty). Both APIs request a
+   **streaming** response and take an optional `onPartial(text)` callback that receives
+   the accumulated text as it arrives — display-only; the promise's resolved value is
+   the only result, and it is identical to what the non-streaming endpoint would have
+   returned. A stream cut off mid-way **rejects** (never resolves with truncated text),
+   and if the server ignores `stream` the client falls back to parsing the whole body.
+3. **Stream** (`stream.ts`): the pure streaming core the API builds on — incremental
+   wire-format parsing (chunks may split anywhere) and partial/final text assembly,
+   fully unit-tested with no I/O. Transcription parses SSE segments; captioning parses
+   NDJSON deltas.
+4. **Runner** (`runner.ts`): the impure drain. It loads events via
    `listEvents(streamId)` (`src/store/events.ts`), asks the plan what is pending, fetches
    each source blob with `getBlob(file)`, calls the API, and appends the result via
    `appendAmend` targeting the owning entry. Module-level state provides per-file
-   exponential backoff and coalescing of concurrent drains.
+   exponential backoff and coalescing of concurrent drains. While an API call streams,
+   the runner publishes each partial to the matching transient live-text store
+   (`liveTranscripts` / `liveCaptions` in `src/store/livetext.ts`, keyed by source
+   file), which `src/capture/AttachmentBody.tsx` renders on the entry card; the key is
+   cleared on failure/drop and swept at the start of the next drain, and only the
+   resolved final text is ever persisted.
 
 Runner failure handling (identical in both pipelines):
 
@@ -79,9 +98,10 @@ Runner failure handling (identical in both pipelines):
 
 Relations to other modules:
 
-- **store** (`src/store/db.ts`, `src/store/events.ts`): `getDb()` for the `meta` (skip
-  markers) and `geocache` object stores; `listEvents` / `getBlob` / `appendAmend` for
-  the event log and blob store.
+- **store** (`src/store/db.ts`, `src/store/events.ts`, `src/store/livetext.ts`):
+  `getDb()` for the `meta` (skip markers) and `geocache` object stores; `listEvents` /
+  `getBlob` / `appendAmend` for the event log and blob store; `liveTranscripts` /
+  `liveCaptions` for publishing streamed partial text to the entry card.
 - **contract** (`src/contract/types.ts`, `fold.ts`, `filenames.ts`): `Attachment` (with
   the `derivedFrom` field marking machine-derived content), `LogEvent`, the fold, and
   the machine-generated filename scheme (`…_photo.jpg`, `…_note.txt`) that
@@ -122,22 +142,54 @@ Client for the transcription service (Speaches / OpenAI-compatible Whisper at
 
 Exports:
 
-- `transcribeAudio(blob: Blob, mimeType: string): Promise<string>` — returns the
-  transcript text, trimmed; may be empty for silent clips.
+- `transcribeAudio(blob: Blob, mimeType: string, onPartial?: (text: string) => void):
+  Promise<string>` — returns the transcript text, trimmed; may be empty for silent
+  clips. While the response streams, `onPartial` receives the transcript-so-far after
+  each segment (display-only).
 
 Behavior:
 
 - POSTs a multipart form to `/v1/audio/transcriptions` with fields: `model`
-  (`Systran/faster-whisper-base.en`), `response_format: 'json'`, `vad_filter: 'true'`
-  (server-side trimming of leading/trailing silence — base.en hallucinates on it), and
-  `file`.
+  (`Systran/faster-whisper-base.en`), `response_format: 'text'`, `stream: 'true'`,
+  `vad_filter: 'true'` (server-side trimming of leading/trailing silence — base.en
+  hallucinates on it), and `file`.
 - The blob is sent as-is (the server decodes iOS `audio/mp4` and `audio/webm` alike),
   but wrapped in a `File` whose name hints the container: `clip.m4a` for
   `audio/mp4*`, `clip.webm` for `audio/webm*`, otherwise `clip.audio` (private helper
   `fileName(mimeType)`).
-- 60 s timeout via `AbortSignal.timeout`. Throws `transcription failed: HTTP <status>`
-  on non-OK responses and `transcription failed: no text in response` when the JSON
-  body has no string `text`.
+- The server answers with SSE (one event per whisper segment); the client decodes the
+  body through `stream.ts`, calls `onPartial(assembleTranscript(segments))` as segments
+  land, and resolves with the assembled final text. If the response is not
+  `text/event-stream` (server ignored `stream`), it falls back to the whole plain-text
+  body, trimmed.
+- 60 s timeout via `AbortSignal.timeout` (covers the whole stream). Throws
+  `transcription failed: HTTP <status>` on non-OK responses and
+  `transcription failed: truncated stream` when the body ends mid-event — a cut
+  connection is a transient failure, never a silently truncated transcript.
+
+### src/transcribe/stream.ts
+
+Pure streaming core: incremental SSE parsing and transcript assembly, no I/O.
+
+Exports:
+
+- `feedSse(buffer: string, chunk: string): { buffer: string; data: string[] }` — feed
+  one decoded chunk; returns the `data:` payloads of the events it completed plus the
+  unconsumed tail to pass into the next call. Handles events split anywhere across
+  chunks, multiple `data:` lines per event (joined with `\n`), CRLF (including a CR/LF
+  split across chunks), and ignores comments and non-`data` fields. Exactly one leading
+  space after `data:` is stripped, per the SSE spec — which is what preserves the raw
+  segment text below.
+- `assembleTranscript(segments: readonly string[]): string` — plain concatenation, then
+  trim. Used for both the mid-stream partials and the final result, so they agree at
+  every prefix.
+
+Why this reproduces the non-streaming result byte-for-byte: speaches' non-streaming
+`json`/`text` response is `"".join(segment.text).strip()` over the raw whisper segment
+texts, and its `response_format=text` SSE events carry each segment's **raw** text
+(leading space included, since `data: ` + payload puts the payload's own space second).
+Concatenate raw payloads, trim once — the same bytes the non-streaming path would have
+stored.
 
 ### src/transcribe/runner.ts
 
@@ -152,16 +204,26 @@ Exports:
 Per-file drain logic (see the pattern section above for the shared failure model):
 
 1. Return `0` immediately when offline.
-2. For each `pendingTranscriptions(events)` item, skip files that are backing off
+2. Sweep `liveTranscripts` down to the currently-pending audio files (drops live text
+   left by attempts that completed before this drain).
+3. For each `pendingTranscriptions(events)` item, skip files that are backing off
    (`eligible`) or have a `transcribe:skip:<file>` marker in the `meta` store.
-3. Missing blob (audio was never kept locally — `keepAudioLocally` off) → mark skipped
-   permanently, no API call. Empty transcript → mark skipped permanently.
-4. After `transcribeAudio` resolves, re-plan against the current log (fresh
-   `listEvents` → `pendingTranscriptions`) and drop the result if the audio no longer
-   needs a transcript — a sync pull may have imported another device's transcript
-   while the API call was in flight (at-most-once transcription globally).
-5. Still pending → `appendAmend({ stream, targets: [entryId], attachments: [{ kind: 'text',
-   blob, mimeType: 'text/plain', derivedFrom: audio.file }] })`.
+4. Missing blob (audio was never kept locally — `keepAudioLocally` off) → mark skipped
+   permanently, no API call. Empty transcript → clear live text, mark skipped
+   permanently.
+5. While `transcribeAudio` streams, each partial is published to
+   `liveTranscripts.set(audio.file, partial)` for the entry card; a mid-stream failure
+   lands in the catch, which clears the live text and backs off as before — partial
+   text is never persisted.
+6. After `transcribeAudio` resolves, re-plan against the current log (fresh
+   `listEvents` → `pendingTranscriptions`) and drop the result (clearing its live text)
+   if the audio no longer needs a transcript — a sync pull may have imported another
+   device's transcript while the API call was in flight (at-most-once transcription
+   globally).
+7. Still pending → `appendAmend({ stream, targets: [entryId], attachments: [{ kind: 'text',
+   blob, mimeType: 'text/plain', derivedFrom: audio.file }] })`. The final live text is
+   left in place until the next drain's sweep, so the card never flashes empty before
+   the store refresh reveals the persisted attachment.
 
 Constants: `MAX_ATTEMPTS_PER_SESSION = 5`, `BACKOFF_BASE_MS = 15_000`.
 
@@ -177,9 +239,22 @@ attachments, and that a plain user note does not count as a transcript.
 
 ### src/transcribe/api.test.ts
 
-Stubs `fetch` and verifies the multipart form contract (model, `response_format`,
-`vad_filter`, filename by mime type), text trimming, and the errors thrown on non-OK
-HTTP and non-string `text` in the response body.
+Stubs `fetch` with `ReadableStream`-bodied SSE responses and verifies the multipart
+form contract (model, `response_format: text`, `stream: true`, `vad_filter`, filename
+by mime type), segment concatenation matching the non-streaming join, the `onPartial`
+sequence across chunk boundaries, the empty-stream (silent clip) result, rejection on a
+mid-stream connection error (after partials were emitted) and on a stream that ends
+mid-event, the plain-text fallback when the server does not stream, and the error
+thrown on non-OK HTTP.
+
+### src/transcribe/stream.test.ts
+
+Covers `feedSse` (single/multiple events per chunk, events split across chunks,
+one-leading-space stripping that preserves the segment's own space, multi-line data
+joins, bare `data` lines, ignored comments/fields, CRLF including a CR split across
+chunks) and `assembleTranscript` (raw-concatenation + trim equal to the server's
+non-streaming join, interior whitespace preserved verbatim, empty cases, and
+partial-prefix/final agreement).
 
 ### src/transcribe/runner.test.ts
 
@@ -189,6 +264,9 @@ permanent skip markers for empty transcripts and missing blobs, backoff after fa
 the offline no-op, the two pull-race cases (audio whose transcript arrived via a pulled
 amend is never sent to the API; an in-flight result is dropped when a pull imports a
 remote transcript mid-drain), and coalescing of overlapping drains onto one promise.
+The streaming tests cover the live-text lifecycle: partials published to
+`liveTranscripts` mid-flight, the final text lingering until the next drain's sweep,
+clearing on mid-stream failure (with nothing persisted) and on the mid-drain pull race.
 Resets the module registry per test because the runner keeps module-level state.
 
 ### src/vision/plan.ts
@@ -221,8 +299,10 @@ turns a ~20 s reasoning detour into a ~2–3 s caption. CORS is origin-gated; no
 
 Exports:
 
-- `captionPhoto(blob: Blob): Promise<string>` — returns the caption text, trimmed; may
-  be empty if the model produced none.
+- `captionPhoto(blob: Blob, onPartial?: (text: string) => void): Promise<string>` —
+  returns the caption text, trimmed; may be empty if the model produced none. While the
+  response streams, `onPartial` receives the caption-so-far after each delta
+  (display-only).
 
 Behavior:
 
@@ -231,13 +311,38 @@ Behavior:
   `createImageBitmap` + canvas, so uploads stay ~100 KB instead of the multi-megabyte
   camera original. Returns the base64 payload of a data URL; closes the bitmap in a
   `finally`. Throws on a missing 2d context or a failed JPEG encode.
-- POSTs JSON `{ model, think: false, stream: false, messages: [{ role: 'user', content:
-  PROMPT, images: [base64] }] }` with a fixed captioning prompt; 60 s timeout. Throws
-  `caption failed: HTTP <status>` on non-OK responses and `caption failed: no content in
-  response` when `message.content` is not a string.
+- POSTs JSON `{ model, think: false, stream: true, messages: [{ role: 'user', content:
+  PROMPT, images: [base64] }] }` with a fixed captioning prompt; 60 s timeout (covers
+  the whole stream). The endpoint answers with NDJSON content deltas, decoded through
+  `stream.ts`; the client calls `onPartial(assembleCaption(deltas))` as deltas land and
+  resolves once the terminal `done: true` line arrives. If the response is plain
+  `application/json` (server ignored `stream`), it falls back to the old single-body
+  parse.
+- Throws `caption failed: HTTP <status>` on non-OK responses, `caption failed:
+  truncated stream` when the body ends without the `done` line, and the `stream.ts`
+  parse errors (`malformed stream chunk`, `no content in response`, a server-reported
+  `error` field) on broken streams — a cut connection is a transient failure, never a
+  silently truncated caption.
 
-Note: unlike `transcribe/api.ts` and the other files here, `vision/api.ts` has no test
-file (its canvas/bitmap path is browser-only).
+Note: unlike `transcribe/api.ts`, `vision/api.ts` has no test file (its canvas/bitmap
+path is browser-only); its pure streaming logic is tested via `stream.test.ts`.
+
+### src/vision/stream.ts
+
+Pure streaming core: incremental NDJSON parsing and delta accumulation, no I/O.
+
+Exports:
+
+- `feedLines(buffer: string, chunk: string): { buffer: string; lines: string[] }` —
+  split a decoded chunk into complete non-empty lines (CR-stripped), buffering a
+  partial tail for the next call.
+- `parseChatLine(line: string): { delta: string; done: boolean }` — parse one
+  `/api/chat` NDJSON line. Throws on a server-reported `error` field, unparsable JSON,
+  or a non-terminal chunk without string `message.content`; tolerates a stats-only
+  `done: true` line.
+- `assembleCaption(deltas: readonly string[]): string` — concatenation + trim,
+  identical to trimming the non-streaming `message.content` (Ollama's stream deltas
+  concatenate to exactly that string). Used for both partials and the final result.
 
 ### src/vision/runner.ts
 
@@ -250,12 +355,14 @@ Exports:
   coalesce onto the in-flight drain.
 
 Differences from the transcribe runner are limited to: skip-marker prefix
-`caption:skip:<file>`, `pendingCaptions` as the plan, and `captionPhoto(blob)` (no mime
-type argument) as the API. Same constants (5 attempts/session, 15 s backoff base), same
-offline check, same amend shape with `derivedFrom: photo.file`. Also invoked from the
-`src/App.tsx` effect. One structural gap: the transcribe runner's post-API re-plan
-(drop the result if a pull imported a transcript mid-flight) has no counterpart here
-yet.
+`caption:skip:<file>`, `pendingCaptions` as the plan, `captionPhoto(blob, onPartial)`
+(no mime type argument) as the API, and `liveCaptions` as the live-text store (same
+lifecycle: sweep to pending files at drain start, partials published mid-stream,
+cleared on failure/empty, final text left for the next sweep). Same constants (5
+attempts/session, 15 s backoff base), same offline check, same amend shape with
+`derivedFrom: photo.file`. Also invoked from the `src/App.tsx` effect. One structural
+gap: the transcribe runner's post-API re-plan (drop the result if a pull imported a
+transcript mid-flight) has no counterpart here yet.
 
 ### src/vision/plan.test.ts
 
@@ -264,12 +371,21 @@ Covers `isCaption` (photo-derived text vs. audio transcript vs. note vs. photo) 
 revoked entries, removed photos, two-photo entries, and that neither a user note nor an
 audio transcript counts as captioning a photo.
 
+### src/vision/stream.test.ts
+
+Covers `feedLines` (lines split across chunks, several per chunk, blank-line skipping,
+CRLF), `parseChatLine` (content deltas, terminal/stats-only `done` lines, thrown errors
+for server `error` fields, unparsable JSON, and non-string content), and
+`assembleCaption` (concatenation + trim, empty cases, partial-prefix/final agreement).
+
 ### src/vision/runner.test.ts
 
 Mirrors `transcribe/runner.test.ts` for `drainCaptions`: amend shape and stored caption
 blob, idempotent re-drains, permanent skips for empty captions and missing blobs,
 failure backoff, offline no-op, and drain coalescing — with fresh module registry and
-IndexedDB per test.
+IndexedDB per test. The streaming tests cover the `liveCaptions` lifecycle: partials
+published mid-flight, final text lingering until the next drain's sweep, and clearing
+on mid-stream failure with nothing persisted.
 
 ### src/places/match.ts
 
@@ -347,6 +463,11 @@ Covers `haversineM` (zero distance, ~111,195 m per degree of latitude, symmetry)
   treated as permanently unprocessable.
 - **Empty API results are valid.** `transcribeAudio`/`captionPhoto` return `''` rather
   than throwing; the runners convert that into a permanent skip, not a retry.
+- **Streaming is display-only.** Partial text flows through `onPartial` into the
+  transient live-text stores and never into the log; the persisted final text is
+  byte-identical to what the non-streaming endpoints would have returned, and a stream
+  that fails or is truncated mid-way rejects (transient failure, normal backoff) rather
+  than resolving with a prefix.
 - **Pipelines are append-only writers.** They only ever `appendAmend`; the resulting
   events reach Drive through the ordinary upload queue. No Drive code in these modules.
 - **`reverseGeocode` never throws and may return `undefined`**; callers must treat the

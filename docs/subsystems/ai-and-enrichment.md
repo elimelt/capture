@@ -24,17 +24,39 @@ app is fully functional with all of it offline or failing.
 
 ## The plan / runner / api pipeline pattern
 
-Both media pipelines (`src/transcribe`, `src/vision`) are the same three-part machine:
+Both media pipelines (`src/transcribe`, `src/vision`) are the same four-part machine:
 
 | Part | Nature | Job |
 |---|---|---|
 | `plan.ts` | pure, no I/O | `(events) => Pending…[]` — what still needs processing |
-| `api.ts` | one async fn | call one external service; 60 s timeout; throw on bad HTTP |
+| `stream.ts` | pure, no I/O | incremental wire-format parsing + partial/final assembly |
+| `api.ts` | one async fn | call one external service, streaming; 60 s timeout; throw on bad HTTP |
 | `runner.ts` | impure drain | plan → fetch blob → API → `appendAmend`; backoff & skips |
 
 The split keeps the decision "what needs work" testable as a pure function over the
-event log, isolates each external service behind a single function, and confines all
-state (retry maps, in-flight coalescing, skip markers) to the runner.
+event log, isolates each external service behind a single function, keeps the streaming
+mechanics (chunk assembly, truncation detection) pure and unit-testable, and confines
+all state (retry maps, in-flight coalescing, skip markers) to the runner.
+
+### Results stream in; only the final text is persisted
+
+Both API calls request streaming responses (SSE segments for transcription, NDJSON
+deltas for captioning) and report the accumulated text through an `onPartial` callback
+as it arrives. The runner publishes those partials to the transient in-memory live-text
+stores (`liveTranscripts`/`liveCaptions` in `src/store/livetext.ts`, keyed by source
+attachment file), and the entry card (`src/capture/AttachmentBody.tsx`) renders the
+text growing in place. This is strictly a UX layer:
+
+- **The log is unchanged.** The runner's single `appendAmend` still happens once, after
+  the stream completes, and the final text is byte-identical to what the non-streaming
+  endpoints would have returned (the transcription client concatenates raw SSE segment
+  payloads exactly as the server's own non-streaming join does).
+- **Partial text is never persisted.** A stream that errors or is cut off mid-way makes
+  the API call reject — treated as an ordinary transient failure (backoff, retry) — and
+  the runner clears the live text. Live entries for completed attempts are swept at the
+  start of the next drain, after the persisted attachment is already visible.
+- The assistant streams natively via the AI SDK (below); geocoding is a single small
+  JSON lookup with nothing to stream.
 
 ### Why planning is history-aware
 
