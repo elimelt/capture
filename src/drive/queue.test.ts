@@ -555,4 +555,48 @@ describe('drainStream', () => {
     // Both event files landed for real (no phantom 409-as-success successes).
     expect(drive.uploadOrder.length).toBe(landedBefore + 2)
   })
+
+  it('never reuses an old-account segment assignment after an account switch (#32 × §5.7)', async () => {
+    // A segment batch whose assignment (one shared id on every member row)
+    // persisted on account A but whose upload never landed.
+    await captureWithAudio()
+    await captureWithAudio()
+    await import('./bootstrap').then((m) => m.ensureTree('tok-a', ['timelog']))
+    const { drainStream } = await import('./queue')
+    drive.failNext(500)
+    expect((await drainStream('tok-a', 'timelog')).outcome).toBe('retry-later')
+
+    const { getSyncStatuses } = await import('../store/events')
+    const rows = [...(await getSyncStatuses('timelog')).values()]
+    const staleIds = rows.flatMap((r) => Object.values(r.fileIds ?? {}))
+    // The segment assignment reached every member row before the failure,
+    // and — no backoff gate — both rows are already eligible for the retry.
+    for (const row of rows) {
+      expect(Object.keys(row.fileIds ?? {}).some((n) => n.endsWith('.ndjson'))).toBe(true)
+    }
+
+    // Switch accounts: stripPendingFileIds must drop segment assignments too
+    // — reusing account A's segment id would 409 against A's file and be
+    // miscounted as success while account B's Drive got nothing.
+    drive.failNext(null)
+    drive.setUser('user-B')
+    drive.generateIds.mockClear()
+    drive.uploadFile.mockClear()
+    const landedBefore = drive.uploadOrder.length
+    const res = await drainStream('tok-b', 'timelog')
+    expect(res).toMatchObject({ outcome: 'drained', uploaded: 2 })
+    expect(drive.generateIds).toHaveBeenCalled()
+    const usedIds = drive.uploadFile.mock.calls
+      .map((c) => (c[1] as FakeUploadArgs).fileId)
+      .filter((id): id is string => id !== undefined)
+    expect(usedIds.length).toBeGreaterThan(0)
+    for (const id of usedIds) expect(staleIds).not.toContain(id)
+    // Both events landed for real under fresh ids. Stripped rows are
+    // indistinguishable from legacy rows (attempts > 0, no fileIds), so the
+    // retry deliberately takes the cautious per-event probe path — two audio
+    // files + two records, never a stale-id segment 409-as-"success".
+    expect(drive.uploadOrder.length).toBe(landedBefore + 4)
+    expect(drive.uploadOrder.slice(landedBefore).filter((n) => n.endsWith('.json'))).toHaveLength(2)
+    expect(drive.uploadOrder.some((n) => n.endsWith('.ndjson'))).toBe(false)
+  })
 })
