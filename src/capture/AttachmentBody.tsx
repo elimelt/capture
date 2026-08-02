@@ -1,83 +1,81 @@
-import type React from 'react'
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import type { Attachment } from '../contract/types'
 import { getBlob } from '../store/events'
-import { liveCaptions, liveTranscripts, type LiveTextStore } from '../store/livetext'
+import { liveTranscripts, type LiveTextStore } from '../store/livetext'
 import { IconButton, MicIcon, cx, motion, tone, type_ } from '../ui'
 import { authorship, type Authorship } from './authorship'
 import { groupAttachments } from './attachmentGroups'
-import { PhotoViewer } from './PhotoViewer'
-import { TextSheet } from './TextSheet'
 import { useAudioPlayback } from './useAudioPlayback'
+import { TextSheet } from './TextSheet'
 import { Waveform } from './Waveform'
 
 interface AttachmentBodyProps {
   attachments: Attachment[]
   /** Replace a text attachment's content (one amend: remove old + add new). */
   onEditText: (oldFile: string, text: string, derivedFrom?: string) => void
-  /** Hide an attachment from the entry (amend patch.removeAttachments). */
-  onRemoveAttachment: (file: string) => void
 }
 
-/** Subscribe to a live-text store; snapshots are immutable maps. */
-function useLiveText(store: LiveTextStore): ReadonlyMap<string, string> {
+/**
+ * Subscribe to a live-text store; snapshots are immutable maps. Exported so
+ * `PhotoGrid` (#102) can subscribe to `liveCaptions` with the same pattern
+ * without duplicating the `useSyncExternalStore` wiring.
+ */
+export function useLiveText(store: LiveTextStore): ReadonlyMap<string, string> {
   return useSyncExternalStore(store.subscribe, store.snapshot)
 }
 
 /**
- * Renders an entry's content beyond the primary clip (B7): note text inline
- * (tap to edit), extra audio clips as playback rows, photos as thumbnails
- * that expand to a viewer with removal. Authored-vs-generated (#80): user
- * notes and machine transcripts both render as the entry's own voice — the
- * heaviest, darkest treatment (`type_.bodyStrong`/`tone.textPrimary`) — a
- * transcript IS machine-derived but represents what the user *said*, so it
- * gets only a quiet `SpokenMark` glyph, never a lighter weight. Machine
- * photo captions are true inference (the app's words about a photo, not the
- * user's), so they render in the quiet `type_.derived`/`tone.textDerived`
- * pairing beside their thumbnail rather than as a competing text block.
- * Classification is the pure `authorship()` (`authorship.ts`), driven
- * solely by `derivedFrom`; edited transcripts/captions keep their
- * `derivedFrom` link so they are never re-derived and never change class.
- * Grouping/pairing itself is the pure `groupAttachments`.
+ * Renders an entry's text content and extra audio clips (#78, revised by
+ * #102): note/transcript text inline (tap to edit), extra audio clips as
+ * playback rows. Always mounted alongside the card's header and photo grid
+ * now (#102's "content is always visible" inversion) — no `expanded` gate.
+ * Photos (and their removal) moved to `PhotoGrid` (#102: a tight thumbnail
+ * grid replaces the old one-thumbnail-per-row layout), so this component
+ * only owns text/audio and has no attachment-removal affordance of its own.
  *
- * While a transcript or caption is still streaming in from its service, the
- * partial text appears in the same position via the transient live-text
- * stores (`src/store/livetext.ts`), keyed by source file — shown only until
+ * Authored-vs-generated (#80): user notes and machine transcripts both
+ * render as the entry's own voice — the heaviest, darkest treatment
+ * (`type_.bodyStrong`/`tone.textPrimary`) — a transcript IS machine-derived
+ * but represents what the user *said*, so it gets only a quiet `SpokenMark`
+ * glyph, never a lighter weight. Orphan captions (photo since removed) are
+ * true inference with no photo left to sit beside, so they render here in
+ * the quiet `type_.derived`/`tone.textDerived` pairing. Classification is
+ * the pure `authorship()` (`authorship.ts`), driven solely by
+ * `derivedFrom`; edited transcripts/captions keep their `derivedFrom` link
+ * so they are never re-derived and never change class. Grouping/pairing
+ * itself is the pure `groupAttachments`.
+ *
+ * While a transcript is still streaming in from its service, the partial
+ * text appears in the same position via the transient `liveTranscripts`
+ * store (`src/store/livetext.ts`), keyed by source file — shown only until
  * a persisted attachment derived from that file exists — and adopts the
- * same authorship treatment as its final form (#80 req. 6): streaming
- * transcripts render `spoken`, streaming captions render `derived`.
+ * same `'spoken'` authorship treatment as its final form (#80 req. 6).
+ * Streaming captions are `PhotoGrid`'s concern now (they render beside
+ * their photo, not here).
  */
-export function AttachmentBody({ attachments, onEditText, onRemoveAttachment }: AttachmentBodyProps) {
+export function AttachmentBody({ attachments, onEditText }: AttachmentBodyProps) {
   const [edit, setEdit] = useState<
     { file: string; text: string; derivedFrom?: string; authorship: Authorship } | null
   >(null)
   const liveT = useLiveText(liveTranscripts)
-  const liveC = useLiveText(liveCaptions)
-  const { transcripts, notes, audio, photoGroups, orphanCaptions } = groupAttachments(attachments)
+  const { transcripts, notes, audio, orphanCaptions } = groupAttachments(attachments)
   // The first clip plays from the card header; later ones render here.
   const extraAudio = audio.slice(1)
-  // Streaming machine text for sources with no persisted derived text yet.
+  // Streaming transcripts for sources with no persisted transcript yet.
   // Once the amend lands the stored attachment wins, live text is ignored.
   const derivedSources = new Set(
     attachments.filter((a) => a.kind === 'text' && a.derivedFrom !== undefined).map(
       (a) => a.derivedFrom,
     ),
   )
-  const streaming = (live: ReadonlyMap<string, string>, sources: Attachment[]) =>
-    sources
-      .filter((a) => !derivedSources.has(a.file))
-      .map((a) => ({ file: a.file, text: live.get(a.file) }))
-      .filter((s): s is { file: string; text: string } => s.text !== undefined && s.text !== '')
-  const streamingTranscripts = streaming(liveT, audio)
-  const streamingCaptions = streaming(
-    liveC,
-    photoGroups.map((g) => g.photo),
-  )
+  const streamingTranscripts = audio
+    .filter((a) => !derivedSources.has(a.file))
+    .map((a) => ({ file: a.file, text: liveT.get(a.file) }))
+    .filter((s): s is { file: string; text: string } => s.text !== undefined && s.text !== '')
   if (
     transcripts.length === 0 &&
     notes.length === 0 &&
     extraAudio.length === 0 &&
-    photoGroups.length === 0 &&
     orphanCaptions.length === 0 &&
     streamingTranscripts.length === 0
   ) {
@@ -98,26 +96,6 @@ export function AttachmentBody({ attachments, onEditText, onRemoveAttachment }: 
       {extraAudio.map((a) => (
         <AudioRow key={a.file} file={a.file} durationSec={a.durationSec} />
       ))}
-      {photoGroups.map(({ photo, captions }) => {
-        const live = streamingCaptions.find((s) => s.file === photo.file)
-        return (
-          <div key={photo.file} className="flex items-start gap-3">
-            <PhotoThumb
-              file={photo.file}
-              captionFile={captions[0]?.file}
-              onRemove={() => onRemoveAttachment(photo.file)}
-            />
-            {(captions.length > 0 || live) && (
-              <div className="flex min-w-0 flex-1 flex-col gap-1 pt-0.5">
-                {captions.map((c) => (
-                  <NoteText key={c.file} attachment={c} onEdit={setEdit} />
-                ))}
-                {live && <StreamingText text={live.text} authorship="derived" />}
-              </div>
-            )}
-          </div>
-        )
-      })}
       {orphanCaptions.map((a) => (
         <NoteText key={a.file} attachment={a} onEdit={setEdit} />
       ))}
@@ -177,17 +155,19 @@ function renderWithMath(text: string): React.ReactNode[] {
  * renders in the quiet `type_.derived`/`tone.textDerived` pairing. Never key
  * this off text content or attachment kind directly; always go through
  * `authorship()` (`authorship.ts`), which is the single place the
- * `derivedFrom` contract is interpreted.
+ * `derivedFrom` contract is interpreted. Exported so `PhotoGrid` (#102)
+ * composes the same tokens for in-grid captions rather than re-deriving them.
  */
-const AUTHORSHIP_STYLE: Record<Authorship, string> = {
+export const AUTHORSHIP_STYLE: Record<Authorship, string> = {
   authored: cx(type_.bodyStrong, tone.textPrimary),
   spoken: cx(type_.bodyStrong, tone.textPrimary),
   derived: cx(type_.derived, tone.textDerived),
 }
 
 /** The `TextSheet` edit title per class (#80 req. 5) — kept in one place so
- *  every edit affordance (inline `NoteText`) agrees with the classifier. */
-const EDIT_TITLE: Record<Authorship, string> = {
+ *  every edit affordance (inline `NoteText`, `PhotoGrid`'s caption tap)
+ *  agrees with the classifier. */
+export const EDIT_TITLE: Record<Authorship, string> = {
   authored: 'Edit note',
   spoken: 'Edit transcript',
   derived: 'Edit caption',
@@ -216,9 +196,10 @@ export function SpokenMark() {
  * A transcript or caption still streaming in: rendered exactly like the
  * final NoteText (same tokens, same position, same `SpokenMark` for
  * `'spoken'`) but read-only — there is nothing to edit until the amend
- * lands — with a pulsing cursor tick.
+ * lands — with a pulsing cursor tick. Exported so `PhotoGrid` (#102) can
+ * render a streaming caption beside its photo with the same treatment.
  */
-function StreamingText({ text, authorship: a }: { text: string; authorship: Authorship }) {
+export function StreamingText({ text, authorship: a }: { text: string; authorship: Authorship }) {
   return (
     <span
       aria-live="polite"
@@ -300,61 +281,5 @@ function AudioRow({ file, durationSec }: { file: string; durationSec?: number })
         Recording{durationSec !== undefined ? ` · ${durationSec}s` : ''}
       </span>
     </div>
-  )
-}
-
-function PhotoThumb({
-  file,
-  captionFile,
-  onRemove,
-}: {
-  file: string
-  captionFile?: string
-  onRemove: () => void
-}) {
-  const [url, setUrl] = useState<string | null>(null)
-  const [expanded, setExpanded] = useState(false)
-
-  useEffect(() => {
-    let objectUrl: string | null = null
-    let stale = false
-    void getBlob(file).then((blob) => {
-      if (blob && !stale) {
-        objectUrl = URL.createObjectURL(blob)
-        setUrl(objectUrl)
-      }
-    })
-    return () => {
-      stale = true
-      if (objectUrl) URL.revokeObjectURL(objectUrl)
-    }
-  }, [file])
-
-  if (!url) return null
-  return (
-    <>
-      <button
-        onClick={() => setExpanded(true)}
-        aria-label="View photo"
-        className={cx('shrink-0', motion.fadeIn)}
-      >
-        <img
-          src={url}
-          alt=""
-          className={cx('h-16 w-16 rounded-lg border object-cover', tone.border)}
-        />
-      </button>
-      {expanded && (
-        <PhotoViewer
-          src={url}
-          captionFile={captionFile}
-          onClose={() => setExpanded(false)}
-          onRemove={() => {
-            setExpanded(false)
-            onRemove()
-          }}
-        />
-      )}
-    </>
   )
 }

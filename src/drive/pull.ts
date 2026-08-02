@@ -43,6 +43,7 @@ import { parseSegment } from '../contract/segments'
 import { idOfRecordName, parseSegmentName } from '../contract/filenames'
 import type { Attachment, LogEvent } from '../contract/types'
 import { getBlob, importEvents, listEvents } from '../store/events'
+import type { SyncProgressEvent } from '../store/syncProgress'
 import {
   DriveError,
   FOLDER_MIME,
@@ -104,7 +105,11 @@ function discoveryIdOf(name: string): string | null {
  * the cursor is not advanced, and the next pull resumes from the (now
  * smaller) missing set.
  */
-export async function pullStream(token: string, stream: string): Promise<PullResult> {
+export async function pullStream(
+  token: string,
+  stream: string,
+  onProgress: (event: SyncProgressEvent) => void = () => {},
+): Promise<PullResult> {
   let pulled = 0
   try {
     // Account-bound caches (tree, cursor) are only readable once the token is
@@ -116,7 +121,7 @@ export async function pullStream(token: string, stream: string): Promise<PullRes
 
     const cursor = await getChangesToken(stream)
     if (!cursor) {
-      pulled = await pullEverything(token, stream, tree, st, known)
+      pulled = await pullEverything(token, stream, tree, st, known, onProgress)
       return { outcome: pulled > 0 ? 'pulled' : 'idle', pulled }
     }
 
@@ -130,14 +135,16 @@ export async function pullStream(token: string, stream: string): Promise<PullRes
       // one full listing walk, which re-mints a fresh cursor.
       if (err instanceof DriveError && !err.isAuth && !err.isRetryable) {
         await clearChangesToken(stream)
-        pulled = await pullEverything(token, stream, tree, st, known)
+        pulled = await pullEverything(token, stream, tree, st, known, onProgress)
         return { outcome: pulled > 0 ? 'pulled' : 'idle', pulled }
       }
       throw err
     }
 
     for (const partition of await dirtyPartitions(token, stream, tree, st, known, feed.changes)) {
-      pulled += await importPartition(token, stream, tree, st, partition, known)
+      const n = await importPartition(token, stream, tree, st, partition, known)
+      pulled += n
+      if (n > 0) onProgress({ kind: 'pull-progress', stream, delta: n })
     }
     // Advance the cursor only after everything imported: a mid-pull failure
     // replays the same change window next time (idempotent — ids we already
@@ -166,6 +173,7 @@ async function pullEverything(
   tree: DriveTree,
   st: StreamTree,
   known: Set<string>,
+  onProgress: (event: SyncProgressEvent) => void,
 ): Promise<number> {
   const startToken = await getStartPageToken(token)
   let pulled = 0
@@ -173,7 +181,9 @@ async function pullEverything(
     (c) => c.mimeType === FOLDER_MIME && PARTITION_RE.test(c.name),
   )
   for (const partition of partitions) {
-    pulled += await importPartition(token, stream, tree, st, partition, known)
+    const n = await importPartition(token, stream, tree, st, partition, known)
+    pulled += n
+    if (n > 0) onProgress({ kind: 'pull-progress', stream, delta: n })
   }
   await saveChangesToken(stream, startToken)
   return pulled

@@ -37,6 +37,7 @@ import { getStoredToken } from '../drive/token'
 import { drainStream, type DrainOutcome } from '../drive/queue'
 import { pullStream } from '../drive/pull'
 import { allSyncStreams } from '../streams/registry'
+import { reduceSyncProgress, type SyncProgress, type SyncProgressEvent } from './syncProgress'
 
 /** One stream's slice of a sync cycle: its pull (Drive → local) then push. */
 export interface StreamSyncResult {
@@ -119,6 +120,13 @@ interface AppState {
   driveConnection: DriveConnection
   /** True while a drain is in flight, so the UI can show progress / disable Sync. */
   syncing: boolean
+  /**
+   * Live detail for the sync cycle in flight — which stream, pull vs. push,
+   * how far along. Null whenever `syncing` is false; built up during
+   * `drainSync` by `reduceSyncProgress` from the progress events `pullStream`/
+   * `drainStream` emit, and cleared when the cycle ends. Never persisted.
+   */
+  syncProgress: SyncProgress | null
   /** Origin-level usage/quota from storage.estimate(); null = unsupported/unloaded. */
   localSpace: LocalSpaceEstimate | null
   /** Byte breakdown of the app's own IndexedDB data; null until refreshSpace(). */
@@ -150,6 +158,10 @@ interface AppState {
    * the worst-of aggregate outcome with summed counts and per-stream detail;
    * a missing/expired token yields 'reconnect' and a re-entrant call yields
    * 'retry-later'. Each stream's clean cycle persists its own lastSyncAt.
+   * While in flight, `syncProgress` is kept live (via `reduceSyncProgress`,
+   * `src/store/syncProgress`) from the progress events `pullStream`/
+   * `drainStream` emit plus this loop's own per-stream boundaries; it is
+   * cleared back to null when the cycle ends.
    */
   drainSync: () => Promise<SyncResult>
 
@@ -202,6 +214,7 @@ export const useAppStore = create<AppState>()((set, get) => {
     lastError: null,
     driveConnection: 'disconnected',
     syncing: false,
+    syncProgress: null,
     lastSyncAt: null,
     globalSyncSummary: { pending: 0, errors: 0, lastSyncAt: null },
     localSpace: null,
@@ -282,7 +295,13 @@ export const useAppStore = create<AppState>()((set, get) => {
         await get().refreshConnection()
         return { outcome: 'reconnect', uploaded: 0, pulled: 0, perStream: [] }
       }
-      set({ syncing: true })
+      // Emits a progress event through the pure reducer (src/store/syncProgress)
+      // and stores the resulting snapshot; passed straight through to
+      // pullStream/drainStream as their onProgress callback.
+      const emitProgress = (event: SyncProgressEvent) =>
+        set((s) => ({ syncProgress: reduceSyncProgress(s.syncProgress, event) }))
+      set({ syncing: true, syncProgress: null })
+      emitProgress({ kind: 'cycle-start', streamsTotal: allSyncStreams().length })
       try {
         const perStream: StreamSyncResult[] = []
         let aborted = false
@@ -291,18 +310,23 @@ export const useAppStore = create<AppState>()((set, get) => {
             // The token is dead for every stream — don't burn more calls;
             // mark the skipped streams so the UI can show they got no chance.
             perStream.push({ stream, outcome: 'reconnect', uploaded: 0, pulled: 0 })
+            emitProgress({ kind: 'stream-start', stream })
+            emitProgress({ kind: 'stream-done', stream })
             continue
           }
+          emitProgress({ kind: 'stream-start', stream })
           // Pull before push: local appends then land after everything the
           // remote log already has, and a restored device rehydrates first.
-          const pull = await pullStream(token, stream)
+          const pull = await pullStream(token, stream, emitProgress)
           if (pull.outcome === 'reconnect') {
             perStream.push({ stream, outcome: 'reconnect', uploaded: 0, pulled: pull.pulled })
+            emitProgress({ kind: 'stream-done', stream })
             aborted = true
             continue
           }
-          const push = await drainStream(token, stream)
+          const push = await drainStream(token, stream, emitProgress)
           if (push.outcome === 'reconnect') aborted = true
+          emitProgress({ kind: 'stream-done', stream })
 
           const pullOutcome: DrainOutcome = pull.outcome === 'pulled' ? 'drained' : pull.outcome
           const outcome =
@@ -342,7 +366,11 @@ export const useAppStore = create<AppState>()((set, get) => {
         set({ lastError: `Sync failed: ${message}` })
         return { outcome: 'error', uploaded: 0, pulled: 0, error: message, perStream: [] }
       } finally {
-        set({ syncing: false })
+        emitProgress({ kind: 'cycle-done' })
+        // The cycle is over; live detail is only meaningful while syncing.
+        // The final SyncResult (returned above) already carries the summary
+        // the UI shows afterwards (Settings' syncResultLabel).
+        set({ syncing: false, syncProgress: null })
       }
     },
 
