@@ -7,6 +7,26 @@ import { VitePWA } from 'vite-plugin-pwa'
 export default defineConfig({
   base: '/',
   plugins: [
+    // Rewrite /agents to /agents/index.html for the rendered agent guide.
+    // In production (GitHub Pages), /agents/ naturally serves /agents/index.html.
+    // This middleware handles the dev/preview servers for the same behavior.
+    {
+      name: 'agents-rewrite',
+      configureServer(server) {
+        server.middlewares.use((req, _res, next) => {
+          if (req.url === '/agents' || req.url === '/agents/')
+            req.url = '/agents/index.html'
+          next()
+        })
+      },
+      configurePreviewServer(server) {
+        server.middlewares.use((req, _res, next) => {
+          if (req.url === '/agents' || req.url === '/agents/')
+            req.url = '/agents/index.html'
+          next()
+        })
+      },
+    },
     react(),
     tailwindcss(),
     VitePWA({

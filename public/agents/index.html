@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Timebox Agent Integration Guide</title>
+  <style>
+    :root {
+      --bg: #F8F6F3;
+      --fg: #1a1a1a;
+      --muted: #666;
+      --border: #ddd;
+      --code-bg: #f4f4f4;
+      --link: #0066cc;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #1a1a1a;
+        --fg: #e5e5e5;
+        --muted: #999;
+        --border: #333;
+        --code-bg: #2d2d2d;
+        --link: #66b3ff;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      line-height: 1.6;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 2rem 1rem;
+      background: var(--bg);
+      color: var(--fg);
+    }
+    h1, h2, h3 { margin-top: 2rem; margin-bottom: 1rem; }
+    h1 { font-size: 2rem; border-bottom: 2px solid var(--border); padding-bottom: 0.5rem; }
+    h2 { font-size: 1.5rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+    h3 { font-size: 1.2rem; }
+    a { color: var(--link); }
+    code {
+      background: var(--code-bg);
+      padding: 0.2em 0.4em;
+      border-radius: 3px;
+      font-family: 'SF Mono', Consolas, monospace;
+      font-size: 0.9em;
+    }
+    pre {
+      background: var(--code-bg);
+      padding: 1rem;
+      border-radius: 6px;
+      overflow-x: auto;
+      border: 1px solid var(--border);
+    }
+    pre code { background: none; padding: 0; }
+    ul, ol { padding-left: 1.5rem; }
+    li { margin: 0.5rem 0; }
+    .copy-btn {
+      position: absolute;
+      top: 0.5rem;
+      right: 0.5rem;
+      padding: 0.3rem 0.6rem;
+      background: var(--border);
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.8rem;
+      opacity: 0;
+      transition: opacity 0.2s;
+    }
+    pre:hover .copy-btn { opacity: 1; }
+    .copy-btn:hover { background: var(--muted); color: var(--bg); }
+    #content { position: relative; }
+    .loading { text-align: center; padding: 4rem; color: var(--muted); }
+    .raw-link {
+      display: inline-block;
+      margin-bottom: 1rem;
+      padding: 0.5rem 1rem;
+      background: var(--code-bg);
+      border-radius: 4px;
+      text-decoration: none;
+      font-size: 0.9rem;
+    }
+    .raw-link:hover { background: var(--border); }
+  </style>
+</head>
+<body>
+  <a href="/agents.md" class="raw-link">📄 View raw markdown (for LLMs)</a>
+  <div id="content">
+    <div class="loading">Loading...</div>
+  </div>
+
+  <script type="module">
+    // Simple markdown parser (no dependencies)
+    function parseMarkdown(md) {
+      return md
+        // Code blocks (```lang ... ```)
+        .replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+          const escaped = code.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+          return `<pre><code class="language-${lang}">${escaped}</code></pre>`;
+        })
+        // Inline code
+        .replace(/`([^`]+)`/g, '<code>$1</code>')
+        // Headers
+        .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+        .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+        .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+        // Bold and italic
+        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+        // Links
+        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>')
+        // Unordered lists
+        .replace(/^- (.+)$/gm, '<li>$1</li>')
+        .replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>')
+        // Ordered lists
+        .replace(/^\d+\. (.+)$/gm, '<li>$1</li>')
+        // Paragraphs (blank line separated)
+        .replace(/\n\n(?![<])/g, '</p><p>')
+        // Wrap in paragraph if not already wrapped
+        .replace(/^(?![<])(.+)/gm, (match) => {
+          if (match.startsWith('<')) return match;
+          return `<p>${match}</p>`;
+        })
+        // Clean up empty paragraphs
+        .replace(/<p><\/p>/g, '')
+        .replace(/<p>(<h[123]>)/g, '$1')
+        .replace(/(<\/h[123]>)<\/p>/g, '$1')
+        .replace(/<p>(<pre>)/g, '$1')
+        .replace(/(<\/pre>)<\/p>/g, '$1')
+        .replace(/<p>(<ul>)/g, '$1')
+        .replace(/(<\/ul>)<\/p>/g, '$1');
+    }
+
+    async function loadMarkdown() {
+      try {
+        const res = await fetch('/agents.md');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const md = await res.text();
+        document.getElementById('content').innerHTML = parseMarkdown(md);
+        
+        // Add copy buttons to code blocks
+        document.querySelectorAll('pre').forEach(pre => {
+          pre.style.position = 'relative';
+          const btn = document.createElement('button');
+          btn.className = 'copy-btn';
+          btn.textContent = 'Copy';
+          btn.onclick = () => {
+            navigator.clipboard.writeText(pre.querySelector('code').textContent);
+            btn.textContent = 'Copied!';
+            setTimeout(() => btn.textContent = 'Copy', 2000);
+          };
+          pre.appendChild(btn);
+        });
+      } catch (err) {
+        document.getElementById('content').innerHTML = 
+          `<p style="color:red">Failed to load: ${err.message}</p>`;
+      }
+    }
+
+    loadMarkdown();
+  </script>
+</body>
+</html>
