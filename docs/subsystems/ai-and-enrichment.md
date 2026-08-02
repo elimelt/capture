@@ -226,7 +226,7 @@ than transcription/captioning/the assistant do:
 | Transcription | `transcribe.elimelt.com` `/v1/audio/transcriptions`, `Systran/faster-whisper-base.en` | the audio blob |
 | Captioning | `llm.elimelt.com/api/chat` (native Ollama API), `gemma4:e4b`, `think: false` | a downscaled (≤1024 px, ~100 KB) JPEG |
 | Assistant | `llm.elimelt.com/v1` (OpenAI-compatible), default `gpt-oss:20b` | chat messages + tool-result text digests (text, place labels, media counts — never raw audio/photos) |
-| Day synthesis prose | `llm.elimelt.com/v1/chat/completions`, `appSettings.assistantModel` | a one-day text digest (same shape as the assistant's), sent only on an explicit "Generate summary" tap while the AI opt-in is on |
+| Day synthesis prose | `llm.elimelt.com/api/chat` (native endpoint, `think: false`), fixed non-reasoning `gemma4:e4b` — the /v1 chat default is a reasoning model whose small-budget completions come back with empty `content` | a one-day text digest (same shape as the assistant's), sent only on an explicit "Generate summary" tap while the AI opt-in is on |
 | Geocoding | `nominatim.openstreetmap.org/reverse` | rounded coordinates |
 
 None of these require an API key: the LLM/transcription hosts are CORS origin-gated,

@@ -49,7 +49,6 @@ export default function DayScreen() {
     dayEntries,
     title,
     appSettings.assistantEnabled,
-    appSettings.assistantModel,
   )
 
   return (
