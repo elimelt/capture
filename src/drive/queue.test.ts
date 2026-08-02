@@ -25,6 +25,7 @@ function fakeDrive() {
   const uploadOrder: string[] = []
   let n = 0
   let failWith: { status: number } | null = null
+  let failNameWith: { name: string; status: number } | null = null
   let user = 'user-A'
 
   const find = (name: string, parentId: string) =>
@@ -34,6 +35,12 @@ function fakeDrive() {
     uploadOrder,
     failNext(status: number | null) {
       failWith = status === null ? null : { status }
+    },
+    /** Fail every upload of exactly this file name, forever, regardless of
+     * `failNext` — simulates one deterministically-poison row (e.g. an
+     * oversized/malformed audio attachment) while its neighbors succeed. */
+    failName(name: string | null, status = 400) {
+      failNameWith = name === null ? null : { name, status }
     },
     /** Simulate a Google-account switch for subsequent tokens. */
     setUser(id: string) {
@@ -59,6 +66,9 @@ function fakeDrive() {
       Array.from({ length: count }, () => `gen-${n++}`),
     ),
     uploadFile: vi.fn(async (_t: string, a: FakeUploadArgs) => {
+      if (failNameWith && a.name === failNameWith.name) {
+        throw new DriveError(failNameWith.status, 'boom-name')
+      }
       if (failWith) throw new DriveError(failWith.status, 'boom')
       // Mirror the real client's contract: re-uploading a pre-generated id
       // that already landed yields 409 upstream, which uploadFile swallows
@@ -651,5 +661,111 @@ describe('drainStream', () => {
     expect(drive.uploadOrder.length).toBe(landedBefore + 4)
     expect(drive.uploadOrder.slice(landedBefore).filter((n) => n.endsWith('.json'))).toHaveLength(2)
     expect(drive.uploadOrder.some((n) => n.endsWith('.ndjson'))).toBe(false)
+  })
+
+  it('parks a row that fails deterministically so it stops starving rows queued behind it (#87)', async () => {
+    // A poison row (e.g. an oversized/malformed audio attachment that 400s
+    // every attempt) used to stop the *whole* drain on every single "Sync
+    // now" forever — it always sorts first by seq, so nothing queued behind
+    // it ever got a chance. After MAX_ATTEMPTS_BEFORE_PARKED identical
+    // failures it must be parked: still attempted (still visibly failing),
+    // but no longer allowed to block the rest of the queue.
+    const e1 = await captureWithAudio()
+    await import('./bootstrap').then((m) => m.ensureTree('tok', ['timelog']))
+    drive.failName(e1.attachments[0].file, 400)
+
+    const { drainStream } = await import('./queue')
+    const { getSyncStatuses } = await import('../store/events')
+
+    for (let i = 1; i <= 5; i++) {
+      const res = await drainStream('tok', 'timelog')
+      expect(res).toEqual({ outcome: 'error', uploaded: 0, error: expect.stringContaining('boom-name') })
+      const row = (await getSyncStatuses('timelog')).get(e1.id)!
+      expect(row.status).toBe('error')
+      expect(row.attempts).toBe(i)
+    }
+    // e1 is alone in the queue for these 5 calls, so there's no neighbor yet
+    // to prove starvation against — attempts 1-5 above exercise the
+    // pre-parking "stop immediately" behavior unchanged (see the 429 test's
+    // analog for retryable failures). `isParked` is evaluated from each
+    // drain's *starting* attempts count (planning happens before any upload
+    // is attempted), so a row only reads as parked from the drain *after* it
+    // reaches the threshold — hence adding the neighbor only now.
+
+    // A fresh, perfectly healthy row queues behind the now-parked e1.
+    const e2 = await captureWithAudio()
+
+    // e1 is already parked going into this drain (5 prior attempts): it's
+    // kept solo instead of batching with e2, so its 6th failure doesn't drag
+    // e2 down with it — the drain moves on to e2 in the SAME call.
+    const res = await drainStream('tok', 'timelog')
+    expect(res).toEqual({ outcome: 'error', uploaded: 1, error: expect.stringContaining('boom-name') })
+
+    const statuses = await getSyncStatuses('timelog')
+    const row1 = statuses.get(e1.id)!
+    expect(row1.status).toBe('error')
+    expect(row1.attempts).toBe(6)
+    expect(row1.error).toContain('boom-name') // still visibly failed, not silently dropped
+    expect(statuses.get(e2.id)?.status).toBe('uploaded') // unblocked
+
+    // Parked or not, e1 is attempted every drain (no backoff gate) — it just
+    // never gets to block anything again once parked.
+    const again = await drainStream('tok', 'timelog')
+    expect(again).toEqual({ outcome: 'error', uploaded: 0, error: expect.stringContaining('boom-name') })
+    expect((await getSyncStatuses('timelog')).get(e1.id)?.attempts).toBe(7)
+
+    // A third, later row still lands fine on a subsequent drain — parking
+    // doesn't just unblock a one-time backlog, it stays unblocked.
+    const e3 = await captureWithAudio()
+    const third = await drainStream('tok', 'timelog')
+    expect(third).toEqual({ outcome: 'error', uploaded: 1, error: expect.stringContaining('boom-name') })
+    expect((await getSyncStatuses('timelog')).get(e3.id)?.status).toBe('uploaded')
+  })
+
+  it('never batches a parked row with a healthy neighbor (#87)', async () => {
+    // Batching a still-poison row into a segment with a healthy neighbor
+    // would fail the whole segment every drain (segments commit as a unit),
+    // re-poisoning the neighbor forever instead of freeing it.
+    const e1 = await captureWithAudio()
+    await import('./bootstrap').then((m) => m.ensureTree('tok', ['timelog']))
+    drive.failName(e1.attachments[0].file, 400)
+    const { drainStream } = await import('./queue')
+    for (let i = 0; i < 5; i++) await drainStream('tok', 'timelog')
+    const { getSyncStatuses } = await import('../store/events')
+    expect((await getSyncStatuses('timelog')).get(e1.id)?.attempts).toBe(5) // now parked
+
+    // Two fresh events land in the same partition as the parked row — absent
+    // the parked-row exclusion, planBatches would run all three together.
+    const e2 = await captureWithAudio()
+    const e3 = await captureWithAudio()
+    const res = await drainStream('tok', 'timelog')
+    expect(res).toEqual({ outcome: 'error', uploaded: 2, error: expect.stringContaining('boom-name') })
+
+    const statuses = await getSyncStatuses('timelog')
+    expect(statuses.get(e2.id)?.status).toBe('uploaded')
+    expect(statuses.get(e3.id)?.status).toBe('uploaded')
+    // They landed as their own segment, never bundled with the poison row.
+    expect(drive.nodes.some((f) => f.name.endsWith('.ndjson'))).toBe(true)
+  })
+
+  it('clears a row error once a retried upload succeeds', async () => {
+    // A row that failed once (retryable) and later succeeds must not keep
+    // reading as failed forever (src/capture/lifecycle.ts keys off `error`
+    // being present on a non-uploaded row, but a stale `error` string must
+    // never survive onto an `uploaded` row).
+    const event = await captureWithAudio()
+    await import('./bootstrap').then((m) => m.ensureTree('tok', ['timelog']))
+    drive.failNext(503)
+    const { drainStream } = await import('./queue')
+    expect((await drainStream('tok', 'timelog')).outcome).toBe('retry-later')
+
+    const { getSyncStatuses } = await import('../store/events')
+    expect((await getSyncStatuses('timelog')).get(event.id)?.error).toBeTruthy()
+
+    drive.failNext(null)
+    expect((await drainStream('tok', 'timelog')).outcome).toBe('drained')
+    const row = (await getSyncStatuses('timelog')).get(event.id)!
+    expect(row.status).toBe('uploaded')
+    expect(row.error).toBeUndefined()
   })
 })

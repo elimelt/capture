@@ -14,7 +14,10 @@
  * find-before-upload probe — and are never batched — so they never
  * duplicate. Failures classify: 401/403 stops and asks for reconnect;
  * 429/5xx stops with 'retry-later', keeping the batch's rows queued;
- * anything else marks the batch's rows errored and stops.
+ * anything else marks the batch's rows errored and stops — *unless* the row
+ * has failed this way `MAX_ATTEMPTS_BEFORE_PARKED` times running, in which
+ * case it's treated as parked (issue #87) and the drain moves on to the
+ * batches behind it instead of stopping (see MAX_ATTEMPTS_BEFORE_PARKED).
  *
  * There is no per-row backoff gate: sync is manual-only (the sole drain
  * trigger is "Sync now"), so every queued row is attempted on every drain —
@@ -149,6 +152,22 @@ function isLegacyRetry(row: SyncStatusRow, event: LogEvent): boolean {
   )
 }
 
+/**
+ * A row this permanently-erroring after this many attempts is "parked"
+ * (issue #87): still attempted on every drain, still visibly 'failed', but
+ * no longer allowed to gate the rows behind it. Chosen high enough that an
+ * ordinary transient hiccup (a stale partition-id cache self-healing next
+ * bootstrap, a one-off malformed-response body) still gets a few
+ * immediate-stop drains — each an explicit "Sync now" the user can act on —
+ * before the drainer gives up on blocking for it.
+ */
+const MAX_ATTEMPTS_BEFORE_PARKED = 5
+
+/** True once a row has crossed the park threshold (see above). */
+function isParked(row: SyncStatusRow): boolean {
+  return row.status === 'error' && row.attempts >= MAX_ATTEMPTS_BEFORE_PARKED
+}
+
 /** Upload all of one event's parts then commit its record. Throws on failure. */
 async function uploadEvent(
   token: string,
@@ -236,7 +255,15 @@ function planBatches(items: PendingItem[]): Batch[] {
       run = null
       continue
     }
-    if (isLegacyRetry(item.row, item.event)) {
+    // A parked row (see isParked) is kept solo like a legacy row: grouping it
+    // into a segment would fail the whole segment every drain (segments
+    // commit as a unit) and re-poison an otherwise-healthy neighbor forever.
+    // This doesn't help a row whose *segment assignment* was already
+    // persisted before parking (segmentKeyOf above regroups by that pinned
+    // assignment unconditionally) — that rarer case still needs manual
+    // resolution (revoke the poison entry) and is called out in
+    // docs/modules/drive.md.
+    if (isLegacyRetry(item.row, item.event) || isParked(item.row)) {
       fresh.push({ items: [item], assigned: null })
       run = null
       continue
@@ -336,6 +363,7 @@ export async function drainStream(token: string, stream: string): Promise<DrainR
   }
 
   let uploaded = 0
+  let parkedError: string | undefined
   for (const batch of planBatches(items)) {
     try {
       if (batch.assigned === null && batch.items.length === 1) {
@@ -349,6 +377,10 @@ export async function drainStream(token: string, stream: string): Promise<DrainR
           status: 'uploaded',
           phase: 'done',
           attempts: row.attempts + 1,
+          // Clear a stale failure recorded by an earlier attempt of this same
+          // row — a landed upload must never keep reading as failed (see
+          // src/capture/lifecycle.ts's entryLifecycle).
+          error: undefined,
         })
         await pruneAudio(stream, event)
         uploaded++
@@ -372,11 +404,35 @@ export async function drainStream(token: string, stream: string): Promise<DrainR
         return { outcome: 'retry-later', uploaded }
       }
       const message = err instanceof Error ? err.message : String(err)
+      let attemptsAfter = 0
       for (const { row } of batch.items) {
-        await putSyncStatus({ ...row, status: 'error', attempts: row.attempts + 1, error: message })
+        attemptsAfter = row.attempts + 1
+        await putSyncStatus({ ...row, status: 'error', attempts: attemptsAfter, error: message })
       }
-      return { outcome: 'error', uploaded, error: message }
+      // Issue #87 (poison-row starvation): a deterministic non-retryable
+      // failure (bad payload, oversized/malformed attachment, a stale cached
+      // partition id — anything that isn't auth or 429/5xx) used to stop the
+      // whole drain here on every single call, forever — since the row stays
+      // first-in-seq-order on every future drain, nothing queued behind it
+      // ever got a chance. A few immediate stops are fine (most 'error' rows
+      // are still worth surfacing fast, and stopping preserves strict seq
+      // commit order — SPEC §5.2, §8.4 — for the common case). Once a row has
+      // failed MAX_ATTEMPTS_BEFORE_PARKED times in a row, though, it has
+      // proven itself permanent: treat it as *parked* — still attempted every
+      // drain (no backoff gate, unchanged), still visibly 'failed' (its
+      // `error` is set — src/capture/lifecycle.ts), but no longer allowed to
+      // block the rows behind it. `planBatches` also keeps a parked row solo
+      // (never grouped into a segment) so it can't drag a healthy neighbor
+      // down with it every drain.
+      if (attemptsAfter < MAX_ATTEMPTS_BEFORE_PARKED) {
+        return { outcome: 'error', uploaded, error: message }
+      }
+      parkedError = message
     }
   }
-  return { outcome: 'drained', uploaded }
+  // A parked row never lands automatically — the stream can't report a clean
+  // 'drained' cycle while one exists (lastSyncAt must not stamp over it), so
+  // surface the same 'error' outcome the pre-parking stop would have, while
+  // still reporting every batch that *did* land during this call.
+  return parkedError ? { outcome: 'error', uploaded, error: parkedError } : { outcome: 'drained', uploaded }
 }

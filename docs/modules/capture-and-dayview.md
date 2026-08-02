@@ -395,11 +395,20 @@ derived pending-enrichment flag. Errors never get quieter than before.
 
 - `type EntryLifecycle = 'understanding' | 'settled' | 'failed'`.
 - `entryLifecycle(sync: SyncStatusRow | undefined, hasPendingEnrichment: boolean):
-  EntryLifecycle` — a sync `status: 'error'` always maps to `'failed'`, regardless of
-  `hasPendingEnrichment` (invariant: no input combination maps an error to anything
-  else). Otherwise: `'understanding'` while `hasPendingEnrichment`, else `'settled'`
-  (covers both `'queued'` — manual-sync-only, so this is the common case — and
-  `'uploaded'`, and an absent row for a never-queued pulled entry).
+  EntryLifecycle` — maps to `'failed'` whenever the row isn't `'uploaded'` yet and
+  either `status === 'error'` or `error` is set (invariant: no input combination maps
+  a recorded failure to anything else). The `error`-is-set half matters because
+  `src/drive/queue.ts`'s retryable (429/5xx) and auth (401/403) failure paths record
+  `error` but leave `status: 'queued'` for the next automatic retry (no backoff gate);
+  keying off `status === 'error'` alone left those rows reading identically to a
+  never-attempted queued entry — a repeatedly-failing upload (e.g. an oversized audio
+  attachment) showed no failure indication at all, which is what made the "queued
+  forever" report invisible rather than actionable. `status !== 'uploaded'` guards the
+  other direction: the drainer clears `error` on a successful upload, so a row that
+  failed once and later landed never keeps reading as failed. Otherwise:
+  `'understanding'` while `hasPendingEnrichment`, else `'settled'` (covers both
+  `'queued'` with no recorded error — manual-sync-only, so this is the common case —
+  and `'uploaded'`, and an absent row for a never-queued pulled entry).
 - `lifecycleLabel(lifecycle): string | null` — `null` for `'settled'` (render nothing);
   `'Organizing…'` for `'understanding'` (the design review's suggested quiet, integrated
   copy — covers photo captioning as well as audio transcription, so it reads better than
@@ -424,9 +433,12 @@ false and non-error entries read `'settled'`.
 
 Vitest unit tests for `entryLifecycle`/`lifecycleLabel`/`hasPendingEnrichment`:
 exhaustive over the 3 (`status`: `queued`/`uploaded`/absent) × 2 (`hasPendingEnrichment`)
-space plus the `error` cases, the "error always wins" invariant, `lifecycleLabel`'s
-per-lifecycle copy (including that `'failed'` mentions retry and `'settled'` is `null`),
-and `hasPendingEnrichment` over audio/photo/note/mixed attachment combinations.
+space plus the `error` cases, the "a recorded failure always wins" invariant (including
+a still-`queued` row carrying an `error` from a retryable/auth failure — must read
+`'failed'`, not settle quietly — and a since-`'uploaded'` row carrying a stale `error` —
+must never read `'failed'`), `lifecycleLabel`'s per-lifecycle copy (including that
+`'failed'` mentions retry and `'settled'` is `null`), and `hasPendingEnrichment` over
+audio/photo/note/mixed attachment combinations.
 
 ### src/capture/authorship.ts
 
@@ -1409,12 +1421,15 @@ re-throw, matching the appStore `guard` convention.
   flag is local `useState`, never written to the event log and never read back from it —
   the append-only log carries user data, not UI state. Every card starts collapsed.
 - **"Queued" must never reach the card (#79):** `lifecycle.ts` is the only place that
-  decides entry-card copy from sync/enrichment state; a sync `error` always maps to
-  `'failed'` regardless of pending enrichment — real failures must never read quieter.
-  Don't reintroduce a raw `SyncStatus` render in `EntryCard`/`EntryList`; route through
-  `entryLifecycle`/`lifecycleLabel` instead. The Settings `SyncStatusLine` aggregate and
-  the app-icon badge (`badgeCount` in `App.tsx`) are separate surfaces, unaffected by
-  this mapping — they still report the real pending/failed counts.
+  decides entry-card copy from sync/enrichment state; a recorded sync failure (`status
+  === 'error'`, or `error` set on a not-yet-uploaded row — see `entryLifecycle`) always
+  maps to `'failed'` regardless of pending enrichment — real failures must never read
+  quieter, including a still-`queued` row that already failed once and is only pending
+  an automatic retry. Don't reintroduce a raw `SyncStatus` render in
+  `EntryCard`/`EntryList`; route through `entryLifecycle`/`lifecycleLabel` instead. The
+  Settings `SyncStatusLine` aggregate and the app-icon badge (`badgeCount` in
+  `App.tsx`) are separate surfaces, unaffected by this mapping — they still report the
+  real pending/failed counts.
 - **The six-icon action row only exists expanded:** the collapsed card renders no
   add/edit/delete affordances at all, only the pure-view-model-driven overflow button;
   all edit flows (note/photo/audio/location/edit/delete) are reachable exactly as
