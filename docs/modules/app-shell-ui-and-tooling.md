@@ -8,6 +8,13 @@ This document covers the application shell (`src/App.tsx`, `src/main.tsx`, `src/
 
 `index.html` boots a pure-HTML/CSS splash screen, loads the Google Identity Services script (the only third-party runtime script), and sets a strict Content-Security-Policy plus iOS standalone-PWA meta tags. `src/main.tsx` registers the service worker (with an in-session update check — see `src/swUpdate.ts` below), requests persistent storage, and renders `<App />` inside `StrictMode → ErrorBoundary → BrowserRouter`. `src/App.tsx` owns the route table (Capture `/`, Day `/day` and `/day/:date`, opt-in Chat `/chat` — its own route-scoped error boundary — Settings `/settings`; entry/day context copy is inline rather than a standalone route), the fixed bottom tab bar, and app-level lifecycle effects: hydrating the Zustand store, fading out the splash, refreshing local state when the app returns to the foreground (Drive sync is manual-only, via "Sync now" in Settings), running background transcription/captioning whenever entries change, showing a global error toast, and a "New version available" reload toast when a SW update is waiting. `src/config.ts` holds the build-time constants: the public Google OAuth client ID, the OAuth scopes, and the `ENDPOINTS` block — currently just the assistant host (issue #69; the transcription/vision endpoints live in `src/enrich/config.ts`, issue #62).
 
+Primary tabs support deliberate horizontal touch swipes through
+`src/navigation/swipe.ts`: left advances to the next visible tab and right
+returns to the previous one. The gesture has minimum-distance and
+horizontal-dominance thresholds, and ignores controls, dialogs, maps, and
+horizontally scrollable content so ordinary taps and vertical scrolling remain
+unchanged. Its geometry and tab-selection logic are covered by unit tests.
+
 ### `src/ui` design-system primitives
 
 `src/ui/` is the single place visual identity lives (SPEC C15). `tokens.ts` exports class-string tokens (`tone`, `shape`, `type_`, `motion`, `layer`, `tap`) plus the `cx` class combiner; the raw palette and keyframes are defined in `src/index.css` under Tailwind v4's `@theme`. Components (`Button`, `IconButton`, `Card`, `TimelineRow`, `Section`, `EmptyState`, `Sheet`, `Toast`, form fields, `ScreenHeader`, `ErrorBoundary`, `RouteErrorBoundary`) compose the tokens; screens import everything from the `src/ui` barrel (`index.ts`) and never hardcode palette/shape classes. A future visual redesign edits `tokens.ts`/`index.css` and the primitives, not the screens.
