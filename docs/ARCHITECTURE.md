@@ -181,7 +181,10 @@ failing test. CI runs `npm test` before every deploy.
 Vite builds the app; `vite-plugin-pwa` generates an auto-updating Workbox service
 worker that precaches the build output except the lazy assistant chunk (cached
 `CacheFirst` at runtime for opted-in users only) and defines the runtime caches for
-fonts, OSM tiles, and Nominatim. Deployment is GitHub Pages via
+fonts, OSM tiles, and Nominatim. The `CI` workflow
+(`.github/workflows/ci.yml`) runs on pull requests and pushes to `main`:
+`npm ci`, `npm test`, `npx tsc -b`, `npm run lint`, `npm run build`.
+Deployment is GitHub Pages via
 `.github/workflows/deploy.yml`: on push to `main`, CI runs `npm ci`, `npm test`,
 `npm run build`, copies `dist/index.html` to `404.html` (SPA fallback for deep
 links), and publishes the artifact with `deploy-pages`.

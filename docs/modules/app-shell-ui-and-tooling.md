@@ -164,6 +164,10 @@ Node project covering only `vite.config.ts`: ES2023, `module: nodenext`, `types:
 
 Dependency-free generator for placeholder PWA icons (`node scripts/gen-icons.mjs`). Hand-assembles PNGs — CRC32 table, chunk framing, truecolor IHDR, `zlib.deflateSync` IDAT — and draws a slate square with a sky-blue "t" glyph (horizontal bar + stem on a 16-unit grid). Writes `public/icons/icon-192.png` and `icon-512.png`, the files referenced by `index.html` and the PWA manifest in `vite.config.ts`.
 
+### .github/workflows/ci.yml
+
+The `CI` workflow runs on every pull request and every push to `main` (its badge, alongside deploy's, sits at the top of `README.md`). One job: checkout, Node 24 with npm cache, `npm ci`, `npm test`, `npx tsc -b` (explicit type-check step for a clearer failure signal), `npm run lint`, `npm run build`.
+
 ### .github/workflows/deploy.yml
 
 GitHub Pages deployment on pushes to `main` (plus `workflow_dispatch`), with `pages: write`/`id-token: write` permissions and a `pages` concurrency group (in-progress runs cancelled). The `build` job: checkout, Node 24 with npm cache, `npm ci`, `npm test`, `npm run build`, then `cp dist/index.html dist/404.html` so Pages serves the SPA for client-side routes (Pages returns `404.html` for unknown paths), and uploads `dist/` as the Pages artifact. The `deploy` job publishes it with `actions/deploy-pages` into the `github-pages` environment.
