@@ -10,11 +10,13 @@ There is no backend: auth uses the Google Identity Services (GIS) token flow
 `fetch` against the Drive v3 REST API with a Bearer token — no `gapi` client.
 
 Data flow: `auth.ts` obtains a token (user gesture) → `token.ts` persists it →
-`bootstrap.ts` ensures the Drive folder tree exists, caching ids via `tree.ts` →
-`pull.ts` imports remote events the local replica lacks (discovering them through
-the Changes API, resuming from the cursor persisted by `changes.ts`), then
-`queue.ts` drains pending sync rows with pre-generated file ids (`ids.ts`) — both
-through `client.ts` primitives, tagging everything created via `tags.ts`. The orchestration (when to
+`account.ts` verifies the token still belongs to the account the local caches are
+bound to (discarding them on a switch) → `bootstrap.ts` ensures the Drive folder
+tree exists, caching ids via `tree.ts` → `pull.ts` imports remote events the local
+replica lacks (discovering them through the Changes API, resuming from the cursor
+persisted by `changes.ts`), then `queue.ts` drains pending sync rows with
+pre-generated file ids (`ids.ts`) — both through `client.ts` primitives, tagging
+everything created via `tags.ts`. The orchestration (when to
 connect, when to sync; always pull-then-push) lives in `src/store/appStore.ts`, which
 is the only consumer of `connect`/`disconnect`/`pullStream`/`drainStream`;
 `src/App.tsx` renders `ReconnectPill`.
@@ -76,6 +78,7 @@ Key exports:
 - `interface DriveChild { id; name; mimeType: string }` — one child of a folder listing.
 - `listChildren(token, parentId): Promise<DriveChild[]>` — every non-trashed child of a folder, following `nextPageToken` pagination (`pageSize` 1000). Used by the pull path to list dirty partitions (and, on cold start, `log/` itself); because filenames lead with the zero-padded seq and embed the id (§5.1), the names alone answer discovery without opening a file.
 - `getFileMetadata(token, fileId): Promise<FileMetadata>` — one file's `id, name, mimeType, parents`; the pull path resolves a changed record's uncached parent partition with it.
+- `getAboutUser(token): Promise<AboutUser>` — `about.get?fields=user(permanentId)`: the authorizing account's stable, email-change-proof id (`drive.file` scope suffices; one cheap metadata request). Used by `account.ts` to bind local caches to the account that minted them. Throws `DriveError` 500 if Drive returns no identity.
 - `getStartPageToken(token): Promise<string>` — the changes cursor for "everything from now on".
 - `listChanges(token, pageToken): Promise<ChangeList>` — drains the changes feed from a cursor, following `nextPageToken` pagination, returning `{ changes: DriveChange[], newStartPageToken }`. Pins `spaces=drive` and `restrictToMyDrive=true`; with `drive.file` scope the feed only ever contains app-created files. Throws `DriveError` 410 when the cursor expired (caller falls back to a full listing).
 - `updateFileContent(token, fileId, mimeType, body): Promise<void>` — `PATCH …?uploadType=media`, overwriting content in place. Used only for the app-owned `config.json`; the immutable `log/` is never updated this way.
@@ -110,7 +113,31 @@ before the upload starts, which is what makes retries idempotent.
 Key exports:
 
 - `allocateIds(token, count): Promise<string[]>` — take `count` ids, refilling the pool in batches as needed (a single oversized request when `count > BATCH_SIZE`).
-- `resetIdPool(): void` — test hook.
+- `resetIdPool(): void` — forget pooled ids. Called on a Google-account switch (`account.ts` — pooled ids were minted with the old account's token) and by tests.
+
+### src/drive/account.ts
+
+Google-account identity binding for the account-bound local caches (issue #32).
+The tree id cache (tree.ts), the per-stream changes cursors (changes.ts), and
+pre-generated upload file ids (ids.ts pool + sync-row `fileIds`) are only
+meaningful on the account that minted them; after an account switch they would
+point at the *old* account's files — worst case a retried upload reusing an old
+id gets Drive's 409 answer (globally-unique ids), which the client counts as
+success while the new account's Drive received nothing. Local state is therefore
+bound to the account's stable `user.permanentId` (`client.getAboutUser`),
+persisted in the `meta` store under `drive:account`.
+
+Key exports:
+
+- `ensureAccountBound(token): Promise<boolean>` — verifies `token` belongs to the bound account (one `about.get` per token per session, memoized). On mismatch, discards all account-bound state exactly as if the device had never bootstrapped — `clearTree()`, `clearAllChangesTokens()`, `stripPendingFileIds()` (store/events), `resetIdPool()` — then stores the new identity; returns `true` iff a switch was detected so callers holding pre-read rows know to re-read. A first-ever grant (no stored identity, e.g. upgrading from a version predating the binding) binds without discarding. Gates every read of account-bound state: called by `bootstrap.ensureTree`, `pullStream`, and `drainStream`. Throws `DriveError` on `about.get` failure, which those callers already classify (401/403 → reconnect, 429/5xx → retry-later).
+- `getStoredAccountId(): Promise<string | undefined>` / `saveAccountId(id)` — `meta`-store CRUD.
+- `resetAccountMemo(): void` — test hook for the per-session memo.
+
+Invariants: the binding deliberately survives `disconnect`/reconnect —
+reconnecting the same account must keep its caches warm — and is only erased by
+`wipeAll()` (which drops the caches with it). The discard is silent self-healing:
+no error surfaces; the next sync just pays the normal re-bootstrap and
+full-listing-walk cost.
 
 ### src/drive/tags.ts
 
@@ -132,13 +159,15 @@ Key exports:
 Changes-feed cursor persistence in the IndexedDB `meta` store, one key per stream
 (`drive:changes:<stream>`) since each stream's pull consumes the account-wide feed
 independently. Like the tree cache the cursor is advisory and self-healing: a
-missing, expired (410), or otherwise unusable cursor (e.g. after switching Google
-accounts — cursors are account-bound) just means one full listing walk, after
-which a fresh cursor is minted and persisted.
+missing, expired (410), or otherwise unusable cursor just means one full listing
+walk, after which a fresh cursor is minted and persisted. Cursors are
+account-bound, so a Google-account switch clears them all up front (`account.ts`)
+rather than waiting for Drive to reject them.
 
 Key exports:
 
 - `getChangesToken(stream)` / `saveChangesToken(stream, token)` / `clearChangesToken(stream)` — `meta`-store CRUD.
+- `clearAllChangesTokens()` — drop every stream's cursor at once (the account-switch discard, `account.ts`).
 
 ### src/drive/tree.ts
 
@@ -146,7 +175,9 @@ Cache of Drive file ids in the IndexedDB `meta` store (key `drive:tree`). Becaus
 `drive.file` only shows files the app created, ids are remembered at mint time to skip
 repeated `findFile` lookups on every drain. The cache is **advisory**: bootstrap always
 tolerates a miss by re-finding or re-creating, so a cleared cache or user-deleted
-folder self-heals on the next bootstrap.
+folder self-heals on the next bootstrap. It is also **account-bound**: `account.ts`
+clears it (via `clearTree`) when a token from a different Google account shows up, so
+stale wrong-account ids never reach `ensurePartition` or the pull path.
 
 Key exports:
 
@@ -163,7 +194,7 @@ and per stream a folder containing `config.json` + `checkpoint.json` stubs, `log
 
 Key exports:
 
-- `ensureTree(token: string, streams: string[]): Promise<DriveTree>` — ensures the whole tree, persists the id cache via `saveTree`, and returns the up-to-date `DriveTree`. Re-running merges with the cached tree: already-bootstrapped streams keep their `partitions` ids; newly requested streams are added.
+- `ensureTree(token: string, streams: string[]): Promise<DriveTree>` — ensures the whole tree, persists the id cache via `saveTree`, and returns the up-to-date `DriveTree`. Re-running merges with the cached tree: already-bootstrapped streams keep their `partitions` ids; newly requested streams are added. The merge is account-safe: `ensureAccountBound` (account.ts) runs first, so after a Google-account switch the stale cache is discarded before anything is merged and the whole tree is rebuilt fresh.
 
 Invariants and edge cases:
 
@@ -182,7 +213,7 @@ Key exports:
 
 - `type DrainOutcome = 'idle' | 'drained' | 'reconnect' | 'retry-later' | 'error'`.
 - `interface DrainResult { outcome: DrainOutcome; uploaded: number; error?: string }` — `error` is set only for the `'error'` outcome.
-- `drainStream(token: string, stream: string): Promise<DrainResult>` — drains one stream with a valid access token, bootstrapping the tree (`ensureTree`) on first use or when the stream is missing from the cache.
+- `drainStream(token: string, stream: string): Promise<DrainResult>` — drains one stream with a valid access token, bootstrapping the tree (`ensureTree`) on first use or when the stream is missing from the cache. When rows are pending it first verifies the account binding (`ensureAccountBound` — usually a memoized no-op since `pullStream` ran earlier in the cycle); a detected switch strips the rows' old-account `fileIds`, so the pending set is re-read before draining.
 
 Invariants and edge cases:
 
@@ -209,12 +240,12 @@ Key exports:
 
 - `type PullOutcome = 'idle' | 'pulled' | 'reconnect' | 'retry-later' | 'error'`.
 - `interface PullResult { outcome: PullOutcome; pulled: number; error?: string }` — `pulled` counts events imported; `error` is set only for the `'error'` outcome.
-- `pullStream(token: string, stream: string): Promise<PullResult>` — pulls one stream's remote log into the local replica, bootstrapping the tree (`ensureTree`) when the cache lacks the stream.
+- `pullStream(token: string, stream: string): Promise<PullResult>` — pulls one stream's remote log into the local replica, bootstrapping the tree (`ensureTree`) when the cache lacks the stream. Verifies the account binding first (`ensureAccountBound`, account.ts), so a switched account cold-starts against a clean slate instead of reading the old account's tree/cursor.
 
 Invariants and edge cases:
 
 - **Changes tell us where to look; filenames still answer what's new.** Only a record-named file (per `idOfRecordName`) whose id isn't local marks its parent partition dirty — our own pushes (ids already local), attachments, foreign files, and removed/trashed changes cost zero follow-up requests. A record in an uncached partition costs one `getFileMetadata` to confirm the parent is a `YYYY-MM-DD` folder under this stream's `log/` (warming the push path's cache); `appProperties` tags, when present, short-circuit records of other streams for free. Deletions never un-import — the log is append-only.
-- **Cursor lifecycle.** No cursor (first pull, wiped meta) → cold start: `getStartPageToken` *before* a full per-partition listing walk, cursor persisted only *after* the walk succeeds. Drive rejecting the cursor with any non-auth, non-retryable status (410 expired; 4xx after an account switch) → drop it, cold start again. The incremental cursor also advances only after a fully successful pull, so a mid-pull failure replays the same change window — no change is ever skipped, at worst replayed, and replays are idempotent.
+- **Cursor lifecycle.** No cursor (first pull, wiped meta, or the account-switch discard) → cold start: `getStartPageToken` *before* a full per-partition listing walk, cursor persisted only *after* the walk succeeds. Drive rejecting the cursor with any non-auth, non-retryable status (410 expired; any other unusable-cursor 4xx) → drop it, cold start again. The incremental cursor also advances only after a fully successful pull, so a mid-pull failure replays the same change window — no change is ever skipped, at worst replayed, and replays are idempotent.
 - **Within a dirty partition, discovery is by filename** — same as the cold-start walk: `idOfRecordName` picks out record files and their ids, so the missing set (ids not in `listEvents`) is computed from listings alone — no file reads for events already held. Foreign files and folders are ignored.
 - **Eager attachment download.** For each missing record, every referenced attachment blob not already local is fetched. One missing on Drive (pruned, or a §5.2 push race — the record commits last) is skipped and picked up on a later pull.
 - **Atomic import per partition.** Events + blobs commit in one IndexedDB transaction; pulled events get sync status `uploaded` (the drainer never re-pushes them) and the per-stream seq counter jumps past every pulled seq.
@@ -239,8 +270,9 @@ Never a blocking modal. Rendered by `src/App.tsx`.
 - `src/drive/client.test.ts` — with stubbed `fetch`, covers query building/escaping in `findFile`, folder creation (with `appProperties`), multipart-vs-resumable selection in `uploadFile`, pre-generated-id metadata + 409-as-success (and 409 still thrown without a `fileId`), `generateIds`, `DriveError` status classification, `readFileText`/`readFileBlob`, `listChildren` (non-trashed query, `nextPageToken` pagination), `getFileMetadata`, `getStartPageToken`, and `listChanges` (params, pagination, 410).
 - `src/drive/space.test.ts` — with stubbed `fetch`, covers `fetchDriveSpace`: quota parsing + app-byte summing (auth header, `about` fields, `files.list` query), `nextPageToken` pagination, `limitBytes` omitted on unlimited plans, and 401 → `DriveError`/`isAuth` classification.
 - `src/drive/ids.test.ts` — with a mocked client, covers batch minting on first use, pool serving without requests, refill on exhaustion, oversized single requests, and id uniqueness.
-- `src/drive/bootstrap.test.ts` — against an in-memory fake Drive, asserts `ensureTree` creates the full tree once, is idempotent on re-run, never re-uploads existing mutable stubs, tags everything it creates with `appProperties`, and preserves cached partition ids.
-- `src/drive/queue.test.ts` — against a fake Drive that can be told to fail, covers attachment-before-record ordering, idempotent re-drains via persisted pre-generated ids (no duplicates, no probes), the zero-findFile happy path, the legacy-row find-before-upload fallback, `appProperties` tagging, re-bootstrapping when the cached tree lacks the stream, `reconnect` on 401, `retry-later` with `nextRetryAt` on 429, audio pruning when `keepAudioLocally` is false, and the idle case — including the multi-stream regression guard that an idle stream (e.g. a system stream with no events yet) costs zero Drive calls.
+- `src/drive/account.test.ts` — with mocked identity/id-minting endpoints plus fake IndexedDB, covers `ensureAccountBound`: first grant binds without discarding, same-account calls keep everything (memoized once per token), an account switch discards the tree, every changes cursor, and pending rows' `fileIds` (uploaded rows untouched) then re-binds, and the pooled pre-generated ids are dropped on switch.
+- `src/drive/bootstrap.test.ts` — against an in-memory fake Drive, asserts `ensureTree` creates the full tree once, is idempotent on re-run, never re-uploads existing mutable stubs, tags everything it creates with `appProperties`, and preserves cached partition ids; for the account binding, that a switch discards cached partition ids (never merged into the fresh tree), a same-account reconnect keeps them at no extra bootstrap cost, and a first-ever grant binds a pre-existing cache without discarding.
+- `src/drive/queue.test.ts` — against a fake Drive that can be told to fail, covers attachment-before-record ordering, idempotent re-drains via persisted pre-generated ids (no duplicates, no probes), the zero-findFile happy path, the legacy-row find-before-upload fallback, `appProperties` tagging, re-bootstrapping when the cached tree lacks the stream, `reconnect` on 401, `retry-later` with `nextRetryAt` on 429, audio pruning when `keepAudioLocally` is false, the idle case — including the multi-stream regression guard that an idle stream (e.g. a system stream with no events yet) costs zero Drive calls — and that a retried row never reuses old-account `fileIds` after an account switch (fresh ids are minted and everything lands for real).
 - `src/drive/pull.test.ts` — against an in-memory fake Drive tree (with a journaled changes feed) plus fake IndexedDB, covers cold-start import + `uploaded` status (never re-pushed), eager attachment download, re-pull idempotency, the O(1) no-op incremental pull, changes-feed discovery (cached and uncached partitions), ignoring removed/trashed/foreign/other-stream changes and our own pushes, the 410 cursor-expiry fallback + re-mint, the cursor not advancing on a mid-pull failure, the seq-counter bump past pulled seqs, tolerating a missing attachment, 401 → `reconnect` / 429 → `retry-later` classification, malformed-record errors, and merging with locally queued events across a seq collision.
 
 ## Key invariants & gotchas
@@ -250,6 +282,7 @@ Never a blocking modal. Rendered by `src/App.tsx`.
 - **`drive.file` scope**: the app can only see files it created. This is why ids are cached in `tree.ts` and why bootstrap pre-creates `config.json`/`checkpoint.json` stubs — otherwise the app could never read back files a skill wrote.
 - **The record is the commit**: attachments upload first; an entry exists in Drive only once its `.json` record lands. Combined with pre-generated ids persisted before each attempt (409 = already landed = success), retries are safe at any interruption point. The pull side leans on the same protocol: any record it sees has its attachments already uploaded (a still-missing one is a rare race, tolerated and retried), and an attachment change alone never triggers work — only the record does.
 - **The changes cursor is advisory, like the tree cache.** It lives per stream in `meta` (`drive:changes:<stream>`); missing/expired/foreign cursors self-heal via one full listing walk + re-mint. It advances only after a fully successful pull, so the Changes path can never silently drop events — only replay them, which is idempotent.
+- **Everything account-bound is bound explicitly.** `account.ts` stores the granting account's `permanentId` (`drive:account` in `meta`) and verifies it once per token per session before any account-bound state is read; a switch silently discards the tree cache, all changes cursors, and pooled + sync-row pre-generated ids (the dangerous one: Drive ids are globally unique, so reusing an old account's id can 409-as-"success" while uploading nothing). What is *not* discarded: the local event log itself (the app's data, not a per-account cache — pending events push to the newly connected account, and its remote log pulls and merges in), `lastSyncAt:<stream>` display stamps (restamped after the next clean cycle), and per-stream `nextSeq` counters (local ordering hints).
 - **Pull before push.** The local IndexedDB is a replica of the Drive log; `appStore.drainSync` always runs `pullStream` then `drainStream` for each registered stream in turn (`allSyncStreams()` — see [store.md](store.md)), so local appends land after everything other devices committed. Identity is the event `id` — a seq collision across devices is expected and resolved by the fold's `seq → loggedAt → id` order (SPEC §3.3), never by the sync layer.
 - **Never clobber**: bootstrap creates mutable stubs only when absent, and `streams.json` is not rewritten once present. Only `updateFileContent` (used for the app-owned `config.json`) overwrites anything; `log/` is append-only.
 - **Backoff**: 30s → 2m → 8m → … capped at 1h; auth errors bypass backoff entirely and stop the drain.

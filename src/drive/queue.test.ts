@@ -21,6 +21,7 @@ function fakeDrive() {
   const uploadOrder: string[] = []
   let n = 0
   let failWith: { status: number } | null = null
+  let user = 'user-A'
 
   const find = (name: string, parentId: string) =>
     nodes.find((f) => f.name === name && f.parentId === parentId)
@@ -30,6 +31,11 @@ function fakeDrive() {
     failNext(status: number | null) {
       failWith = status === null ? null : { status }
     },
+    /** Simulate a Google-account switch for subsequent tokens. */
+    setUser(id: string) {
+      user = id
+    },
+    getAboutUser: vi.fn(async (_t: string) => ({ permanentId: user })),
     findFile: vi.fn(async (_t: string, a: { name: string; parentId: string }) =>
       find(a.name, a.parentId)?.id ?? null,
     ),
@@ -72,6 +78,7 @@ vi.mock('./client', async () => {
     createFolder: (...a: unknown[]) => drive.createFolder(...(a as [string, string, string])),
     generateIds: (...a: unknown[]) => drive.generateIds(...(a as [string, number])),
     uploadFile: (...a: unknown[]) => drive.uploadFile(...(a as [string, never])),
+    getAboutUser: (...a: unknown[]) => drive.getAboutUser(...(a as [string])),
   }
 })
 
@@ -289,5 +296,42 @@ describe('drainStream', () => {
     expect(drive.createFolder).not.toHaveBeenCalled()
     expect(drive.generateIds).not.toHaveBeenCalled()
     expect(drive.uploadFile).not.toHaveBeenCalled()
+  })
+
+  it('never reuses old-account fileIds after an account switch (#32)', async () => {
+    // A row that assigned pre-generated ids on account A but never landed:
+    // bootstrap first, then fail the drain after the ids persist on the row.
+    await captureWithAudio()
+    await import('./bootstrap').then((m) => m.ensureTree('tok-a', ['timelog']))
+    const { drainStream } = await import('./queue')
+    drive.failNext(500)
+    expect((await drainStream('tok-a', 'timelog')).outcome).toBe('retry-later')
+    const { getSyncStatuses, putSyncStatus } = await import('../store/events')
+    const failedRow = (await getSyncStatuses('timelog')).values().next().value!
+    const staleIds = Object.values(failedRow.fileIds!)
+    expect(staleIds.length).toBeGreaterThan(0)
+    // Make the row immediately retryable (skip the 429/5xx backoff window).
+    const { nextRetryAt: _elapsed, ...retryable } = failedRow
+    await putSyncStatus(retryable)
+
+    // Switch accounts: the retried drain must re-mint ids with the new
+    // account's token — reusing account A's ids would 409 against A's files
+    // and be miscounted as success while account B's Drive got nothing.
+    drive.failNext(null)
+    drive.setUser('user-B')
+    drive.generateIds.mockClear()
+    drive.uploadFile.mockClear()
+    const landedBefore = drive.uploadOrder.length
+    const res = await drainStream('tok-b', 'timelog')
+    expect(res.outcome).toBe('drained')
+    expect(res.uploaded).toBe(1)
+    expect(drive.generateIds).toHaveBeenCalled()
+    const usedIds = drive.uploadFile.mock.calls
+      .map((c) => (c[1] as FakeUploadArgs).fileId)
+      .filter((id): id is string => id !== undefined)
+    expect(usedIds.length).toBeGreaterThan(0)
+    for (const id of usedIds) expect(staleIds).not.toContain(id)
+    // Both event files landed for real (no phantom 409-as-success successes).
+    expect(drive.uploadOrder.length).toBe(landedBefore + 2)
   })
 })

@@ -31,6 +31,7 @@ function fakeDrive() {
   let n = 0
   let failOn: 'list' | 'read' | 'changes' | null = null
   let failStatus = 500
+  let user = 'user-A'
 
   const add = (
     name: string,
@@ -129,6 +130,11 @@ function fakeDrive() {
         newStartPageToken: String(journal.length),
       }
     }),
+    /** Simulate a Google-account switch for subsequent tokens. */
+    setUser(id: string) {
+      user = id
+    },
+    getAboutUser: vi.fn(async (_t: string) => ({ permanentId: user })),
   }
 }
 
@@ -147,6 +153,7 @@ vi.mock('./client', async () => {
     getFileMetadata: (...a: unknown[]) => drive.getFileMetadata(...(a as [string, string])),
     getStartPageToken: (...a: unknown[]) => drive.getStartPageToken(...(a as [string])),
     listChanges: (...a: unknown[]) => drive.listChanges(...(a as [string, string])),
+    getAboutUser: (...a: unknown[]) => drive.getAboutUser(...(a as [string])),
   }
 })
 

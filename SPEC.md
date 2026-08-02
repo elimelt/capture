@@ -827,10 +827,14 @@ device — or a reinstalled/wiped one — converges on the full log:
    for events already held. Foreign files, non-`YYYY-MM-DD` folders, trashed or
    removed changes, and records already local (our own pushes) are ignored.
    Without a cursor (first pull, wiped meta), or when Drive rejects one (410
-   expired; cursors are also account-bound), discovery falls back to the full
-   walk — list `log/`'s date-partition folders, then each partition's children —
-   and a fresh cursor is minted before the walk and persisted only after a fully
-   successful pull, so no change window is ever skipped, at worst replayed.
+   expired), discovery falls back to the full walk — list `log/`'s date-partition
+   folders, then each partition's children — and a fresh cursor is minted before
+   the walk and persisted only after a fully successful pull, so no change window
+   is ever skipped, at worst replayed. Cursors — like the cached folder/file ids
+   and pre-generated upload ids — are account-bound: local sync caches are bound
+   to the granting account's stable id (`about.get` `user.permanentId`) and are
+   silently discarded when a token from a different Google account appears, so a
+   switch just costs one re-bootstrap + full walk.
 2. **Download eagerly.** For each missing record: fetch the `.json`, then fetch every
    referenced attachment blob not already local (full offline availability). An
    attachment absent on Drive (pruned, or a §5.2 push race) is skipped and picked up on

@@ -203,10 +203,11 @@ converges the replica with Drive before anything is pushed:
    parsed with `idOfRecordName`, and names that parse to an id already held
    locally (including everything this device just pushed) are skipped without a
    read; attachments, foreign files, and removed/trashed changes are ignored.
-   Without a cursor — or when Drive rejects one (410 expiry, account switch) —
-   discovery falls back once to the full walk (every `log/` partition folder and
-   its children), minting a fresh cursor before the walk and persisting it after
-   the pull succeeds, so no change window is ever skipped, at worst replayed.
+   Without a cursor — first pull, wiped meta, or the account-switch discard
+   (§5) — or when Drive rejects one (410 expiry), discovery falls back once to
+   the full walk (every `log/` partition folder and its children), minting a
+   fresh cursor before the walk and persisting it after the pull succeeds, so no
+   change window is ever skipped, at worst replayed.
 2. **Fetch.** Download each missing event record, `parseEvent`-validate it
    (malformed records are skipped, never fatal), and **eagerly** download every
    attachment the event references that isn't already stored (tolerating pruned or
@@ -283,6 +284,24 @@ outcomes leave it untouched. Offline is not a special case: capture works fully
 offline, and the cycle simply runs on the next manual "Sync now" that finds a
 valid token.
 
+**Account switching.** The GIS account chooser lets a user grant a *different*
+Google account, and several pieces of local state are only meaningful on the
+account that minted them: the `tree.ts` id cache, the per-stream changes cursors,
+and pre-generated upload file ids (the in-memory pool and sync rows' `fileIds`).
+`src/drive/account.ts` binds them all to the granting account's stable
+`user.permanentId` (`about.get`, one request per token per session), persisted in
+`meta` (`drive:account`). Both `pullStream` and `drainStream` (and `ensureTree`
+itself) verify the binding before reading any of that state; on a mismatch the
+whole set is silently discarded — exactly as if the device had never
+bootstrapped — and the new identity stored, so the next cycle re-bootstraps the
+tree and cold-starts the pull with a full listing walk. No error surfaces; the
+only cost is that one-time re-bootstrap/walk. A first-ever grant (no stored
+identity, including upgrades from versions predating the binding) binds without
+discarding, and disconnect/reconnect with the *same* account keeps every cache
+warm. The local event log itself is deliberately **not** discarded: it is the
+app's data, not a per-account cache — still-pending events push to the newly
+connected account, and its remote log pulls in and merges via the fold.
+
 ## 6. Idempotency and crash safety
 
 The subsystem is safe to interrupt at any point, by construction:
@@ -307,16 +326,20 @@ The subsystem is safe to interrupt at any point, by construction:
   find-before-upload, resuming from the wrong phase is still harmless.
 - **Bootstrap is idempotent and self-healing.** `ensureTree` finds-before-creates
   every folder and file; the `tree.ts` id cache is advisory, and a cleared cache or
-  user-deleted folder is recreated on the next drain. Skill-owned mutable files are
-  stubbed only when absent, never clobbered — required because `drive.file` scope
-  only lets the app see files it created, so the stub is what grants read-back.
+  user-deleted folder is recreated on the next drain. The cache is also bound to
+  the granting Google account (`account.ts`, §5): a token from a different account
+  discards it before any cached id could be merged or reused. Skill-owned mutable
+  files are stubbed only when absent, never clobbered — required because
+  `drive.file` scope only lets the app see files it created, so the stub is what
+  grants read-back.
 - **Pulls are idempotent and atomic.** Discovery is by event id from filenames, so
   a re-pull skips everything already held; imports commit per partition in one
   transaction (events + blobs + counter bump), so an interrupted pull leaves only
   complete events, all of which the next pull skips. The changes cursor advances
-  only after a fully successful pull and self-heals like the tree cache (missing,
-  expired, or account-foreign cursors trigger one full walk + re-mint), so the
-  Changes fast path can only replay work, never drop it.
+  only after a fully successful pull and self-heals like the tree cache (missing
+  or expired cursors trigger one full walk + re-mint; account-foreign ones are
+  cleared up front by the §5 account-switch discard), so the Changes fast path
+  can only replay work, never drop it.
 - **The fold tolerates disorder.** It sorts by `compareEvents` and silently ignores
   unknown or already-revoked targets, so partial replication (e.g. a skill reading
   Drive mid-drain, or a pull racing an in-flight upload) still folds to a

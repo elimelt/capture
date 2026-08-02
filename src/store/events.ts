@@ -267,6 +267,27 @@ export async function importEvents(
   await tx.done
 }
 
+/**
+ * Drop pre-generated Drive file ids from every row not yet uploaded. Used on a
+ * Google-account switch (drive/account.ts): ids minted under the old account
+ * must not be reused for uploads to the new one — Drive file ids are globally
+ * unique, so if the old upload already landed, a retried create with the same
+ * id answers 409, which the client counts as success while the new account's
+ * Drive got nothing. Stripped rows fall back to the drainer's legacy
+ * find-before-upload probe, so nothing duplicates and nothing is lost.
+ */
+export async function stripPendingFileIds(): Promise<void> {
+  const db = await getDb()
+  const tx = db.transaction('sync', 'readwrite')
+  let cursor = await tx.store.openCursor()
+  while (cursor) {
+    const { fileIds, ...rest } = cursor.value
+    if (cursor.value.status !== 'uploaded' && fileIds !== undefined) await cursor.update(rest)
+    cursor = await cursor.continue()
+  }
+  await tx.done
+}
+
 export async function putSyncStatus(row: SyncStatusRow): Promise<void> {
   const db = await getDb()
   await db.put('sync', row)

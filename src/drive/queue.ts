@@ -25,6 +25,7 @@ import {
   putSyncStatus,
 } from '../store/events'
 import { DriveError, FOLDER_MIME, createFolder, findFile, uploadFile } from './client'
+import { ensureAccountBound } from './account'
 import { allocateIds } from './ids'
 import { tags } from './tags'
 import { ensureTree } from './bootstrap'
@@ -165,9 +166,14 @@ async function pruneAudio(stream: string, event: LogEvent): Promise<void> {
  * the caller can surface the reconnect pill or schedule a later drain.
  */
 export async function drainStream(token: string, stream: string): Promise<DrainResult> {
-  const pending = await listPendingSync(stream)
+  let pending = await listPendingSync(stream)
   if (pending.length === 0) return { outcome: 'idle', uploaded: 0 }
 
+  // Account-bound caches (tree ids, sync-row fileIds) are only readable once
+  // the token is verified to belong to the account that minted them
+  // (account.ts). Usually a memoized no-op: pullStream ran first this cycle.
+  // A detected switch stripped fileIds from the rows read above — re-read.
+  if (await ensureAccountBound(token)) pending = await listPendingSync(stream)
   let tree = (await getTree()) ?? (await ensureTree(token, [stream]))
   if (!tree.streams[stream]) tree = await ensureTree(token, [stream])
 
