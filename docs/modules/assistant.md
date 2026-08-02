@@ -84,8 +84,16 @@ that lives in `tools.ts`), so it tests without IndexedDB.
   so the prompt — the very start of the token stream — stays byte-identical across turns
   and tool-loop steps, keeping the server's prefix (KV) cache valid.
 
+- `withEntryFocus(instructions: string, entryText: string): string` — the entry-focused
+  variant used when a conversation is opened from one entry card's "Ask AI" action:
+  appends (after the unchanged base instructions, so the prompt's shared prefix stays
+  cache-stable) a block stating the conversation was opened from one specific entry
+  plus that entry's full plain-text rendering (`formatEntryPlainText`, which includes
+  the entry id the write tools need for targeting).
+
 Uses `deviceTz`/`toLocalIso` from `../contract/time`. `formatDigest` is consumed by
-`tools.ts`; `buildInstructions` is passed to the transport by `ChatScreen.tsx`.
+`tools.ts`; `buildInstructions` (wrapped by `withEntryFocus` for entry-focused
+conversations) is passed to the transport by `ChatScreen.tsx`.
 
 ### src/assistant/tools.ts
 
@@ -303,14 +311,29 @@ the events queue for the normal manual sync.
 
 Conversation lifecycle:
 
-- A **module-scope `cache`** (`{ model, chatId, createdAt, persisted, persistedCount, chat }`)
+- A **module-scope `cache`** (`{ model, chatId, createdAt, focusEntryId?, persisted,
+  persistedCount, chat }`)
   keeps the active `Chat` instance alive across tab switches within one JS lifetime.
-  `getChat(model, seed)` returns the cached chat when model and id match; for the same
-  conversation with a different model it re-creates the transport but **carries over
-  the live messages** (and persistence bookkeeping); otherwise it builds a fresh
+  `getChat(model, seed, focusEntryId?)` returns the cached chat when model and id
+  match; for the same conversation with a different model it re-creates the transport
+  but **carries over the live messages** (and persistence bookkeeping, and the entry
+  focus); otherwise it builds a fresh
   `Chat` from the seed's stored messages (`persisted`/`persistedCount` seeded from
   `seed.messages.length`).
-- On first mount in a JS lifetime, a `useEffect` hydrates the most recent conversation
+- **Entry-focused dispatch ("Ask AI"):** the screen is reached from an entry card's
+  "Ask AI" action (`navigate('/chat', { state: { entryId } })` — there is no assistant
+  tab). When `location.state.entryId` is present and this `location.key` hasn't been
+  dispatched yet (a module-scope `dispatchedNavKey` remembers the last one, so
+  back/forward or tab-away-and-back resumes rather than re-minting), the screen starts
+  a **fresh conversation** whose transport instructions are `focusedInstructions(id)`:
+  `withEntryFocus(buildInstructions(), await formatEntryPlainText(entry, getBlob))`,
+  re-read from the store per message so a turn after an agent edit sees the entry's
+  current content. A deleted/unknown entry falls back to the plain instructions. The
+  empty state swaps in entry-focused copy and `ENTRY_SUGGESTIONS` ("Summarize this
+  entry", "Clean up the wording", "Move it to a different time"), and the header gains
+  a "Done" button (`navigate(-1)`) back to the dispatching screen.
+- Otherwise, on first mount in a JS lifetime, a `useEffect` hydrates the most recent
+  conversation
   from the stream (`loadMostRecentChat`), falling back to `freshSeed()`
   (`crypto.randomUUID()` as an ephemeral id, empty messages). Until hydration resolves
   the component renders `null`.
@@ -366,8 +389,9 @@ Rendering details:
   `type="button"` so stopping never also submits the form. Submitting mid-turn queues
   the message; a stopped turn keeps its partial text (the SDK's abort path sets status
   `ready` with the streamed-so-far message intact) and persists like any settled turn.
-  An empty conversation shows three suggestion buttons. Errors render a dismissible
-  one-liner via `clearError`.
+  An empty conversation shows three suggestion buttons (`ENTRY_SUGGESTIONS` when the
+  conversation is entry-focused). Errors render a dismissible one-liner via
+  `clearError`.
 
 ### src/assistant/ChatHistorySheet.tsx
 

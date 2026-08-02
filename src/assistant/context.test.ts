@@ -3,7 +3,7 @@ import { deviceTz, toLocalIso } from '../contract/time'
 import { getDb, resetDbCache } from '../store/db'
 import { getSettings } from '../store/settings'
 import { ASSISTANT_MODELS, DEFAULT_ASSISTANT_MODEL } from './config'
-import { buildInstructions, formatDigest, type DigestItem } from './context'
+import { buildInstructions, formatDigest, withEntryFocus, type DigestItem } from './context'
 
 const NOW = new Date('2026-08-02T12:00:00-04:00')
 
@@ -132,5 +132,15 @@ describe('buildInstructions', () => {
 
   it('no longer embeds a log digest', () => {
     expect(buildInstructions(NOW)).not.toContain('Log entries from the last')
+  })
+})
+
+describe('withEntryFocus', () => {
+  it('appends the focus block after the base prompt, keeping the prefix cache-stable', () => {
+    const base = buildInstructions(NOW)
+    const focused = withEntryFocus(base, '## 2026-08-02 09:04:11\n- Entry: entry-1')
+    expect(focused.startsWith(base)).toBe(true)
+    expect(focused).toContain('opened from ONE specific log entry')
+    expect(focused).toContain('- Entry: entry-1')
   })
 })

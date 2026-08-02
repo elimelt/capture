@@ -35,6 +35,7 @@ export default function DayScreen() {
   const params = useParams<{ date?: string }>()
   const navigate = useNavigate()
   const entries = useAppStore((s) => s.entries)
+  const assistantEnabled = useAppStore((s) => s.appSettings.assistantEnabled)
   const revoke = useAppStore((s) => s.revoke)
   const del = usePendingDelete(revoke)
   const [copyFeedback, setCopyFeedback] = useState<'copied' | 'error' | null>(null)
@@ -114,6 +115,11 @@ export default function DayScreen() {
         entries={dayEntries}
         onDeleteEntry={del.request}
         onCopyEntry={(entry) => void copyEntry(entry)}
+        onAskEntry={
+          assistantEnabled
+            ? (entry) => navigate('/chat', { state: { entryId: entry.id } })
+            : undefined
+        }
         emptyTitle={`Nothing logged ${date === today ? 'yet today' : 'this day'}`}
       />
 

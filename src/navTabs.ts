@@ -3,8 +3,9 @@
  * the tab set — labels and, more importantly, route paths — can be pinned
  * by a hermetic test without importing the whole app shell (store, drive,
  * notify, lazy screens, …). See issue #84: labels are a rename-only surface
- * ("Day" → "Today", "Chat" → "Recall"); paths are the SW precache /
- * deep-link contract and must never move with a label.
+ * ("Day" → "Today"); paths are the SW precache / deep-link contract and must
+ * never move with a label. The assistant has no tab: `/chat` still exists as
+ * a route but is reached only from an entry card's "Ask AI" action.
  */
 
 export interface NavTab {
@@ -17,7 +18,6 @@ export interface NavTab {
 export const TABS: readonly NavTab[] = [
   { to: '/', label: 'Capture' },
   { to: '/day', label: 'Today' },
-  { to: '/chat', label: 'Recall', assistant: true },
   { to: '/settings', label: 'Settings' },
 ]
 

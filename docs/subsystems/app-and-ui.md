@@ -42,13 +42,14 @@ Four screens, one route table in `App.tsx`, one fixed bottom tab bar:
 | --- | --- | --- | --- |
 | `/` | Capture (`src/capture/CaptureScreen`) | Capture | Screen 1; voice-first capture + the latest entry (the full day lives on the Day screen) |
 | `/day`, `/day/:date` | Day view (`src/dayview/DayScreen`) | Today | Screen 2; merged per-day timeline of entries + calendar pseudo-entries, prev/next-day nav via the route param |
-| `/chat` | Chat (`src/assistant/ChatScreen`) | Recall | Opt-in; `lazy()`-loaded; guarded — redirects to `/` unless `assistantEnabled` |
+| `/chat` | Chat (`src/assistant/ChatScreen`) | — (no tab) | Opt-in; `lazy()`-loaded; guarded — redirects to `/` unless `assistantEnabled`; reached from an entry card's "Ask AI" action, which navigates here with `{ state: { entryId } }` to open an entry-focused conversation |
 | `/settings` | Settings (`src/settings/SettingsScreen`) | Settings | Screen 3; Google (Drive + target-calendar picker), capture, location/places, assistant, notifications, data |
 
-Tab labels (issue #84: "Day" → "Today", "Chat" → "Recall") are cosmetic only — routes,
+Tab labels (issue #84: "Day" → "Today") are cosmetic only — routes,
 component/file names, and the SW chunk-name coupling below are all label-independent
-and frozen; see `src/navTabs.ts`. Unknown paths redirect to `/`. The Recall tab is
-filtered out of the tab bar unless the assistant is enabled, and its chunk (AI SDK +
+and frozen; see `src/navTabs.ts`. Unknown paths redirect to `/`. The assistant has no
+tab of its own: `/chat` is reached only from an entry card's "Ask AI" action (shown
+only when the assistant is enabled), and its chunk (AI SDK +
 markdown) is never downloaded by users who never enable it. Navigation is flat — tabs
 only, no nested routers or stacks; "drill-down" interactions (text entry, location
 editing, chat history) are modal bottom sheets, not routes. Deployment supports deep

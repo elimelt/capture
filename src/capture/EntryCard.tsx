@@ -8,6 +8,7 @@ import {
   PinIcon,
   PlusIcon,
   SlidersIcon,
+  SparkleIcon,
   TimelineRow,
   TrashIcon,
   captureIcon,
@@ -66,6 +67,9 @@ interface EntryCardProps {
   onApplyEdit: (patch: AmendPatch) => void
   /** Request a plain-text representation of this entry from the parent. */
   onCopy?: (entry: Entry) => void
+  /** Open an assistant conversation focused on this entry ("Ask AI");
+   *  present only when the opt-in assistant is enabled. */
+  onAsk?: (entry: Entry) => void
 }
 
 export function EntryCard({
@@ -85,6 +89,7 @@ export function EntryCard({
   onSetLocation,
   onApplyEdit,
   onCopy,
+  onAsk,
 }: EntryCardProps) {
   // View-local only, never persisted, never an event.
   const [noteOpen, setNoteOpen] = useState(false)
@@ -150,6 +155,7 @@ export function EntryCard({
           onEditLocation={() => setLocationOpen(true)}
           onEditEntry={() => setEditOpen(true)}
           onCopy={onCopy && (() => onCopy(entry))}
+          onAsk={onAsk && (() => onAsk(entry))}
           onDelete={onDelete}
         />
       )}
@@ -263,6 +269,7 @@ function EntryActions({
   onEditLocation,
   onEditEntry,
   onCopy,
+  onAsk,
   onDelete,
 }: {
   hasLocation: boolean
@@ -274,6 +281,7 @@ function EntryActions({
   onEditLocation: () => void
   onEditEntry: () => void
   onCopy?: () => void
+  onAsk?: () => void
   onDelete: () => void
 }) {
   return (
@@ -312,6 +320,11 @@ function EntryActions({
       {onCopy && (
         <IconButton size="sm" variant="ghost" aria-label="Copy entry" onClick={onCopy}>
           <CopyIcon size={16} />
+        </IconButton>
+      )}
+      {onAsk && (
+        <IconButton size="sm" variant="ghost" aria-label="Ask AI about this entry" onClick={onAsk}>
+          <SparkleIcon size={16} />
         </IconButton>
       )}
       <IconButton

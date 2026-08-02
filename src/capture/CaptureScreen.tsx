@@ -1,5 +1,6 @@
 /** Screen 1 — Capture (SPEC §4.1). Tap to record, tap to stop; never dead-ends. */
 import { useEffect, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import type { CaptureEvent, Entry, GeoLocation } from '../contract/types'
 import { localDateOf, toLocalIso } from '../contract/time'
 import { reverseGeocode } from '../places/geocode'
@@ -43,6 +44,7 @@ export default function CaptureScreen() {
   const addPlace = useAppStore((s) => s.addPlace)
   const revoke = useAppStore((s) => s.revoke)
 
+  const navigate = useNavigate()
   const recorder = useRecorder()
   const del = usePendingDelete(revoke)
   const [textOpen, setTextOpen] = useState(false)
@@ -376,6 +378,11 @@ export default function CaptureScreen() {
             entries={todayEntries.slice(0, 1)}
             onDelete={handleDelete}
             onCopy={(entry) => void copyEntry(entry)}
+            onAsk={
+              appSettings.assistantEnabled
+                ? (entry) => navigate('/chat', { state: { entryId: entry.id } })
+                : undefined
+            }
             newestFirst
           />
         </div>

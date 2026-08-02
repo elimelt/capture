@@ -14,6 +14,8 @@ interface EntryListProps {
   onDelete: (entryId: string) => void
   /** Request a plain-text representation of an entry from the parent. */
   onCopy?: (entry: Entry) => void
+  /** Open an assistant conversation focused on an entry (card "Ask AI"). */
+  onAsk?: (entry: Entry) => void
   /**
    * Timeline-rail continuity (the merged Day view splits its rail into runs of
    * consecutive entries separated by calendar pseudo-entries): whether this
@@ -36,6 +38,7 @@ export function EntryList({
   entries,
   onDelete,
   onCopy,
+  onAsk,
   firstOnRail = true,
   lastOnRail = true,
   newestFirst = false,
@@ -57,6 +60,7 @@ export function EntryList({
           newestFirst={newestFirst}
           onDelete={() => onDelete(entry.id)}
           onCopy={onCopy}
+          onAsk={onAsk}
           onSetTime={(time) =>
             void amend({
               targets: [entry.id],

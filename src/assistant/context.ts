@@ -70,3 +70,20 @@ export function buildInstructions(now: Date = new Date()): string {
     `Current local time: ${toLocalIso(now).slice(0, 13)}:00 (${deviceTz()}).`,
   ].join('\n')
 }
+
+/**
+ * Entry-focused variant: appended AFTER the base instructions (so the
+ * prompt's shared prefix stays cache-stable) when a conversation is opened
+ * from one entry card's "Ask AI" action. `entryText` is the entry's full
+ * plain-text rendering (formatEntryPlainText), which includes the entry id
+ * the write tools need for targeting.
+ */
+export function withEntryFocus(instructions: string, entryText: string): string {
+  return [
+    instructions,
+    '',
+    'This conversation was opened from ONE specific log entry; the user wants to ask about it or edit it. Its full current content is below (including the entry id for update_entry/delete_entry targeting). Prefer acting on this entry directly \u2014 use tools to re-read the log only when the question reaches beyond it.',
+    '',
+    entryText,
+  ].join('\n')
+}

@@ -10,9 +10,12 @@
  * "Send now" steer action that interrupts the stream — see sendQueue.ts.
  */
 import { useEffect, useRef, useState } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { Chat, useChat } from '@ai-sdk/react'
 import type { UIMessage } from 'ai'
+import { getBlob } from '../store/events'
 import { useAppStore } from '../store/appStore'
+import { formatEntryPlainText } from '../context/plainText'
 import {
   Button,
   ScreenHeader,
@@ -27,7 +30,7 @@ import {
 import { ChatHistorySheet } from './ChatHistorySheet'
 import { appendChatMessage, createChat, messagesSince } from './chatSync'
 import { modelLabel } from './config'
-import { buildInstructions } from './context'
+import { buildInstructions, withEntryFocus } from './context'
 import { loadMostRecentChat, type StoredChat } from './history'
 import { Markdown } from './Markdown'
 import * as sendQueue from './sendQueue'
@@ -44,6 +47,8 @@ let cache: {
   model: string
   chatId: string
   createdAt: string
+  /** Entry this conversation was opened on (card "Ask AI"), if any. */
+  focusEntryId?: string
   /** Whether the chat's capture event exists in the stream (lazily minted). */
   persisted: boolean
   /** How many of the live messages are already appended to the stream. */
@@ -55,15 +60,29 @@ function freshSeed(): ChatSeed {
   return { id: crypto.randomUUID(), createdAt: new Date().toISOString(), messages: [] }
 }
 
-function getChat(model: string, seed: ChatSeed): Chat<UIMessage> {
+/**
+ * Instructions for an entry-focused conversation: the base prompt plus the
+ * entry's full plain-text rendering, re-read from the store per message so
+ * a turn after an agent edit sees the entry's current content, not a
+ * snapshot from when the card's "Ask AI" was tapped.
+ */
+async function focusedInstructions(entryId: string): Promise<string> {
+  const entry = useAppStore.getState().entries.find((e) => e.id === entryId && !e.revoked)
+  if (!entry) return buildInstructions()
+  return withEntryFocus(buildInstructions(), await formatEntryPlainText(entry, getBlob))
+}
+
+function getChat(model: string, seed: ChatSeed, focusEntryId?: string): Chat<UIMessage> {
   if (cache && cache.model === model && cache.chatId === seed.id) return cache.chat
-  // Same conversation, different model: keep the live messages. Otherwise
-  // start from the seed's stored messages.
+  // Same conversation, different model: keep the live messages (and the
+  // entry focus). Otherwise start from the seed's stored messages.
   const carried = cache?.chatId === seed.id ? cache : null
+  const focus = carried?.focusEntryId ?? focusEntryId
   cache = {
     model,
     chatId: seed.id,
     createdAt: carried?.createdAt ?? seed.createdAt,
+    ...(focus !== undefined ? { focusEntryId: focus } : {}),
     // A stored chat exists in the stream with all its messages; a fresh seed
     // has no capture event yet (minted on the first persisted turn).
     persisted: carried?.persisted ?? seed.messages.length > 0,
@@ -72,7 +91,7 @@ function getChat(model: string, seed: ChatSeed): Chat<UIMessage> {
       messages: carried?.chat.messages ?? seed.messages,
       transport: createAssistantTransport(
         model,
-        () => buildInstructions(),
+        focus === undefined ? () => buildInstructions() : () => focusedInstructions(focus),
         createAssistantTools(
           () => useAppStore.getState().entries,
           () => useAppStore.getState().places,
@@ -95,6 +114,13 @@ const SUGGESTIONS = [
   'What did I do today?',
   'Summarize my week',
   'Where did I spend the most time?',
+]
+
+/** Suggestions when the conversation was opened on one entry card. */
+const ENTRY_SUGGESTIONS = [
+  'Summarize this entry',
+  'Clean up the wording',
+  'Move it to a different time',
 ]
 
 function messageText(m: UIMessage): string {
@@ -153,15 +179,37 @@ function toolActivityLabel(part: UIMessage['parts'][number]): string | null {
   return `Consulted the log (${toolName})`
 }
 
+/** The one navigation this screen is reached by: an entry card's "Ask AI"
+ * (`navigate('/chat', { state: { entryId } })`). Each such navigation gets a
+ * unique `location.key`; remembering the last-dispatched key means revisiting
+ * the same history entry (back/forward, tab away and back) resumes the
+ * conversation instead of minting a duplicate. */
+let dispatchedNavKey: string | null = null
+
 export default function ChatScreen() {
   const model = useAppStore((s) => s.appSettings.assistantModel)
+  const location = useLocation()
+  const entryId =
+    typeof (location.state as { entryId?: unknown } | null)?.entryId === 'string'
+      ? (location.state as { entryId: string }).entryId
+      : undefined
+  const isNewDispatch = entryId !== undefined && dispatchedNavKey !== location.key
+
   const [chat, setChat] = useState<Chat<UIMessage> | null>(() =>
-    cache ? getChat(model, { id: cache.chatId, createdAt: cache.createdAt, messages: [] }) : null,
+    cache && !isNewDispatch
+      ? getChat(model, { id: cache.chatId, createdAt: cache.createdAt, messages: [] })
+      : null,
   )
 
-  // First mount in this JS lifetime: hydrate the most recent conversation
-  // from IndexedDB; nothing stored yet → start a fresh one.
+  // A card dispatch starts a fresh conversation focused on that entry;
+  // otherwise, first mount in this JS lifetime hydrates the most recent
+  // conversation from IndexedDB (nothing stored yet → a fresh one).
   useEffect(() => {
+    if (entryId !== undefined && dispatchedNavKey !== location.key) {
+      dispatchedNavKey = location.key
+      setChat(getChat(model, freshSeed(), entryId))
+      return
+    }
     if (cache) {
       setChat(getChat(model, { id: cache.chatId, createdAt: cache.createdAt, messages: [] }))
       return
@@ -173,7 +221,7 @@ export default function ChatScreen() {
     return () => {
       cancelled = true
     }
-  }, [model])
+  }, [model, entryId, location.key])
 
   if (!chat) return null
 
@@ -201,7 +249,11 @@ function ChatView({
   const { messages, sendMessage, stop, status, error, clearError } = useChat({ chat })
   const [input, setInput] = useState('')
   const [historyOpen, setHistoryOpen] = useState(false)
+  const navigate = useNavigate()
   const keyboardInset = useKeyboardInset()
+  // Entry-focused conversation (opened from a card's "Ask AI"): different
+  // empty-state copy/suggestions; the module cache carries the focus.
+  const entryFocused = cache?.chat === chat && cache.focusEntryId !== undefined
   // Stick-to-bottom: auto-follow the stream only while the user is pinned
   // near the bottom. Scrolling up detaches; scrolling back down re-attaches.
   const pinnedRef = useRef(true)
@@ -341,6 +393,9 @@ function ChatView({
           subtitle={modelLabel(model)}
           trailing={
             <div className="flex items-center">
+              <Button variant="ghost" size="sm" onClick={() => navigate(-1)}>
+                Done
+              </Button>
               <Button variant="ghost" size="sm" onClick={() => setHistoryOpen(true)}>
                 History
               </Button>
@@ -357,10 +412,12 @@ function ChatView({
       {messages.length === 0 && (
         <div className="mt-6 flex flex-col items-center gap-4">
           <p className={cx('px-6 text-center italic', type_.body, tone.textMuted)}>
-            Ask about your log — it looks up your entries and places as needed.
+            {entryFocused
+              ? 'Ask about this entry, or tell it what to change.'
+              : 'Ask about your log — it looks up your entries and places as needed.'}
           </p>
           <div className="flex flex-col items-stretch gap-2 self-stretch px-2">
-            {SUGGESTIONS.map((s) => (
+            {(entryFocused ? ENTRY_SUGGESTIONS : SUGGESTIONS).map((s) => (
               <Button key={s} variant="secondary" onClick={() => send(s)}>
                 {s}
               </Button>

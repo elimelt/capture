@@ -279,8 +279,8 @@ export default function SettingsScreen() {
                 </span>
               </FieldRow>
               <p className={cx(type_.sub, tone.textMuted)}>
-                Recall runs against llm.elimelt.com and reads your log on demand through
-                read-only tools. Nothing is stored server-side.
+                Ask AI from any entry card. It runs against llm.elimelt.com and reads your
+                log on demand through tools. Nothing is stored server-side.
               </p>
             </>
           ) : (

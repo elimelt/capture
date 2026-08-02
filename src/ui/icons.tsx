@@ -176,6 +176,20 @@ export function CopyIcon({ size = 14 }: IconProps) {
   )
 }
 
+/** Small four-point sparkle for the entry card's "Ask AI" action. */
+export function SparkleIcon({ size = 14 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 14 14" fill="none" aria-hidden="true">
+      <path
+        d="M7 1.8 L8.2 5.8 L12.2 7 L8.2 8.2 L7 12.2 L5.8 8.2 L1.8 7 L5.8 5.8 Z"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
 /** The three capture modalities offered by the main CTA. */
 export type CaptureKind = 'audio' | 'photo' | 'text'
 

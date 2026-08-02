@@ -69,7 +69,9 @@ add-on (always an amend — see below), either an `EmptyState` or an `EntryList`
 **only today's most recent entry** (SPEC §4.1's latest-entry card — the full day lives
 on the Day screen, which is what keeps the two views distinct; the list gets
 `newestFirst` so the card's attachment sub-timeline also reads newest-first, matching
-the screen's direction), an optional `TextSheet`
+the screen's direction, and — when `assistantEnabled` — `onAsk`, which navigates to
+`/chat` with `{ state: { entryId } }` to open an entry-focused assistant
+conversation), an optional `TextSheet`
 (plain text capture, and a second instance for the accelerator's note add-on), and one
 of three toasts (captured-with-Undo, deleted-with-Undo, discarded).
 
@@ -423,10 +425,12 @@ the card action is icon-only but has the accessible label "Copy entry".
 **Purpose:** Maps `Entry[]` to `EntryCard`s and translates every card edit into a store
 `amend` call — the single place where card callbacks become contract events.
 
-**Export:** `EntryList({ entries, onDelete, firstOnRail, lastOnRail, newestFirst }:
-EntryListProps)` where `onDelete: (entryId: string) => void` bubbles delete requests
-up to the owning screen (B9), which hides the entry immediately and appends the revoke
-only after the undo window. `firstOnRail`/`lastOnRail` (both default `true`) let a
+**Export:** `EntryList({ entries, onDelete, onCopy?, onAsk?, firstOnRail, lastOnRail,
+newestFirst }: EntryListProps)` where `onDelete: (entryId: string) => void` bubbles
+delete requests up to the owning screen (B9), which hides the entry immediately and
+appends the revoke only after the undo window. `onAsk?(entry)` threads through to each
+card's "Ask AI" action (the screens pass it only when the assistant is enabled).
+`firstOnRail`/`lastOnRail` (both default `true`) let a
 parent that interleaves other rail nodes — `DayTimeline` weaving in
 `PseudoEntryCard`s — trim the connecting line only at the true ends of the merged
 rail, so a run of entries between calendar events keeps an unbroken line above and
@@ -561,7 +565,9 @@ and the always-visible action row, plus the sheets/inputs those actions open.
 **Exports:** `EntryCard(props: EntryCardProps)` and `timeLabel(iso: string): string`
 (locale time like "9:04 AM"). Props: `entry`, `maxClipSec`, `sync?: SyncStatusRow`,
 rail position `first?`/`last?`, `newestFirst?` (flips the attachment sub-timeline —
-see `AttachmentTimeline`), optional `onCopy?(entry)`, and callbacks `onDelete`,
+see `AttachmentTimeline`), optional `onCopy?(entry)` and `onAsk?(entry)` (opens an
+assistant conversation focused on this entry; passed only when the opt-in assistant
+is enabled), and callbacks `onDelete`,
 `onSetTime(time)`, `onAddNote(text)`, `onAddPhoto(file)`, `onAddAudio(result)`,
 `onEditText(oldFile, text, derivedFrom?)`, `onRemoveAttachment(file)`,
 `onSetLocation(location | null)`, `onApplyEdit(patch)` —
@@ -619,7 +625,10 @@ The card computes its own `EntryLifecycle` from `sync` + `hasPendingEnrichment(e
   (36×36 px) so every action fits on one line at mobile widths: "Add note",
   "Add photo", "Add audio" (or the mic-unavailable fallback), "Add location"/"Edit
   location" (`PlusIcon`/`PinIcon`), "Edit entry" (`SlidersIcon` — opens
-  `EditEntrySheet`), "Copy entry" (`CopyIcon`, only when `onCopy` is provided), and
+  `EditEntrySheet`), "Copy entry" (`CopyIcon`, only when `onCopy` is provided),
+  "Ask AI about this entry" (`SparkleIcon`, only when `onAsk` is provided — the
+  screens pass it only when `assistantEnabled`; it navigates to `/chat` with the
+  entry id in router state, opening an entry-focused assistant conversation), and
   "Delete entry" (`TrashIcon`, `danger` variant) pushed to the right edge
   (`ml-auto`) so the destructive action stands apart. Every action still carries the
   same glyph as the main CTA/edit affordances via `captureIcon` (`src/ui`), and
@@ -1138,9 +1147,11 @@ enabled, unlabelled locations).
 - **Delete:** wires `usePendingDelete(revoke)` — `DayTimeline.onDeleteEntry` is
   `del.request`, with the same 5s Undo toast as the capture screen.
 - **Timeline:** everything below the header is `<DayTimeline date entries
-  onDeleteEntry emptyTitle>` — the merged local + calendar timeline (below). The
-  screen passes only the day's filtered real entries; the calendar fetch, overlays,
-  and empty state live inside the timeline.
+  onDeleteEntry onCopyEntry onAskEntry emptyTitle>` — the merged local + calendar
+  timeline (below). The screen passes only the day's filtered real entries; the
+  calendar fetch, overlays, and empty state live inside the timeline. `onAskEntry`
+  (only when `assistantEnabled`) navigates to `/chat` with `{ state: { entryId } }`,
+  opening an entry-focused assistant conversation.
 
 ### src/dayview/DayTimeline.tsx
 
@@ -1148,8 +1159,9 @@ enabled, unlabelled locations).
 real entry cards and calendar pseudo-entry cards, replacing the old stacked
 calendar-block + entry-list layout.
 
-**Export:** `DayTimeline({ date, entries, onDeleteEntry, emptyTitle }:
-DayTimelineProps)`.
+**Export:** `DayTimeline({ date, entries, onDeleteEntry, onCopyEntry, onAskEntry?,
+emptyTitle }: DayTimelineProps)` — `onCopyEntry`/`onAskEntry` pass straight through
+to `EntryList` for the real-entry runs.
 
 **Key behaviors:**
 

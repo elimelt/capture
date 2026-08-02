@@ -2,28 +2,31 @@ import { describe, expect, it } from 'vitest'
 import { TABS, visibleTabs } from './navTabs'
 
 describe('TABS', () => {
-  it('pins route paths — deep links, the SW precache manifest, and the lazy', () => {
-    // ChatScreen chunk-name coupling (vite.config.ts globIgnores) are all
-    // label-independent; a future rename must change labels only.
-    expect(TABS.map((t) => t.to)).toEqual(['/', '/day', '/chat', '/settings'])
+  it('pins route paths — deep links and the SW precache manifest are', () => {
+    // label-independent; a future rename must change labels only. `/chat`
+    // is deliberately absent: the assistant is reached from an entry card's
+    // "Ask AI" action, never a tab.
+    expect(TABS.map((t) => t.to)).toEqual(['/', '/day', '/settings'])
   })
 
-  it('pins the current tab labels (Day→Today, Chat→Recall renames)', () => {
-    expect(TABS.map((t) => t.label)).toEqual(['Capture', 'Today', 'Recall', 'Settings'])
+  it('pins the current tab labels (Day→Today rename)', () => {
+    expect(TABS.map((t) => t.label)).toEqual(['Capture', 'Today', 'Settings'])
   })
 
-  it('marks exactly the Recall tab as assistant-gated', () => {
-    expect(TABS.filter((t) => t.assistant).map((t) => t.to)).toEqual(['/chat'])
+  it('has no assistant-gated tab (the assistant has no tab of its own)', () => {
+    expect(TABS.filter((t) => t.assistant)).toEqual([])
   })
-
 })
 
 describe('visibleTabs', () => {
-  it('hides the assistant tab when the assistant is disabled', () => {
-    expect(visibleTabs(TABS, false).map((t) => t.to)).toEqual(['/', '/day', '/settings'])
+  it('is the identity while no tab is assistant-gated', () => {
+    expect(visibleTabs(TABS, false)).toEqual([...TABS])
+    expect(visibleTabs(TABS, true)).toEqual([...TABS])
   })
 
-  it('shows every tab when the assistant is enabled', () => {
-    expect(visibleTabs(TABS, true).map((t) => t.to)).toEqual(TABS.map((t) => t.to))
+  it('drops assistant-gated tabs when the assistant is disabled', () => {
+    const tabs = [...TABS, { to: '/chat', label: 'Recall', assistant: true }]
+    expect(visibleTabs(tabs, false).map((t) => t.to)).toEqual(['/', '/day', '/settings'])
+    expect(visibleTabs(tabs, true).map((t) => t.to)).toEqual(['/', '/day', '/settings', '/chat'])
   })
 })

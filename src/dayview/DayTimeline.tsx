@@ -46,11 +46,20 @@ interface DayTimelineProps {
   onDeleteEntry: (entryId: string) => void
   /** Copy one real entry as labeled plain text. */
   onCopyEntry: (entry: Entry) => void
+  /** Open an assistant conversation focused on one real entry ("Ask AI"). */
+  onAskEntry?: (entry: Entry) => void
   /** EmptyState title when the merged timeline has nothing at all. */
   emptyTitle: string
 }
 
-export function DayTimeline({ date, entries, onDeleteEntry, onCopyEntry, emptyTitle }: DayTimelineProps) {
+export function DayTimeline({
+  date,
+  entries,
+  onDeleteEntry,
+  onCopyEntry,
+  onAskEntry,
+  emptyTitle,
+}: DayTimelineProps) {
   const events = useDayEvents(date)
 
   const overlays = useOverlays((s) => s.overlays)
@@ -154,6 +163,7 @@ export function DayTimeline({ date, entries, onDeleteEntry, onCopyEntry, emptyTi
                 entries={group.entries}
                 onDelete={onDeleteEntry}
                 onCopy={onCopyEntry}
+                onAsk={onAskEntry}
                 firstOnRail={g === 0}
                 lastOnRail={g === groups.length - 1}
               />

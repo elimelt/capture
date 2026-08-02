@@ -25,6 +25,7 @@ export {
   PinIcon,
   PlusIcon,
   SlidersIcon,
+  SparkleIcon,
   TextCursorIcon,
   TrashIcon,
   captureIcon,
