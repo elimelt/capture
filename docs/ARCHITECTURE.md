@@ -44,11 +44,13 @@ Directories under `src/` map onto layers with a strict one-way dependency direct
 | Store | `store/` | IndexedDB repositories (events, places, settings) and the single Zustand `appStore`. |
 | Drive | `drive/` | GIS auth, Drive client, tree bootstrap, upload queue. Imports contract + store repos. |
 | Pipelines & enrichment | `transcribe/`, `vision/`, `places/` | Post-capture enrichment writing back via ordinary `amend` events. |
+| Notifications | `notify/` | Capability detection, app-icon badging, best-effort local notifications; Web Push plumbing awaiting a server (there is no backend to send push today). |
 | Calendar read-back | `gcal/` | Read-only Google Calendar client + target-calendar selection for the timelog Day view. Timelog-specific (not a generic layer); imports contract, drive, store, streams. |
 | Screens & shell | `capture/`, `dayview/`, `settings/`, `assistant/`, `ui/`, `App.tsx`, `main.tsx` | Routing, design system, and the four screens. |
 
 The layering rule (SPEC §10) declares the generic layers — `streams/`, `capture/`,
-`contract/`, `store/`, `places/`, `drive/`, `transcribe/`, `vision/`, `ui/` —
+`contract/`, `store/`, `places/`, `drive/`, `transcribe/`, `vision/`, `notify/`,
+`ui/` —
 **stream-agnostic**: they must not import from the timelog-specific or app-level
 directories `gcal/`, `dayview/`, `settings/`, or `assistant/`. This is enforced
 mechanically by [`src/layering.test.ts`](../src/layering.test.ts), which loads every
@@ -133,15 +135,19 @@ flat route table and a bottom tab bar; drill-downs are modal sheets, not routes.
 The Day view overlays read-only Google Calendar events from a user-chosen target
 calendar via `src/gcal` (single Google token, `calendar.readonly` scope; the app
 never writes events). `App.tsx` owns app-level lifecycle: re-reading local state on
-`visibilitychange` (Drive sync is manual-only, via Settings' "Sync now") and
-re-running enrichment whenever entries change. The
+`visibilitychange` (Drive sync is manual-only, via Settings' "Sync now"),
+re-running enrichment whenever entries change, and the notification hooks
+(`src/notify`): the Home Screen badge tracks the pending-sync count and a
+best-effort local notification announces enrichment finishing while the app is
+hidden — there is no backend, so no remote push. The
 design system lives entirely in `src/ui` (tokens + primitives; screens never hardcode
 palette or shape classes), and a set of iOS-specific invariants (keyboard insets,
 body scroll lock, safe areas, 44 pt tap targets, pending-delete undo) are
 load-bearing. Module docs:
 [app-shell-ui-and-tooling](modules/app-shell-ui-and-tooling.md),
 [capture-and-dayview](modules/capture-and-dayview.md),
-[gcal](modules/gcal.md), [assistant](modules/assistant.md).
+[gcal](modules/gcal.md), [assistant](modules/assistant.md),
+[notify](modules/notify.md).
 
 ## Cross-cutting concerns
 
