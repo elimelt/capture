@@ -63,7 +63,8 @@ invent its own scheduler.
 
 The Day view additionally overlays **read-only Google Calendar events**: its
 `useDayEvents` hook resolves the stored Google token and the target calendar chosen
-in Settings, fetches that day's events through `src/gcal`
+in Settings (defaulted to — and persisted as — the primary calendar the first time
+the picker loads after connecting), fetches that day's events through `src/gcal`
 ([module doc](../modules/gcal.md)), and renders them as rows deep-linking into
 Google Calendar. Missing token, missing calendar pick, or a failed fetch are quiet
 one-line notes, never blocking error states — local entries carry the day on their

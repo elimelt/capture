@@ -69,6 +69,7 @@ Key exports:
 
 - `interface TargetCalendar { id: string; summary: string }`.
 - `getTargetCalendar(): Promise<TargetCalendar | undefined>` — the locally-cached pick, or `undefined` if none chosen yet.
+- `resolveTargetSelection(stored: TargetCalendar | undefined, calendars: CalendarSummary[]): { selectedId: string; autoPick: TargetCalendar | undefined }` — **pure** "should we auto-pick?" decision behind the Settings picker. A stored target always wins and is never re-persisted (`autoPick` undefined — no redundant writes on repeat visits), even if momentarily absent from the fetched list; with nothing stored, the primary calendar is both selected and returned as `autoPick` for the caller to persist immediately; with nothing stored and no primary, the placeholder stays (`selectedId: ''`) and nothing is persisted. Extracted pure to pin the regression where the picker displayed the primary calendar as selected without persisting it, so the Day view stayed on `no-calendar` until the user manually switched calendars.
 - `mergeTargetCalendar(stream: string, currentText: string | undefined, target: TargetCalendar): string` — **pure** read-modify-write of a `config.json` body, exported for testing without Drive: sets `skillConfig.targetCalendar` while preserving every other `skillConfig` field and `userNotes`. A missing, corrupt, or wrong-schema body falls back to a fresh stub for the stream. Output goes through `contract/files#serializeStreamConfig` (fixed key order, trailing newline).
 - `setTargetCalendar(token: string, target: TargetCalendar): Promise<void>` — saves locally **first** (the pick is never lost), then best-effort mirrors into Drive: `ensureTree` (shared idempotent bootstrap, so `config.json` exists) → `findFile('config.json')` → `readFileText` → `mergeTargetCalendar` → `updateFileContent`. A missing stream folder or file returns quietly after the local save; a Drive error propagates **after** the local save so the UI can warn ("Saved on this device; will sync to Drive later") while the Day view still works.
 
@@ -76,7 +77,7 @@ Key exports:
 
 - `src/gcal/events.test.ts` — covers `parseEvent` normalization (epoch-ms conversion, all-day at local midnight, `(no title)` fallback, `htmlLink` omission), the dropping of cancelled/id-less/time-less events, `sortEvents` ordering, and `dayRange`'s local-midnight boundaries.
 - `src/gcal/client.test.ts` — with stubbed `fetch`, verifies the query parameters and Bearer header of both endpoints, `calendarId` path-encoding, dropped id-less calendar entries, and `CalendarError` status classification (`isAuth` / `isRetryable`).
-- `src/gcal/config.test.ts` — exercises the pure `mergeTargetCalendar`: preservation of sibling `skillConfig` fields and `userNotes`, overwrite of a prior `targetCalendar`, fresh-stub fallback on missing/corrupt bodies, and the fixed-key/trailing-newline serialization convention.
+- `src/gcal/config.test.ts` — exercises the pure `mergeTargetCalendar` (preservation of sibling `skillConfig` fields and `userNotes`, overwrite of a prior `targetCalendar`, fresh-stub fallback on missing/corrupt bodies, and the fixed-key/trailing-newline serialization convention) and the pure `resolveTargetSelection` (auto-pick of primary on first load, stored target selected without re-persisting — including when absent from the list — and no auto-pick without a primary).
 
 ## Cross-module wiring
 
@@ -93,9 +94,12 @@ Key exports:
   open each event in Google Calendar via `htmlLink`; non-ready states render quiet,
   non-blocking one-line notes.
 - `src/settings/SettingsScreen.tsx` (`CalendarPicker`) — lists calendars when
-  connected, defaults the selection to the stored target or the primary calendar, and
-  persists picks via `setTargetCalendar`. A 401/403 prompts a reconnect (the calendar
-  scope isn't granted on the current token) rather than showing an empty list.
+  connected and resolves the initial selection via `resolveTargetSelection`: the
+  stored target if any, else the primary calendar, which is then **persisted
+  immediately** via `setTargetCalendar` (so the Day view picks it up without a
+  manual switch — no target is ever left display-only). Manual picks also persist
+  via `setTargetCalendar`. A 401/403 prompts a reconnect (the calendar scope isn't
+  granted on the current token) rather than showing an empty list.
 
 ## Key invariants & gotchas
 
