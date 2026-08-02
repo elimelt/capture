@@ -346,11 +346,11 @@ calendar event plus its optional overlay.
 
 Every field the user sees is editable via the patch (`title`, `note`, `startAt`/`endAt`,
 `hidden`), and every field has an append-only `clearX` removal mirroring
-`clearLocation` (§3.3); a value wins over its clear within one amend. The Day view UI
-for pseudo-entries and the sync wiring for this log are follow-up work: the log is
-**local-only** for now — unlike the system streams of §3.1, it does not reuse the
-`capture.event.v1` envelope or stores, so the multi-stream sync engine (§8.4/§8.5)
-needs overlay-aware wiring before it can carry it (§5.6).
+`clearLocation` (§3.3); a value wins over its clear within one amend. The Day view
+renders pseudo-entries on its merged timeline (§4.2). The sync wiring for this log is
+follow-up work: the log is **local-only** for now — unlike the system streams of §3.1,
+it does not reuse the `capture.event.v1` envelope or stores, so the multi-stream sync
+engine (§8.4/§8.5) needs overlay-aware wiring before it can carry it (§5.6).
 
 ---
 
@@ -397,17 +397,30 @@ Design principle: **three screens**; capture is 95% of usage and must be near-in
 A stream-specific read-back view for `timelog` (the generic fallback for any stream is
 the folded entry list with results annotations, §3.5).
 
-- Vertical day timeline rendering **calendar events from the target calendar** (read-only),
-  interleaved with **pending entry pins** (unprocessed entries shown at their timestamps).
+- **Merged timeline:** one vertical, time-sorted interleave of local entry cards and
+  **calendar pseudo-entries** from the target calendar (§3.6), ordered by effective
+  start (a pseudo-entry with a patched time re-files at the patched time). Ties render
+  the calendar block before entries captured at its start.
 - Local entries render with the same fully-editable cards as the capture screen (§4.1):
   date/time, notes, attachments, location, and delete — all expressed as `amend`/`revoke`
   appends (§3.3). Moving an entry's date re-files it under the target day.
+- **Pseudo-entry cards** render the merged title/time (+ optional note) with
+  informational badges: *"May be outdated"* only when the dirty status is `conflict`
+  (the event changed upstream under an edited field — the user's edit still renders,
+  nothing blocks), and *"Deleted upstream"* for orphans, which also get a **Remove**
+  action (revoke — discards the annotations). Pseudo-entries are built only from a
+  successful (`ready`) fetch; while loading or failed, the timeline carries local
+  entries alone (no false orphans).
+- **Tapping a pseudo-entry opens its edit sheet** (title, note, start/end): one
+  overlay event per save — the first edit materializes the overlay (copy-on-write,
+  §3.6), an unedited sheet writes nothing. The sheet links **"Open in Google
+  Calendar"** (`htmlLink`) for changing the real event — the app never edits events.
+- **Hide** is a one-tap action on the card (an overlay `hidden` patch, not a revoke),
+  with an Undo toast that appends the exact inverse.
 - Header: date picker; connection status; **"Process now" helper** — a button that copies
   a ready-made instruction ("Process my timelog stream") to the clipboard and/or
   deep-links to the user's chat app, since the app cannot trigger the skill itself.
 - Pull-to-refresh re-fetches events and the processing results file (§6.4).
-- Tapping an event opens it in Google Calendar (deep link) for editing — the app never
-  edits events.
 - Empty/edge states: "No calendar connected", "N entries awaiting processing — run your
   timelog skill", "Skill last ran: yesterday 11:02 PM".
 

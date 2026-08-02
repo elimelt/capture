@@ -41,7 +41,7 @@ Four screens, one route table in `App.tsx`, one fixed bottom tab bar:
 | Route | Screen | Notes |
 | --- | --- | --- |
 | `/` | Capture (`src/capture/CaptureScreen`) | Screen 1; voice-first capture + today's entries |
-| `/day`, `/day/:date` | Day view (`src/dayview/DayScreen`) | Screen 2; per-day timeline + read-only calendar events, prev/next-day nav via the route param |
+| `/day`, `/day/:date` | Day view (`src/dayview/DayScreen`) | Screen 2; merged per-day timeline of entries + calendar pseudo-entries, prev/next-day nav via the route param |
 | `/chat` | Chat (`src/assistant/ChatScreen`) | Opt-in; `lazy()`-loaded; guarded — redirects to `/` unless `assistantEnabled` |
 | `/settings` | Settings (`src/settings/SettingsScreen`) | Screen 3; Google (Drive + target-calendar picker), capture, location/places, assistant, notifications, data |
 
@@ -67,14 +67,16 @@ push server — Capture has no backend — so nothing is ever pushed remotely.
 New long-running background work should hook the entries-changed effect rather than
 invent its own scheduler.
 
-The Day view additionally overlays **read-only Google Calendar events**: its
-`useDayEvents` hook resolves the stored Google token and the target calendar chosen
-in Settings (defaulted to — and persisted as — the primary calendar the first time
-the picker loads after connecting), fetches that day's events through `src/gcal`
-([module doc](../modules/gcal.md)), and renders them as rows deep-linking into
-Google Calendar. Missing token, missing calendar pick, or a failed fetch are quiet
-one-line notes, never blocking error states — local entries carry the day on their
-own, and the app never writes calendar events.
+The Day view additionally merges in **Google Calendar events as pseudo-entries**
+(SPEC §3.6): its `useDayEvents` hook resolves the stored Google token and the target
+calendar chosen in Settings (defaulted to — and persisted as — the primary calendar
+the first time the picker loads after connecting) and fetches that day's events
+through `src/gcal` ([module doc](../modules/gcal.md)); `DayTimeline` interleaves them
+with the day's entries and makes them editable via local copy-on-write overlays —
+the calendar itself is never written, and an unedited event stores nothing (see
+[capture-and-dayview.md](../modules/capture-and-dayview.md)). Missing token, missing
+calendar pick, or a failed fetch are quiet one-line notes, never blocking error
+states — local entries carry the day on their own.
 
 ## Design system
 

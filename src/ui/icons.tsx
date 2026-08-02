@@ -114,6 +114,45 @@ export function SlidersIcon({ size = 14 }: IconProps) {
   )
 }
 
+/** Small calendar page marking calendar-sourced content (pseudo-entries). */
+export function CalendarIcon({ size = 14 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 14 14" fill="none" aria-hidden="true">
+      <rect
+        x="2"
+        y="3"
+        width="10"
+        height="9"
+        rx="1.5"
+        stroke="currentColor"
+        strokeWidth="1.3"
+      />
+      <path
+        d="M2 6h10M4.8 1.8V4M9.2 1.8V4"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+      />
+    </svg>
+  )
+}
+
+/** Small crossed-out eye for "hide" affordances. */
+export function EyeOffIcon({ size = 14 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 14 14" fill="none" aria-hidden="true">
+      <path
+        d="M1.8 7s1.9-3.2 5.2-3.2c.9 0 1.7.24 2.4.6M12.2 7s-1.9 3.2-5.2 3.2c-.9 0-1.7-.24-2.4-.6"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+      />
+      <circle cx="7" cy="7" r="1.6" stroke="currentColor" strokeWidth="1.3" />
+      <path d="M2.5 11.5l9-9" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+    </svg>
+  )
+}
+
 /** The three capture modalities offered by the main CTA. */
 export type CaptureKind = 'audio' | 'photo' | 'text'
 

@@ -24,13 +24,15 @@ Drive; `SyncBadge` reflects the per-event-id upload status from `src/store/db.ts
 
 ### `src/dayview`
 
-Screen 2 (SPEC §4.2): a per-day timeline of local entries with previous/next-day
-navigation via the `/day/:date?` route, plus a read-only overlay of the target
-calendar's events (M4). It reuses `EntryList` and `usePendingDelete` from
-`src/capture`, so day-view entries get the exact same editing and undoable-delete
-behavior as the capture screen. The calendar overlay (`useDayEvents.ts`,
-`CalendarEvents.tsx`) is backed by `src/gcal` and documented with it in
-[gcal.md](gcal.md).
+Screen 2 (SPEC §4.2): one merged, time-sorted per-day timeline of local entries and
+the target calendar's events, with previous/next-day navigation via the `/day/:date?`
+route. Real entries reuse `EntryList` and `usePendingDelete` from `src/capture`, so
+day-view entries get the exact same editing and undoable-delete behavior as the
+capture screen. Calendar events render as **pseudo-entries** (SPEC §3.6): editable
+copy-on-write annotations over the read-only calendar — nothing is stored until the
+user edits or hides one. The fetch (`useDayEvents.ts`) and the overlay core
+(`src/gcal/overlay`) are documented in [gcal.md](gcal.md); the view-model, cards,
+edit sheet, and overlay store live here.
 
 ## File-by-file
 
@@ -534,16 +536,138 @@ covers `needsPlacePrompt` (prompts only for enabled, unlabelled locations).
   (no future days), and a "Today" shortcut appears when viewing a past day.
 - **Entries:** filters to `!revoked`, not the pending delete, and
   `localDateOf(capturedAt) === date`; sorted **oldest-first** (chronological), unlike the
-  capture screen's newest-first ordering. Rendered with the shared
-  `EntryList`, so all card edits (date/time via the Edit sheet, notes, photos, audio,
-  location, attachment removal) work identically here. Moving an entry's date via the
-  Edit sheet makes it leave the current day's list and appear on the target day.
-- **Delete:** wires `usePendingDelete(revoke)` — `EntryList.onDelete` is `del.request`,
-  with the same 5s Undo toast as the capture screen.
-- **Calendar overlay:** `useDayEvents(date)` fetches the target calendar's events via
-  `src/gcal`, and `<CalendarEvents state={…}>` renders them above the entry list;
-  missing token/calendar or fetch failures show as quiet one-line notes (see
-  [gcal.md](gcal.md)).
+  capture screen's newest-first ordering. All card edits (date/time via the Edit sheet,
+  notes, photos, audio, location, attachment removal) work identically here (the
+  timeline renders entry runs through the shared `EntryList`). Moving an entry's date
+  via the Edit sheet makes it leave the current day's list and appear on the target day.
+- **Delete:** wires `usePendingDelete(revoke)` — `DayTimeline.onDeleteEntry` is
+  `del.request`, with the same 5s Undo toast as the capture screen.
+- **Timeline:** everything below the header is `<DayTimeline date entries
+  onDeleteEntry emptyTitle>` — the merged local + calendar timeline (below). The
+  screen passes only the day's filtered real entries; the calendar fetch, overlays,
+  and empty state live inside the timeline.
+
+### src/dayview/DayTimeline.tsx
+
+**Purpose:** The merged Day timeline (SPEC §4.2, §3.6): one time-sorted interleave of
+real entry cards and calendar pseudo-entry cards, replacing the old stacked
+calendar-block + entry-list layout.
+
+**Export:** `DayTimeline({ date, entries, onDeleteEntry, emptyTitle }:
+DayTimelineProps)`.
+
+**Key behaviors:**
+
+- **Data:** owns `useDayEvents(date)` (the calendar fetch) and `useOverlays` (the
+  folded overlay states; loaded once via the store's `loaded` flag).
+  `buildPseudoEntries(calendarId, events, overlays, date)` runs **only when the fetch
+  state is `'ready'`** — orphan detection against a loading/error/disconnected fetch
+  would misclassify every overlay as orphaned (the core's contract). Non-ready states
+  render the quiet one-line notes (connect/pick/reconnect/couldn't-load) and the
+  timeline carries real entries alone.
+- **Interleave:** `groupTimeline(buildTimeline(entries, pseudo))` — runs of
+  consecutive real entries render through the shared `EntryList` (reusing its
+  card→amend wiring unchanged); each pseudo-entry renders a `PseudoEntryCard`.
+- **Edit:** tapping a pseudo-entry (or its Edit button) opens
+  `EditPseudoEntrySheet`; the sheet's `onSave(patch)` goes through
+  `useOverlays.saveOverlayPatch(entry, liveEvent, patch)` — one overlay event per
+  save, copy-on-write (create with a frozen `baseSnapshot` of the live event when the
+  entry is unmaterialized, amend otherwise). The sheet tracks the entry by id and
+  re-derives it from the current merge each render.
+- **Hide:** one tap appends `toggleHidden(entry)` via `saveOverlayPatch`, then shows
+  an "Event hidden" toast whose Undo appends the exact inverse — a **revoke** when
+  the hide itself materialized the overlay (back to zero stored state), else
+  `hidden: false`. The toast auto-clears after 5s.
+- **Remove (orphans):** `revokeOverlay(overlayId)` discards the overlay; the entry
+  disappears (there is no live event to revert to).
+- **Empty state:** when the merged timeline has no items at all, renders
+  `EmptyState` with the screen-provided `emptyTitle`; a ready fetch with zero events
+  and zero pseudo-entries also notes "No events on `<calendar>` this day."
+
+### src/dayview/PseudoEntryCard.tsx
+
+**Purpose:** One calendar pseudo-entry's card — the merged view of a live calendar
+event plus its optional overlay (`mergePseudoEntry` output; the user's edits already
+win per field). Deliberately calendar-flavored, **not** an `EntryCard`: no
+attachments, location, or playback — those belong to captures.
+
+**Exports:** `PseudoEntryCard({ entry, onEdit, onHide, onRemove })` and
+`pseudoTimeLabel(entry)` ("9:00 AM – 10:30 AM", or "All day").
+
+**Key behaviors:**
+
+- The card content is a full-width button (calendar glyph, time range, title, note)
+  that opens the edit sheet via `onEdit`; the action row has ghost Hide
+  (`EyeOffIcon`) and Edit (`SlidersIcon`) buttons.
+- **Badges (informational, never blocking):** "May be outdated" (danger wash) only
+  when `dirty === 'conflict'` — the base moved under an edited field; auto-merged
+  and clean states show no badge. "Deleted upstream" (muted, bordered) when
+  `orphaned` — the event vanished from a successful fetch; orphans additionally get
+  a dangerGhost **Remove** button wired to `onRemove` (revoke). The two are mutually
+  exclusive (an orphan has no live base to conflict with).
+
+### src/dayview/EditPseudoEntrySheet.tsx
+
+**Purpose:** Edit sheet for one pseudo-entry — a separate component from capture's
+`EditEntrySheet` (the field sets diverge: title/note/start/end here;
+date/time/attachments there) but the same pattern: hold a draft, diff on Save, emit
+ONE event.
+
+**Export:** `EditPseudoEntrySheet({ entry, onSave, onClose })` where
+`onSave(patch: OverlayPatch)` receives the minimal patch (never called for a no-op).
+
+**Behavior:** freezes `draftFromPseudoEntry(entry)` as the original at open; fields
+are Title (`TextInput`), Note (`TextArea`), Starts/Ends (`datetime-local` inputs).
+Save is disabled while `overlayPatchFromDraft(original, draft)` is `undefined` — the
+copy-on-write no-op guard: closing an unedited sheet never writes, so an untouched
+calendar event never materializes an overlay. Emptied title/note become
+`clearTitle`/`clearNote` (revert to the live event / drop the note) in the core.
+Input values only enter the draft `onChange`, so untouched times never spuriously
+diff (the original ISO carries seconds the input can't render). A footer caption
+notes edits are app-local and links "Open in Google Calendar" (`htmlLink`) when the
+live event provides one.
+
+### src/dayview/timeline.ts
+
+**Purpose:** Pure view-model for the merged timeline — no I/O, no React; tested
+directly in `timeline.test.ts`.
+
+**Exports:**
+
+- `TimelineItem` — `{ kind: 'entry'; startMs; entry }` |
+  `{ kind: 'pseudo'; startMs; pseudo }`.
+- `buildTimeline(entries, pseudoEntries): TimelineItem[]` — ascending by effective
+  start (real = `capturedAt`, pseudo = merged `startMs`, so a patched time re-files
+  the block); ties break pseudo-first (a calendar block frames the entries captured
+  at its start), then by id.
+- `TimelineGroup` / `groupTimeline(items)` — collapses runs of consecutive real
+  entries (one `EntryList` per run) between individual pseudo-entries.
+- `baseSnapshotOf(ev: CalEvent): OverlayBaseSnapshot` — the frozen copy-on-write
+  base for materialization (summary/startMs/endMs/allDay, `updated` omitted when the
+  fetch lacks it).
+
+### src/dayview/useOverlays.ts
+
+**Purpose:** UI-facing zustand store for the overlay log, mirroring `useAppStore`'s
+refresh-after-write pattern in miniature. Lives in `dayview/` because the log is
+calendar-domain state and the generic `store/` layer must never import `gcal/`
+(SPEC §10).
+
+**Export:** `useOverlays` with state `{ overlays: OverlayState[]; loaded }` and
+actions:
+
+- `refresh()` — re-fold via `listOverlayStates()` (the read path after any append).
+- `saveOverlayPatch(entry, liveEvent, patch): Promise<SavedOverlay>` — exactly one
+  overlay event: `appendOverlayAmend` when the entry is materialized, else
+  `appendOverlayCreate` with `baseSnapshotOf(liveEvent)` (a missing live event for an
+  unmaterialized entry is a programming error and throws). Returns
+  `{ overlayId, created }` so hide can offer an exact undo.
+- `amendOverlay(overlayId, patch)` — direct amend (e.g. `hidden: false` from the
+  undo toast, when the hidden entry is no longer rendered).
+- `revokeOverlay(overlayId)` — discard (orphan Remove, hide-undo of a fresh COW).
+
+Failures route through `useAppStore.lastError` (the app-level toast channel) and
+re-throw, matching the appStore `guard` convention.
 
 ## Key invariants & gotchas
 
@@ -584,3 +708,13 @@ covers `needsPlacePrompt` (prompts only for enabled, unlabelled locations).
 - **Blob-backed rendering is async:** note text, photos, and audio all load from
   IndexedDB (`getBlob`) after mount; components render nothing until loaded and must
   revoke object URLs and guard stale async sets on unmount.
+- **Pseudo-entries are copy-on-write (SPEC §3.6):** an unedited calendar event
+  renders with **zero stored state** — the overlay log gains an event only when an
+  edit sheet Save has a real diff or the user hides. `overlayPatchFromDraft`'s
+  `undefined` return is the guard; never bypass it.
+- **`buildPseudoEntries` only on `'ready'`:** a loading/error/disconnected fetch
+  must render real entries alone — passing its (empty) event list would flag every
+  overlay as a false orphan. `DayTimeline` is the single place this gate lives.
+- **Don't edit `EntryCard` for calendar needs:** pseudo-entries have their own card;
+  real entries flow through `EntryList` unchanged so capture-card behavior stays
+  identical on both screens.
