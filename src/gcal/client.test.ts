@@ -42,6 +42,21 @@ describe('listCalendars', () => {
     expect(parsed.searchParams.get('minAccessRole')).toBe('reader')
     expect((init!.headers as Record<string, string>).Authorization).toBe('Bearer tok')
   })
+
+  it('follows nextPageToken across pages', async () => {
+    const fetchMock = stubFetch(
+      jsonResponse({ items: [{ id: 'a@x', summary: 'A' }], nextPageToken: 'tok-2' }),
+      jsonResponse({ items: [{ id: 'b@x', summary: 'B' }] }),
+    )
+    const cals = await listCalendars('tok')
+    expect(cals).toEqual([
+      { id: 'a@x', summary: 'A', primary: false },
+      { id: 'b@x', summary: 'B', primary: false },
+    ])
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    const second = new URL(String(fetchMock.mock.calls[1][0]))
+    expect(second.searchParams.get('pageToken')).toBe('tok-2')
+  })
 })
 
 describe('listEvents', () => {
@@ -85,6 +100,41 @@ describe('listEvents', () => {
     // The overlay layer needs these two threaded through (SPEC §3.6).
     expect(parsed.searchParams.get('fields')).toContain('updated')
     expect(parsed.searchParams.get('fields')).toContain('recurringEventId')
+  })
+
+  it('follows nextPageToken across pages', async () => {
+    const fetchMock = stubFetch(
+      jsonResponse({
+        items: [
+          {
+            id: 'e1',
+            summary: 'First',
+            start: { dateTime: '2026-08-02T09:00:00Z' },
+            end: { dateTime: '2026-08-02T10:00:00Z' },
+          },
+        ],
+        nextPageToken: 'tok-2',
+      }),
+      jsonResponse({
+        items: [
+          {
+            id: 'e2',
+            summary: 'Second',
+            start: { dateTime: '2026-08-02T11:00:00Z' },
+            end: { dateTime: '2026-08-02T12:00:00Z' },
+          },
+        ],
+      }),
+    )
+    const events = await listEvents('tok', {
+      calendarId: 'cal',
+      timeMin: '2026-08-02T00:00:00-04:00',
+      timeMax: '2026-08-03T00:00:00-04:00',
+    })
+    expect(events.map((e) => e.id)).toEqual(['e1', 'e2'])
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    const second = new URL(String(fetchMock.mock.calls[1][0]))
+    expect(second.searchParams.get('pageToken')).toBe('tok-2')
   })
 })
 

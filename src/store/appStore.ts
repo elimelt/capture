@@ -11,8 +11,10 @@ import {
   setLastSyncAt,
   summarizeSyncStatuses,
   wipeAll,
+  wipeCaches,
   type NewAttachment,
 } from './events'
+import { reclaimStreamBlobs } from './blobGc'
 import { deletePlace, listPlaces, savePlace, type Place } from './places'
 import {
   getSettings,
@@ -158,7 +160,12 @@ interface AppState {
   loadPlaces: () => Promise<void>
   loadSettings: () => Promise<void>
   refreshConnection: () => Promise<void>
-  /** Re-measure local storage (origin estimate + app breakdown). No network. */
+  /**
+   * Reclaim GC-eligible blobs (issue #53 — fold-hidden and durably uploaded,
+   * see `store/blobGc.ts`) across every registered stream, then re-measure
+   * local storage (origin estimate + app breakdown). No network: the GC
+   * sweep only reads local events/sync-rows and deletes local blobs.
+   */
   refreshSpace: () => Promise<void>
   init: () => Promise<void>
   clearError: () => void
@@ -291,6 +298,7 @@ export const useAppStore = create<AppState>()((set, get) => {
     },
 
     refreshSpace: async () => {
+      for (const stream of allSyncStreams()) await reclaimStreamBlobs(stream)
       const [localSpace, appSpace] = await Promise.all([estimateLocalSpace(), measureAppSpace()])
       set({ localSpace, appSpace })
     },
@@ -489,7 +497,17 @@ export const useAppStore = create<AppState>()((set, get) => {
     }),
 
     wipe: guard('Could not wipe data', async () => {
+      // Best-effort revoke the Google grant first (issue #65) — a wipe is a
+      // privacy reset, so the OAuth consent must not outlive it. Runs before
+      // wipeAll so a mid-wipe failure still leaves the token cleared.
+      const token = await getStoredToken()
+      await disconnect(token?.accessToken)
       await wipeAll()
+      // SW Cache Storage (Nominatim addresses, OSM tiles) is not part of the
+      // IndexedDB log wipeAll clears; drop it too or a "wiped" device still
+      // holds a reconstructible location history.
+      await wipeCaches()
+      set({ driveConnection: 'disconnected' })
       // refreshSpace included so the Settings storage line never shows the
       // pre-wipe number (it used to be measured once on mount and go stale).
       await Promise.all([get().refresh(), get().loadPlaces(), get().refreshSpace()])

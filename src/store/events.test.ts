@@ -20,6 +20,7 @@ import {
   setLastSyncAt,
   summarizeSyncStatuses,
   wipeAll,
+  wipeCaches,
 } from './events'
 
 function deleteDb(name: string): Promise<void> {
@@ -173,6 +174,33 @@ describe('wipeAll', () => {
     await putWaveform('a_audio_1.m4a', [0, 0.5, 1])
     await wipeAll()
     expect(await getWaveform('a_audio_1.m4a')).toBeUndefined()
+  })
+})
+
+describe('wipeCaches (#65)', () => {
+  it('is a no-op when Cache Storage is unavailable (node test environment)', async () => {
+    expect(typeof caches).toBe('undefined')
+    await expect(wipeCaches()).resolves.toBeUndefined()
+  })
+
+  it('deletes every named Cache Storage bucket, not just a hardcoded subset', async () => {
+    const deleted: string[] = []
+    const fakeCaches = {
+      keys: async () => ['nominatim', 'osm-tiles', 'workbox-precache-v2'],
+      delete: async (key: string) => {
+        deleted.push(key)
+        return true
+      },
+    }
+    // @ts-expect-error -- test double for the Cache Storage API, absent in node
+    globalThis.caches = fakeCaches
+    try {
+      await wipeCaches()
+    } finally {
+      // @ts-expect-error -- restore the ambient (unavailable) state
+      delete globalThis.caches
+    }
+    expect(deleted.sort()).toEqual(['nominatim', 'osm-tiles', 'workbox-precache-v2'])
   })
 })
 

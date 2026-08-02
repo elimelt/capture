@@ -71,8 +71,9 @@ Key exports:
   crashed drains; absent on rows written by older versions (no migration needed —
   the drainer falls back to find-before-upload for those).
 - `interface Place { id; name; lat; lng; radiusM; address? }`.
-- `interface GeocacheRow { key; address; cachedAt }` — reverse-geocode cache row keyed by
-  a rounded `"lat,lng"` cell (SPEC §7).
+- `interface GeocacheRow { key; address?; cachedAt }` — reverse-geocode cache row keyed
+  by a rounded `"lat,lng"` cell (SPEC §7); `address` is omitted for a cached "no
+  address found" (negative) result, which `places/geocode.ts` expires sooner than a hit.
 - `interface StoredChatRow { id; createdAt; updatedAt; messages: unknown[] }` — a
   **legacy** persisted assistant conversation; live chats are event-sourced in the
   `assistant-chats` stream (see `migrateChatsV1.ts` and `assistant/chatSync.ts`), and
@@ -243,12 +244,42 @@ Key exports:
   (including `meta`, so seq counters restart at 1; `overlayEvents` — the
   calendar-overlay log — and `waveforms` — the cached fingerprints, #86 — go with
   everything else).
+- `wipeCaches(): Promise<void>` (issue #65) — deletes every SW-managed Cache
+  Storage bucket (`await Promise.all((await caches.keys()).map(caches.delete))`).
+  `wipeAll` only ever touched IndexedDB; the `nominatim` and `osm-tiles` runtime
+  caches (`vite.config.ts`) durably hold reverse-geocoded addresses and map
+  tiles — a reconstructible location history — for 90 and 30 days respectively,
+  independent of the `geocache` IndexedDB store `wipeAll` does clear. Deleting
+  every cache (not just those two) is simplest and harmless: the SW re-precaches
+  the app shell/fonts on next activation. A no-op where `caches` is undefined
+  (non-browser test environments).
 
 Invariants and edge cases: seq counters are per-stream and monotonic per device
 (`importEvents` keeps them ahead of everything pulled); `capture` events
 always carry an `attachments` array (possibly empty), while `amend` events only get one
 when attachments were supplied; blobs are stored under the contract filename so uploads
 and replay reference the same key; nothing here ever updates or deletes an event row.
+
+### src/store/blobGc.ts
+
+Blob garbage collection (issue #53): reclaims attachment blobs the fold has hidden
+(a `revoke` target, or a file dropped by `AmendPatch.removeAttachments`) once it is
+safe to — the only two blob-deletion paths before this module existed were
+`wipeAll()` and `drive/queue.ts#pruneAudio`'s post-upload `keepAudioLocally`
+pruning, so a revoked or edited-away attachment's blob otherwise lived in the
+`blobs` store forever.
+
+- `planBlobGc(events: readonly LogEvent[], syncStatuses: ReadonlyMap<string,
+  SyncStatusRow>): string[]` — the pure core. A filename is deletable iff (a) it is
+  absent from every entry `fold(events)` still returns (fold-hidden), and (b) the
+  event that attached it has `syncStatuses` status `'uploaded'` — a still-`queued`/
+  `error` row (including a missing row) is never deleted, so nothing is reclaimed
+  before Drive has its own copy. Attachment-kind-agnostic: audio, photo, and text
+  blobs are all covered by the same sweep, complementing (not replacing)
+  `pruneAudio`, which trims *visible* entries' audio per `keepAudioLocally`.
+- `reclaimStreamBlobs(stream): Promise<string[]>` — reads `listEvents`/
+  `getSyncStatuses` for one stream, computes `planBlobGc`, and `deleteBlob`s each
+  result; returns the filenames actually removed. No network.
 
 ### src/store/places.ts
 
@@ -429,9 +460,10 @@ Actions:
 - Loaders — `refresh(streamId?)` (re-lists entries, sync statuses, and `lastSyncAt`
   for the current stream, recomputes the cross-stream `globalSyncSummary`, and
   switches `currentStreamId` when given), `loadPlaces()`, `loadSettings()`,
-  `refreshConnection()`, `refreshSpace()` (re-measures `localSpace` + `appSpace`;
-  local-only, called by the Settings Data section on entry and by `wipe`), and
-  `init()` which runs the first four in parallel — a local-only
+  `refreshConnection()`, `refreshSpace()` (runs `blobGc.ts#reclaimStreamBlobs` over
+  every `allSyncStreams()` stream, then re-measures `localSpace` + `appSpace`;
+  local-only — no network — called by the Settings Data section on entry and by
+  `wipe`), and `init()` which runs the first four in parallel — a local-only
   status computation (entries, sync rows, `lastSyncAt`, stored-token expiry) that never
   syncs — and sets `ready: true` in a `finally` so even a failed boot lifts the splash.
 - Log writes — `capture(input): Promise<CaptureEvent>`, `revoke(targets)`,
@@ -479,9 +511,15 @@ Actions:
     events) through `reduceSyncProgress` (`syncProgress.ts`) into `syncProgress`;
     the `finally` clears it back to null alongside `syncing`.
 - Places/settings/data — `addPlace`, `removePlace`, `updateSettings`,
-  `updateStreamSettings`, `wipe()` (`wipeAll()` then reload, including
-  `refreshSpace()` so the Settings storage line never shows the pre-wipe number),
-  `clearError()`.
+  `updateStreamSettings`, `wipe()`, `clearError()`. `wipe()` (issue #65) is a full
+  privacy reset, in order: best-effort revoke the Google grant (`disconnect(token?.accessToken)`
+  — same as `disconnectDrive`, run first so a mid-wipe failure still leaves the
+  token cleared), `wipeAll()` (the IndexedDB log/blobs/settings/etc.),
+  `wipeCaches()` (every SW Cache Storage bucket — `wipeAll` never touched Cache
+  Storage, which is where the `nominatim`/`osm-tiles` runtime caches durably
+  hold a reconstructible location history; see `vite.config.ts`), then sets
+  `driveConnection: 'disconnected'` and reloads state including `refreshSpace()`
+  so the Settings storage line never shows the pre-wipe number.
 
 All write actions are wrapped in a local `guard(label, fn)` helper: on failure it sets
 `lastError` to `"<label>: <message>"` **and re-throws** so awaiting callers still see the
@@ -545,10 +583,11 @@ to 1, `1` once done) and `formatSyncProgress` (one case per phase) and
 ### src/store/appStore.test.ts
 
 Covers the store's write→refresh loop against real (fake-indexeddb) repos:
-capture/amend/revoke updating folded entries, settings persistence, wipe, the
-`guard` behavior of setting `lastError` while rejecting, and space accounting
-(`refreshSpace` snapshots, null-estimate degradation, and the wipe → re-measure
-regression).
+capture/amend/revoke updating folded entries, settings persistence, wipe
+(including that it disconnects Drive and clears every Cache Storage bucket via
+a `globalThis.caches` test double, #65), the `guard` behavior of setting
+`lastError` while rejecting, and space accounting (`refreshSpace` snapshots,
+null-estimate degradation, and the wipe → re-measure regression).
 
 ### src/store/space.test.ts
 
@@ -594,6 +633,17 @@ the migration to v5 (id-keyed `events`/`sync` stores replacing `[stream, seq]`-k
 ones), the `summarizeSyncStatuses` rollup (pending/error counts, highest-seq
 `lastError`, omitted when the errored row has no message), and
 `getLastSyncAt`/`setLastSyncAt` round-trips per stream.
+
+### src/store/blobGc.test.ts
+
+Covers `planBlobGc`'s pure core (a live attachment is never touched even once
+uploaded; a revoked entry's attachment is reclaimed once its capture event is
+uploaded, never before; a `removeAttachments`-superseded file is reclaimed the
+same way once its owning amend is uploaded) and `reclaimStreamBlobs` end to end
+against fake-indexeddb (a revoked-and-uploaded entry's blob is deleted while a
+live sibling's is untouched; an uploaded-but-not-yet-synced revoke leaves the
+blob in place; a note edit's superseded text attachment is reclaimed, its
+replacement is not).
 
 ### src/store/events.sync.test.ts
 
@@ -711,6 +761,12 @@ and wrong-typed legacy fields ignored.
   `lastError`'s "sets and re-throws" `guard` behavior establishes.
 - **Blobs are keyed by contract filename**, computed at append time — the same name is
   used locally and in Drive, which is what makes re-uploads idempotent.
+- **Blob GC only deletes what is both fold-hidden and durably uploaded.**
+  `blobGc.ts#planBlobGc` never reclaims a blob whose owning event's sync row isn't
+  `'uploaded'` — including a missing row — so a blob can't be deleted before Drive
+  has its own copy, and GC never races an in-flight or not-yet-attempted upload.
+  It complements, not replaces, `drive/queue.ts#pruneAudio`'s `keepAudioLocally`
+  pruning of *visible* entries' audio.
 - **`db.ts` caches the connection**; tests (and anything deleting the database) must
   call `resetDbCache()` or they will reuse a closed/stale handle. (Rejected opens,
   `blocking`, and `terminated` clear the cache themselves — see the db.ts

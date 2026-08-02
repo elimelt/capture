@@ -372,3 +372,21 @@ export async function wipeAll(): Promise<void> {
   ])
   await tx.done
 }
+
+/**
+ * Drop every SW-managed Cache Storage bucket (issue #65). The IndexedDB
+ * `geocache` store is only a second line of defence — the real durable
+ * copies of reverse-geocoded addresses and map tiles live in the
+ * `nominatim` / `osm-tiles` runtime caches (`vite.config.ts`), which
+ * `wipeAll` above never touches. "Wipe local data" must clear all of it, not
+ * just the app's own database, or a privacy wipe silently leaves a
+ * reconstructible location history behind. Deleting every cache (not just
+ * those two) is simplest and harmless: the SW re-precaches the app shell and
+ * fonts on next activation. A no-op where the Cache Storage API is
+ * unavailable (e.g. non-browser test environments).
+ */
+export async function wipeCaches(): Promise<void> {
+  if (typeof caches === 'undefined') return
+  const keys = await caches.keys()
+  await Promise.all(keys.map((key) => caches.delete(key)))
+}

@@ -244,6 +244,24 @@ describe('pullStream', () => {
     expect(await blob!.text()).toBe('audio-bytes')
   })
 
+  it('skips downloading audio blobs when keepAudioLocally is false (issue #53)', async () => {
+    const remote = remoteCapture(1, 'aaaaaa', true)
+    const file = remote.attachments[0].file
+    seedRemote([remote], { [file]: 'audio-bytes' })
+
+    const { saveStreamSettings, STREAM_SETTINGS_DEFAULTS } = await import('../store/settings')
+    await saveStreamSettings('timelog', { ...STREAM_SETTINGS_DEFAULTS, keepAudioLocally: false })
+
+    const { pullStream } = await import('./pull')
+    const res = await pullStream('tok', 'timelog')
+    expect(res).toEqual({ outcome: 'pulled', pulled: 1 })
+
+    // The event still imports — only the audio blob is left unfetched.
+    const { getBlob, listEvents } = await import('../store/events')
+    expect((await listEvents('timelog')).map((e) => e.id)).toEqual(['aaaaaa'])
+    expect(await getBlob(file)).toBeUndefined()
+  })
+
   it('is idempotent and skips events already local', async () => {
     seedRemote([remoteCapture(1, 'aaaaaa')])
     const { pullStream } = await import('./pull')

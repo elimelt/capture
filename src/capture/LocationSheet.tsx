@@ -11,7 +11,7 @@ import { MapContainer, Marker, TileLayer, useMapEvents } from 'react-leaflet'
 import type { GeoLocation } from '../contract/types'
 import { matchPlace } from '../places/match'
 import { reverseGeocode } from '../places/geocode'
-import { snapshotLocation } from './geo'
+import { locateCurrent } from './geo'
 import { useAppStore } from '../store/appStore'
 import { Button, Sheet, cx, tone, type_ } from '../ui'
 
@@ -44,11 +44,11 @@ interface LocationSheetProps {
 
 export function LocationSheet({ initial, onSave, onClear, onClose }: LocationSheetProps) {
   const places = useAppStore((s) => s.places)
-  const locationEnabled = useAppStore((s) => s.appSettings.locationEnabled)
   const [pos, setPos] = useState<{ lat: number; lng: number } | null>(
     initial ? { lat: initial.lat, lng: initial.lng } : null,
   )
   const [locating, setLocating] = useState(false)
+  const [locateError, setLocateError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const markerRef = useRef<L.Marker>(null)
 
@@ -66,11 +66,24 @@ export function LocationSheet({ initial, onSave, onClear, onClose }: LocationShe
     [],
   )
 
+  // An explicit tap always asks the browser for a location, regardless of the
+  // passive-capture `locationEnabled` toggle (#59) — that setting governs
+  // ambient stamping at capture time, not a deliberate "use current location"
+  // request. Surfaces a reason on failure instead of quietly doing nothing.
   async function useCurrent() {
+    setLocateError(null)
     setLocating(true)
-    const loc = await snapshotLocation(places, locationEnabled)
+    const result = await locateCurrent(places)
     setLocating(false)
-    if (loc) setPos({ lat: loc.lat, lng: loc.lng })
+    if (result.ok) {
+      setPos({ lat: result.location.lat, lng: result.location.lng })
+    } else {
+      setLocateError(
+        result.reason === 'unsupported'
+          ? 'Geolocation is not available on this device.'
+          : 'Could not get your location.',
+      )
+    }
   }
 
   async function save() {
@@ -110,6 +123,7 @@ export function LocationSheet({ initial, onSave, onClear, onClose }: LocationShe
         {pos ? 'Drag the pin or tap the map to adjust.' : 'Tap the map or use your current location.'}
       </p>
 
+      {locateError && <p className={cx('mt-2', type_.caption, tone.danger)}>{locateError}</p>}
       <div className="mt-3 flex gap-2">
         <Button variant="secondary" block disabled={locating} onClick={() => void useCurrent()}>
           {locating ? 'Locating…' : 'Use current location'}

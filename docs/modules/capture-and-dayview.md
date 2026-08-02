@@ -101,8 +101,11 @@ deleted-with-Undo, discarded).
   (`at <place>` when a saved place matches, `location on` when only coordinates are
   available, nothing when location is disabled).
 - **Text/photo capture:** `submitText(text)` and `submitPhoto(file)` each snapshot
-  location at submit time and call `capture` with a single `text` / `photo` attachment
-  (photo mime falls back to `image/jpeg` when `file.type` is empty).
+  location at submit time and call `capture` with a single `text` / `photo` attachment.
+  `submitPhoto` and the gesture accelerator's photo add-on both run the file through
+  `photo.ts#downscalePhoto` first (issue #58) — every photo attachment this screen ever
+  builds is the downscaled/re-encoded JPEG (or the original blob, on a decode failure),
+  never the multi-megabyte camera original.
 - **Toasts:** a single `ToastState` (`captured` with `entryId`, or `discarded`)
   auto-clears after 5s. "Undo" on the captured toast calls `revoke([entryId])`
   immediately. Delete requests (`handleDelete`) clear any capture toast first so only
@@ -115,10 +118,59 @@ deleted-with-Undo, discarded).
 - **Automatic place naming (§3.4):** after every successful capture,
   `maybePromptPlace(event)` checks `needsPlacePrompt(location, locationEnabled)` (from
   `geo.ts`) — a location captured at a coordinate matching no saved place (no
-  `placeLabel`) opens `NamePlaceSheet`. Saving calls `addPlace` (with a best-effort
-  `reverseGeocode` "near …" address) and retro-labels the just-captured entry via
+  `placeLabel`) opens `NamePlaceSheet`. Since a capture-time snapshot never carries
+  `address` (geocoding is lazy), `maybePromptPlace` also kicks off
+  `reverseGeocode(location.lat, location.lng)` in the background and feeds the result
+  into `pendingPlaceAddress` state as it resolves, so the sheet's "near …" hint can
+  actually appear (#59 — it used to read a field that was always empty at this point in
+  the flow, so it was dead code). A `pendingPlaceEntryIdRef` guards against a slow
+  lookup painting a stale address onto a newer prompt if the user dismisses one and
+  triggers another before it resolves. Saving calls `addPlace` (reusing
+  `pendingPlaceAddress` before falling back to a fresh `reverseGeocode`, which is cached
+  either way) and retro-labels the just-captured entry via
   `amend({ targets: [entryId], patch: { location } })`; skipping just closes the sheet —
   the entry is already saved.
+
+### src/capture/photo.ts
+
+**Purpose:** Photo downscaling at the capture boundary (issue #58) — a camera
+original (3-8MB JPEG/HEIC) is downscaled and re-encoded once here, before it ever
+reaches `capture`/`amend`, so every replica (local IndexedDB, every other device's
+pull) stores and syncs the same right-sized blob. Chosen over the alternative fix
+shape offered by the issue (a `keepPhotosLocally` setting + on-demand pull,
+mirroring `keepAudioLocally`) because photo *originals* were never the useful
+artifact here — every consumer (thumbnails, the full-screen viewer, the vision
+captioner's own 1024px re-encode) already works from a downscaled copy — and
+because deciding this once at capture time avoids retrofitting a multi-GB backlog
+later, which the issue calls out as the harder path.
+
+**Exports:**
+
+- `MAX_PHOTO_EDGE_PX = 2048` — long edge of the stored photo.
+- `scaledDimensions(width, height, maxEdge): { width; height }` — pure: target
+  dimensions preserving aspect ratio, capped at `maxEdge` on the long side, never
+  upscaling. The tested core (`photo.test.ts`).
+- `interface DownscaledPhoto { blob: Blob; mimeType: string }`.
+- `downscalePhoto(blob: Blob): Promise<DownscaledPhoto>` — decodes with
+  `createImageBitmap(blob, { imageOrientation: 'from-image' })` (bakes in EXIF
+  rotation so a portrait doesn't land sideways), draws to a canvas sized by
+  `scaledDimensions`, and re-encodes to JPEG at quality 0.85. Falls back to the
+  original blob untouched on any decode/encode failure (exotic formats, no canvas
+  context) — a bigger original beats a lost photo. Not unit-tested directly:
+  `createImageBitmap`/`canvas` are browser APIs unavailable under the project's
+  node test environment, the same untested-precedent as `vision/api.ts`'s
+  identical canvas path.
+
+Called from every place a photo attachment is built: `CaptureScreen.submitPhoto`,
+the gesture accelerator's photo add-on, and `EntryList.onAddPhoto`.
+
+### src/capture/photo.test.ts
+
+Vitest unit tests for `scaledDimensions` (the tested pure core; `downscalePhoto`
+itself isn't unit-tested — see above): a source already under the cap is left
+untouched, a source exactly at the cap is never upscaled, landscape/portrait/square
+sources downscale by their long edge preserving aspect ratio, and extreme aspect
+ratios never round a dimension down to zero.
 
 ### src/capture/holdGesture.ts
 
@@ -367,7 +419,9 @@ hides the entry immediately and appends the revoke only after the undo window.
 - `onSetTime(time)` → `patch.capturedAt = withTimeOfDayIso(entry.capturedAt, time)`
   (keeps the entry's date, changes only time-of-day).
 - `onAddNote` / `onAddPhoto` / `onAddAudio` → amend with a single new `text` / `photo` /
-  `audio` attachment.
+  `audio` attachment. `onAddPhoto` runs the file through `photo.ts#downscalePhoto`
+  first, same as `CaptureScreen` (issue #58) — no photo attachment anywhere in the app
+  skips downscaling.
 - `onEditText(oldFile, text, derivedFrom?)` → one amend that both removes the old file
   (`patch.removeAttachments: [oldFile]`) and adds the replacement text; `derivedFrom` is
   carried over so an edited transcript/caption stays machine-derived and is never
@@ -939,8 +993,13 @@ where `onSave: (location: GeoLocation) => void` and `onClear: () => void`.
   default; tap the map (`ClickToPlace` via `useMapEvents`) or drag the pin to set
   `pos`. The pin is a vector `L.divIcon` (clay dot) to avoid Leaflet's default marker
   PNGs, which break under bundlers without extra asset config.
-- "Use current location" calls `snapshotLocation(places, locationEnabled)` with a
-  "Locating…" busy state; a failed/disabled snapshot leaves `pos` unchanged.
+- "Use current location" calls `locateCurrent(places)` (`geo.ts`) with a "Locating…"
+  busy state. Unlike the passive capture-time path, this **always** asks the browser
+  for a location regardless of the Settings `locationEnabled` toggle — an explicit tap
+  is deliberate intent, not ambient stamping (#59) — and on failure sets a small danger
+  caption (`tone.danger`) distinguishing "Geolocation is not available on this device."
+  (`reason: 'unsupported'`) from "Could not get your location." (`reason: 'failed'`,
+  covering denial/timeout/error) instead of silently leaving `pos` unchanged.
 - **Save** re-runs `matchPlace(places, lat, lng)` and awaits
   `reverseGeocode(lat, lng)` (from `src/places`), then emits `{ lat, lng, accuracyM:
   initial?.accuracyM ?? 0, placeLabel?, address? }` — i.e. a manually placed pin has
@@ -1006,6 +1065,13 @@ mount this only while it's true; there is no compact/preview mode anymore.
   "Done" button calling `onClose`) and a `Popup` label on the marker, plus, when
   `placeLabel` is set, a spruce accuracy `Circle` of radius `max(accuracyM, 40)` meters.
 
+**`src/capture/mapAttribution.test.ts` (#56):** a source-text guard (raw-text scan via
+`import.meta.glob(?raw)`, the `layering.test.ts` technique — there is no jsdom/
+testing-library in this repo) asserting no `MapContainer` in `src/capture/` disables
+`attributionControl` and every `<TileLayer>` carries an `attribution` prop, so OSM's
+tile-usage attribution requirement can't silently regress across `MiniMap.tsx` and
+`LocationSheet.tsx`.
+
 ### src/capture/LifecycleBadge.tsx
 
 **Purpose:** Per-entry display-lifecycle badge (#79; replaces the old SyncBadge).
@@ -1022,12 +1088,68 @@ ambient processing rather than infrastructure. `'failed'` renders a small danger
 label ("Upload failed — will retry") — unchanged from the old SyncBadge's error case,
 so real failures never get quieter.
 
+### src/capture/recorderEngine.ts
+
+**Purpose:** Framework-free `getUserMedia` + `MediaRecorder` controller — every ref,
+timer, and recorder/track event handler `useRecorder.ts` needs, kept out of React so it
+can be unit-tested directly (stub `navigator.mediaDevices`/`MediaRecorder` with
+`vi.stubGlobal`, the same pattern as `notify/badge.test.ts`) without a DOM or a hook
+renderer. Negotiates the audio container at runtime — iOS Safari records `audio/mp4`,
+not webm, so the mime type is picked from `['audio/mp4', 'audio/webm;codecs=opus',
+'audio/webm']` via `MediaRecorder.isTypeSupported`, never hardcoded.
+
+**Exports:**
+
+- `createRecorderEngine(callbacks: RecorderEngineCallbacks): RecorderEngine`, where
+  `RecorderEngineCallbacks = { onStateChange, onElapsed, onErrorKind }` and
+  `RecorderEngine = { start(maxSec?, onAutoStop?), stop(), cancel(), resetError(),
+  getLevel(), destroy() }` — `destroy` releases the mic/timers/`AudioContext` and is
+  the engine's half of `useRecorder`'s unmount cleanup.
+- `buildResult(chunks: Blob[], recorderMimeType: string, startedAtMs: number, nowMs:
+  number): RecordingResult | null` — pure blob assembly (mime falls back to the first
+  chunk's type then `audio/webm`; `durationSec` is wall-clock, rounded, minimum 1;
+  empty blobs resolve `null`), shared by every stop path below so an out-of-band stop
+  is delivered identically to a clean one.
+- `interface RecordingResult { blob: Blob; mimeType: string; durationSec: number }`,
+  types `RecorderState`, `RecorderErrorKind`.
+
+**Lifecycle & edge cases:**
+
+- `start` is a no-op if a recorder already exists. On `getUserMedia`/`MediaRecorder`
+  failure it cleans up and reports `state: 'error'` with a kind — `'denied'` for
+  `NotAllowedError`/`SecurityError` `DOMException`s (user must change iOS Settings),
+  `'failed'` otherwise (worth retrying).
+- A 250ms interval reports `elapsedSec` and auto-stops at `maxSec`, delivering the clip
+  to `onAutoStop`. Because the timer, a user tap, and an out-of-band stop can all race
+  to settle the recording, `finalize()` claims the recorder by nulling its internal ref
+  first, making every other path a no-op (they resolve `null`/do nothing).
+- **Out-of-band stop handling (#49):** `start()` also attaches `recorder.onstop`,
+  `recorder.onerror`, and an `ended` listener on every stream track to one shared
+  handler, so a stop the platform initiates itself — mic permission revoked, iOS taking
+  the audio session (call, Siri), a device disconnect, or a genuine
+  `MediaRecorderErrorEvent` — is observed even though no explicit `stop()` is waiting on
+  it. The handler is guarded by recorder identity (a no-op once `finalize()` has already
+  claimed the recorder), assembles whatever chunks were captured via `buildResult` and
+  delivers them through `onAutoStop` exactly like a clean auto-stop (an interrupted clip
+  is still the user's words), and only reports `state: 'error'`/`errorKind: 'failed'`
+  when nothing was captured. Either way `cleanup()` runs, so the elapsed-timer interval
+  is always cleared and the UI can never wedge on `'recording'` forever.
+- `finalize()`'s already-`inactive` branch also settles (assembles the result, cleans
+  up, reports `idle`) instead of silently no-oping, so a lost identity race can never
+  leave stale refs/timers behind either.
+- `cancel` detaches `onstop`/`onerror`, stops the recorder, and drops the chunks (A2 —
+  discard).
+- The level meter is best-effort: an `AudioContext` + `AnalyserNode` (fftSize 512) is
+  set up in a nested try/catch; if unavailable, `getLevel()` returns 0 and recording
+  continues. `getLevel()` computes RMS over byte time-domain data.
+- `cleanup` stops all `MediaStream` tracks (releases the mic), clears the timer, and
+  closes the `AudioContext`.
+
 ### src/capture/useRecorder.ts
 
-**Purpose:** `getUserMedia` + `MediaRecorder` wrapper hook. Negotiates the audio
-container at runtime — iOS Safari records `audio/mp4`, not webm, so the mime type is
-picked from `['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm']` via
-`MediaRecorder.isTypeSupported`, never hardcoded.
+**Purpose:** Thin React bridge over `recorderEngine.ts` — owns only `state`,
+`elapsedSec`, and `errorKind` as React state, wired to one `createRecorderEngine`
+instance held in a ref for the component's lifetime.
 
 **Exports:**
 
@@ -1036,28 +1158,12 @@ picked from `['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm']` via
   start(maxSec = 60, onAutoStop?): Promise<void>; stop(): Promise<RecordingResult |
   null>; cancel(): void; resetError(): void; getLevel(): number; errorKind?: 'denied' |
   'failed' }`
-- `interface RecordingResult { blob: Blob; mimeType: string; durationSec: number }`
-- Types `RecorderState`, `RecorderErrorKind`.
+- Re-exports `RecordingResult`, `RecorderState`, `RecorderErrorKind` from
+  `recorderEngine.ts`.
 
-**Lifecycle & edge cases:**
-
-- `start` is a no-op if a recorder already exists. On `getUserMedia`/`MediaRecorder`
-  failure it cleans up and sets `state: 'error'` with `errorKind` — `'denied'` for
-  `NotAllowedError`/`SecurityError` `DOMException`s (user must change iOS Settings),
-  `'failed'` otherwise (worth retrying).
-- A 250ms interval updates `elapsedSec` and auto-stops at `maxSec`, delivering the clip
-  to `onAutoStop`. Because both the timer and a user tap can race to stop, `finalize()`
-  claims the recorder by nulling `recorderRef` first, making concurrent
-  stop/auto-stop calls no-ops (they resolve `null`).
-- `stop`/`finalize` resolves after the `onstop` event with a blob assembled from
-  `dataavailable` chunks; mime falls back to the first chunk's type then `audio/webm`;
-  `durationSec` is wall-clock, rounded, minimum 1. Empty blobs resolve `null`.
-- `cancel` detaches `onstop`, stops the recorder, and drops the chunks (A2 — discard).
-- The level meter is best-effort: an `AudioContext` + `AnalyserNode` (fftSize 512) is
-  set up in a nested try/catch; if unavailable, `getLevel()` returns 0 and recording
-  continues. `getLevel()` computes RMS over byte time-domain data.
-- `cleanup` stops all `MediaStream` tracks (releases the mic), clears the timer, and
-  closes the `AudioContext`; it also runs on unmount.
+**Lifecycle & edge cases:** see `recorderEngine.ts` above for `start`/`stop`/`cancel`/
+out-of-band-stop behavior — this hook adds nothing but state plumbing. The engine is
+created once (guarded by the ref already being set) and destroyed on unmount.
 
 ### src/capture/useAudioPlayback.ts
 
@@ -1097,28 +1203,45 @@ create the immediate-hide effect.
 throws.
 
 **Exports:** `snapshotLocation(places: Place[], locationEnabled: boolean):
-Promise<GeoLocation | undefined>`; `DEFAULT_PLACE_RADIUS_M` (50); `needsPlacePrompt(
-location: GeoLocation | undefined, locationEnabled: boolean): boolean` — true when a
-captured coordinate matched no saved place and should trigger `NamePlaceSheet`.
-(String-backed radius drafts are validated by the numeric-draft helpers in
-`src/ui/numberDraft.ts`.)
+Promise<GeoLocation | undefined>`; `locateCurrent(places: Place[]):
+Promise<LocateResult>` where `LocateResult = { ok: true; location: GeoLocation } | {
+ok: false; reason: 'unsupported' | 'failed' }`; `DEFAULT_PLACE_RADIUS_M` (50);
+`needsPlacePrompt(location: GeoLocation | undefined, locationEnabled: boolean):
+boolean` — true when a captured coordinate matched no saved place and should trigger
+`NamePlaceSheet`. (String-backed radius drafts are validated by the numeric-draft
+helpers in `src/ui/numberDraft.ts`.)
 
-**Behavior:** resolves `undefined` immediately when location is disabled in settings or
-`navigator.geolocation` is missing. Otherwise wraps
-`geolocation.getCurrentPosition` with `{ timeout: 8000, maximumAge: 60_000,
-enableHighAccuracy: false }`; on success returns `{ lat, lng, accuracyM:
+**Behavior:** both `snapshotLocation` and `locateCurrent` share a `getCurrentLocation`
+helper that wraps `geolocation.getCurrentPosition` with `{ timeout: 8000, maximumAge:
+60_000, enableHighAccuracy: false }`; on success it returns `{ lat, lng, accuracyM:
 Math.round(accuracy) }` plus `placeLabel` when `matchPlace(places, lat, lng)` (from
-`src/places/match`) finds a saved place containing the point. Errors — both the error
-callback and synchronous throws — resolve `undefined`; the promise never rejects, so
-callers can `await` it unconditionally.
+`src/places/match`) finds a saved place containing the point, and resolves `undefined`
+on any failure (error callback, synchronous throw, or no `navigator.geolocation`) — the
+promise never rejects.
+
+- `snapshotLocation(places, locationEnabled)` — the **passive capture-time** path
+  (§7): resolves `undefined` immediately, without touching geolocation at all, when
+  `locationEnabled` is off. Silent by design — capture stamps a coordinate on every
+  entry without asking, so a denial or timeout should just mean no location, not an
+  error surfaced mid-recording.
+- `locateCurrent(places)` — the **explicit-request** path (#59): no `locationEnabled`
+  parameter at all — an explicit "use current location" tap always asks the browser,
+  since the toggle governs ambient stamping, not a deliberate gesture (the browser's
+  own permission prompt still gates the actual read either way, so this isn't a
+  privacy regression). Distinguishes `reason: 'unsupported'` (no geolocation API) from
+  `reason: 'failed'` (everything else) so the caller (`LocationSheet`) can show
+  different, specific feedback instead of a silent no-op.
 
 ### src/capture/geo.test.ts
 
 Vitest unit tests for `snapshotLocation`: verifies it resolves `undefined` without
 touching geolocation when disabled, when `navigator.geolocation` is absent, on
 geolocation errors, and on synchronous throws; and that successes round `accuracyM` and
-include `placeLabel` only when the coordinate falls inside a saved place's radius. Also
-covers `needsPlacePrompt` (prompts only for enabled, unlabelled locations).
+include `placeLabel` only when the coordinate falls inside a saved place's radius. For
+`locateCurrent`: it calls geolocation even when disabled (no toggle to check), and
+returns `{ ok: false, reason: 'unsupported' }` vs `{ ok: false, reason: 'failed' }` for
+a missing API vs an error/throw. Also covers `needsPlacePrompt` (prompts only for
+enabled, unlabelled locations).
 
 ### src/dayview/DayScreen.tsx
 
@@ -1434,10 +1557,16 @@ re-throw, matching the appStore `guard` convention.
   recomposition with `entry.deviceTz`), and both land in `patch.capturedAt`.
 - **Recorder races are resolved by claiming:** `finalize()` nulls `recorderRef` before
   stopping, so a user tap racing the auto-stop timer (or the background-commit handler)
-  yields exactly one committed clip. The gesture accelerator (#77) rides the same
-  invariant rather than re-solving it: every hold-class command in `RecordPanel` is
-  gated on `recorder.state === 'recording'` at the moment of pointerup, so a release
-  racing auto-stop/background-commit (which already flipped the recorder out of
+  yields exactly one committed clip. The same claim guards the out-of-band stop path
+  (#49, `recorderEngine.ts`): a track `ended`/recorder `error`/spontaneous `stop` the
+  platform fires on its own (mic revoked, iOS taking the audio session, a device
+  disconnect) is a no-op once an explicit `stop()` has already claimed the recorder, and
+  vice versa — exactly one of the two ever settles a given recording, and the losing
+  side never leaves the UI reporting `'recording'` forever. The gesture accelerator
+  (#77) rides the same invariant rather than re-solving it: every hold-class command in
+  `RecordPanel` is gated on `recorder.state === 'recording'` at the moment of pointerup,
+  so a release racing auto-stop/background-commit (which already flipped the recorder
+  out of
   `'recording'`) is a no-op, never a second commit.
 - **The gesture accelerator is additive, never load-bearing (#77):** `holdGesture.ts`'s
   commands only ever call the same handlers a plain button already calls (`onTap`,

@@ -62,16 +62,23 @@ interface RawCalendarListEntry {
  * flagged so the UI can default to it.
  */
 export async function listCalendars(token: string): Promise<CalendarSummary[]> {
-  const params = new URLSearchParams({
-    fields: 'items(id,summary,primary)',
-    minAccessRole: 'reader',
-    maxResults: '250',
-  })
-  const res = await ensureOk(
-    await fetch(`${API}/users/me/calendarList?${params}`, { headers: bearer(token) }),
-  )
-  const data = (await res.json()) as { items?: RawCalendarListEntry[] }
-  return (data.items ?? [])
+  const items: RawCalendarListEntry[] = []
+  let pageToken: string | undefined
+  do {
+    const params = new URLSearchParams({
+      fields: 'nextPageToken, items(id,summary,primary)',
+      minAccessRole: 'reader',
+      maxResults: '250',
+    })
+    if (pageToken) params.set('pageToken', pageToken)
+    const res = await ensureOk(
+      await fetch(`${API}/users/me/calendarList?${params}`, { headers: bearer(token) }),
+    )
+    const data = (await res.json()) as { items?: RawCalendarListEntry[]; nextPageToken?: string }
+    if (data.items) items.push(...data.items)
+    pageToken = data.nextPageToken
+  } while (pageToken)
+  return items
     .filter((c): c is RawCalendarListEntry & { id: string } => typeof c.id === 'string')
     .map((c) => ({ id: c.id, summary: c.summary?.trim() || c.id, primary: c.primary ?? false }))
 }
@@ -92,22 +99,29 @@ export async function listEvents(
   token: string,
   { calendarId, timeMin, timeMax }: ListEventsArgs,
 ): Promise<CalEvent[]> {
-  const params = new URLSearchParams({
-    timeMin,
-    timeMax,
-    singleEvents: 'true',
-    orderBy: 'startTime',
-    maxResults: '250',
-    // `updated` feeds the overlay dirty-check fast path and `recurringEventId`
-    // the instance-level overlay identity (SPEC §3.6); parseEvent threads both.
-    fields:
-      'items(id,summary,htmlLink,status,start(date,dateTime),end(date,dateTime),updated,recurringEventId)',
-  })
-  const res = await ensureOk(
-    await fetch(`${API}/calendars/${encodeURIComponent(calendarId)}/events?${params}`, {
-      headers: bearer(token),
-    }),
-  )
-  const data = (await res.json()) as { items?: RawEvent[] }
-  return sortEvents(parseEvents(data.items ?? []))
+  const items: RawEvent[] = []
+  let pageToken: string | undefined
+  do {
+    const params = new URLSearchParams({
+      timeMin,
+      timeMax,
+      singleEvents: 'true',
+      orderBy: 'startTime',
+      maxResults: '250',
+      // `updated` feeds the overlay dirty-check fast path and `recurringEventId`
+      // the instance-level overlay identity (SPEC §3.6); parseEvent threads both.
+      fields:
+        'nextPageToken, items(id,summary,htmlLink,status,start(date,dateTime),end(date,dateTime),updated,recurringEventId)',
+    })
+    if (pageToken) params.set('pageToken', pageToken)
+    const res = await ensureOk(
+      await fetch(`${API}/calendars/${encodeURIComponent(calendarId)}/events?${params}`, {
+        headers: bearer(token),
+      }),
+    )
+    const data = (await res.json()) as { items?: RawEvent[]; nextPageToken?: string }
+    if (data.items) items.push(...data.items)
+    pageToken = data.nextPageToken
+  } while (pageToken)
+  return sortEvents(parseEvents(items))
 }
