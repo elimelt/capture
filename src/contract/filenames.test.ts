@@ -5,7 +5,9 @@ import {
   eventRecordName,
   idOfRecordName,
   padSeq,
+  parseSegmentName,
   partitionOf,
+  segmentFileName,
   seqOfFilename,
   tsForFilename,
 } from './filenames'
@@ -104,12 +106,71 @@ describe('partitionOf', () => {
   })
 })
 
-describe('lexicographic sort invariant (SPEC §5.1)', () => {
+const SEGMENT_EVENTS = [
+  { seq: 44, loggedAt: '2026-08-02T18:02:33-04:00', id: 'f1a2b3' },
+  { seq: 45, loggedAt: '2026-08-02T18:04:01-04:00', id: 'a9c8d7' },
+  { seq: 46, loggedAt: '2026-08-02T18:05:10-04:00', id: 'b0c1d2' },
+]
+const SEGMENT = '000044-000046_2026-08-02T18-02-33-0400_f1a2b3.ndjson'
+
+describe('segmentFileName (SPEC §5.7)', () => {
+  it('produces the SPEC §5.7 name: seq range + first event ts + first event id', () => {
+    expect(segmentFileName(SEGMENT_EVENTS)).toBe(SEGMENT)
+  })
+
+  it('takes the range extremes across all events (gaps allowed)', () => {
+    expect(segmentFileName([SEGMENT_EVENTS[0], SEGMENT_EVENTS[2]])).toBe(
+      '000044-000046_2026-08-02T18-02-33-0400_f1a2b3.ndjson',
+    )
+  })
+})
+
+describe('parseSegmentName', () => {
+  it('round-trips a generated segment name', () => {
+    expect(parseSegmentName(segmentFileName(SEGMENT_EVENTS))).toEqual({
+      minSeq: 44,
+      maxSeq: 46,
+      firstId: 'f1a2b3',
+    })
+  })
+
+  it('rejects records, attachments, and foreign files', () => {
+    expect(parseSegmentName(eventRecordName(E))).toBeNull()
+    expect(parseSegmentName(attachmentFileName(BASE, 'audio', 'audio/mp4'))).toBeNull()
+    expect(parseSegmentName('notes.ndjson')).toBeNull()
+    expect(parseSegmentName('2026-08-02')).toBeNull()
+  })
+})
+
+describe('segments vs the v1 grammar', () => {
+  it('a segment name is not a record name (v1 readers ignore it — SPEC §5.8)', () => {
+    expect(idOfRecordName(SEGMENT)).toBeNull()
+  })
+
+  it('seqOfFilename reads a segment name as its min seq', () => {
+    expect(seqOfFilename(SEGMENT)).toBe(44)
+  })
+})
+
+describe('lexicographic sort invariant (SPEC §5.1, §5.7)', () => {
   it('name-sorted order equals seq order', () => {
     const seqs = [2, 10, 100]
     const names = seqs.map((seq) => eventRecordName({ ...E, seq }))
     const sorted = [...names].sort()
     expect(sorted.map(seqOfFilename)).toEqual(seqs)
     expect(sorted).toEqual(names)
+  })
+
+  it('a segment sorts at its min-seq position among records', () => {
+    const names = [
+      eventRecordName({ ...E, seq: 43 }),
+      SEGMENT, // covers 44–46
+      eventRecordName({ ...E, seq: 44 }), // same-seq record from another device
+      eventRecordName({ ...E, seq: 47 }),
+    ]
+    expect([...names].sort()).toEqual(names)
+    // The sorted listing yields non-decreasing seqs.
+    const sortedSeqs = [...names].sort().map(seqOfFilename)
+    expect(sortedSeqs).toEqual([...sortedSeqs].sort((a, b) => a - b))
   })
 })

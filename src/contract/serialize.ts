@@ -64,6 +64,15 @@ export function serializeEvent(event: LogEvent): string {
   return `${JSON.stringify(orderedEvent(event), null, 2)}\n`
 }
 
+/**
+ * One NDJSON segment line (SPEC §5.7): the same JSON document as
+ * serializeEvent — identical key order and optional-field omission — but
+ * compacted to a single line, terminated by `\n`.
+ */
+export function serializeEventLine(event: LogEvent): string {
+  return `${JSON.stringify(orderedEvent(event))}\n`
+}
+
 function fail(msg: string): never {
   throw new Error(`invalid event record: ${msg}`)
 }
