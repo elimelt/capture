@@ -94,7 +94,6 @@ export function EntryCard({
   // PlaceCard row, never mounted alongside it — Leaflet loads only here.
   const [mapOpen, setMapOpen] = useState(false)
   const photoInputRef = useRef<HTMLInputElement>(null)
-  const timeInputRef = useRef<HTMLInputElement>(null)
   // Per-card recorder for "+ audio" — entries can hold multiple clips.
   const rec = useRecorder()
   const lifecycle = entryLifecycle(sync, hasPendingEnrichment(entry))
@@ -108,55 +107,23 @@ export function EntryCard({
     }
   }
 
-  // The captured time now lives in the rail gutter (`TimelineRow`), not the
-  // card header — tapping it still opens the native iOS wheel picker (B8), and
-  // the Edit sheet remains the second, discoverable path to the same field.
-  const timeControl = (
-    <span className="relative inline-block">
-      <button
-        onClick={() => {
-          const el = timeInputRef.current
-          if (!el) return
-          if (typeof el.showPicker === 'function') el.showPicker()
-          else el.focus()
-        }}
-        className={cx('rounded-md font-semibold', type_.caption, tone.textMuted, tone.pressWash)}
-      >
-        {timeLabel(entry.capturedAt)}
-      </button>
-      <input
-        ref={timeInputRef}
-        type="time"
-        value={localTimeOf(entry.capturedAt)}
-        onChange={(e) => {
-          if (e.target.value) onSetTime(e.target.value)
-        }}
-        className="absolute inset-0 h-full w-full opacity-0"
-        tabIndex={-1}
-        aria-label="Change entry time"
-      />
-    </span>
-  )
-
   return (
     <TimelineRow
-      beforeTime={
-        entry.location ? (
-          <span className={cx('flex min-w-0 max-w-24 items-center gap-1', type_.caption, tone.textMuted)}>
-            <PinIcon size={13} />
-            <span className="truncate">{locationName(entry.location)}</span>
-          </span>
-        ) : undefined
-      }
-      time={timeControl}
+      time={<RailTime capturedAt={entry.capturedAt} onSetTime={onSetTime} />}
       first={first}
       last={last}
       className={motion.riseIn}
     >
-      {/* Header: lifecycle status and always-available actions; attachment media lives below. */}
+      {/* Header: place label leading; lifecycle badge and always-available
+          actions trailing. Attachment media lives below. */}
       <div className="flex items-center gap-1">
-        <div className="flex min-w-0 flex-1 items-baseline gap-2">
-          <span className="sr-only">{entry.location ? locationName(entry.location) : ''}</span>
+        <div className="flex min-w-0 flex-1 items-center">
+          {entry.location && (
+            <span className={cx('flex min-w-0 items-center gap-1', type_.caption, tone.textMuted)}>
+              <PinIcon size={13} />
+              <span className="truncate">{locationName(entry.location)}</span>
+            </span>
+          )}
         </div>
         <span className="shrink-0">
           <LifecycleBadge lifecycle={lifecycle} />
@@ -166,80 +133,37 @@ export function EntryCard({
             <CopyIcon size={16} />
           </IconButton>
         )}
-        {menuOpen && (
-          <div className="flex flex-wrap items-center justify-end gap-1">
-            <IconButton
-              aria-label="Add note"
-              onClick={() => {
-                setMenuOpen(false)
-                setNoteOpen(true)
-              }}
-            >
-              <NoteIcon size={16} />
-            </IconButton>
-            <IconButton
-              aria-label="Add photo"
-              onClick={() => {
-                setMenuOpen(false)
-                photoInputRef.current?.click()
-              }}
-            >
-              <PhotoIcon size={16} />
-            </IconButton>
-            {rec.state === 'error' ? (
-              <IconButton aria-label="Microphone unavailable, tap to retry" onClick={rec.resetError}>
-                <AudioIcon size={16} />
-              </IconButton>
-            ) : (
-              <IconButton
-                aria-label="Add audio"
-                onClick={() => {
-                  setMenuOpen(false)
-                  void handleAudioTap()
-                }}
-              >
-                <AudioIcon size={16} />
-              </IconButton>
-            )}
-            <IconButton
-              aria-label={entry.location ? 'Edit location' : 'Add location'}
-              onClick={() => {
-                setMenuOpen(false)
-                setLocationOpen(true)
-              }}
-            >
-              {entry.location ? <PinIcon size={16} /> : <PlusIcon size={16} />}
-            </IconButton>
-            <IconButton
-              aria-label="Edit entry"
-              onClick={() => {
-                setMenuOpen(false)
-                setEditOpen(true)
-              }}
-            >
-              <SlidersIcon size={16} />
-            </IconButton>
-            <IconButton
-              variant="danger"
-              aria-label="Delete entry"
-              onClick={() => {
-                setMenuOpen(false)
-                onDelete()
-              }}
-            >
-              <TrashIcon size={16} />
-            </IconButton>
-          </div>
-        )}
-        <IconButton
-          aria-expanded={menuOpen}
-          aria-label={menuOpen ? 'Close actions' : 'Add or edit'}
-          onClick={() => setMenuOpen((open) => !open)}
-        >
-          <span className={cx('inline-flex transition-transform', menuOpen && 'rotate-45')}>
-            <PlusIcon size={18} />
-          </span>
-        </IconButton>
+        <EntryActions
+          open={menuOpen}
+          onToggle={() => setMenuOpen((open) => !open)}
+          hasLocation={entry.location !== undefined}
+          micError={rec.state === 'error'}
+          onRetryMic={rec.resetError}
+          onAddNote={() => {
+            setMenuOpen(false)
+            setNoteOpen(true)
+          }}
+          onAddPhoto={() => {
+            setMenuOpen(false)
+            photoInputRef.current?.click()
+          }}
+          onAddAudio={() => {
+            setMenuOpen(false)
+            void handleAudioTap()
+          }}
+          onEditLocation={() => {
+            setMenuOpen(false)
+            setLocationOpen(true)
+          }}
+          onEditEntry={() => {
+            setMenuOpen(false)
+            setEditOpen(true)
+          }}
+          onDelete={() => {
+            setMenuOpen(false)
+            onDelete()
+          }}
+        />
       </div>
 
       <AttachmentTimeline
@@ -251,36 +175,13 @@ export function EntryCard({
       />
       {entry.location && <PlaceCard location={entry.location} onExpand={() => setMapOpen(true)} />}
 
-      {rec.state === 'recording' ? (
-        <div
-          className={cx(
-            'mt-3 flex items-center gap-2 rounded-xl bg-clay px-3 py-2 dark:bg-clay-dark',
-            motion.scaleIn,
-          )}
-        >
-          <span className={cx('font-medium tabular-nums text-white', type_.ui)}>
-            {Math.floor(rec.elapsedSec / 60)}:{String(rec.elapsedSec % 60).padStart(2, '0')}
-          </span>
-          <button
-            onClick={rec.cancel}
-            className={cx(
-              'ml-auto min-h-9 rounded-lg bg-clay-deep/60 px-3 font-medium text-white/85 active:bg-clay-deep/80 dark:bg-clay-deep-dark/60 dark:active:bg-clay-deep-dark/80',
-              type_.sub,
-            )}
-          >
-            Discard
-          </button>
-          <button
-            onClick={() => void handleAudioTap()}
-            className={cx(
-              'min-h-9 rounded-lg bg-white px-4 font-semibold text-clay-deep active:bg-clay-wash',
-              type_.sub,
-            )}
-          >
-            Done
-          </button>
-        </div>
-      ) : null}
+      {rec.state === 'recording' && (
+        <RecordingBar
+          elapsedSec={rec.elapsedSec}
+          onDiscard={rec.cancel}
+          onDone={() => void handleAudioTap()}
+        />
+      )}
 
       <input
         ref={photoInputRef}
@@ -329,5 +230,171 @@ export function EntryCard({
         </Suspense>
       )}
     </TimelineRow>
+  )
+}
+
+/**
+ * The tap-to-edit capture time in the rail gutter (B8): a visible button
+ * layered over an invisible native time input, so tapping opens the iOS
+ * wheel picker (`showPicker()`, falling back to `focus()`). The Edit sheet
+ * remains the second, discoverable path to the same field.
+ */
+function RailTime({
+  capturedAt,
+  onSetTime,
+}: {
+  capturedAt: string
+  onSetTime: (time: string) => void
+}) {
+  const inputRef = useRef<HTMLInputElement>(null)
+  return (
+    <span className="relative inline-block">
+      <button
+        onClick={() => {
+          const el = inputRef.current
+          if (!el) return
+          if (typeof el.showPicker === 'function') el.showPicker()
+          else el.focus()
+        }}
+        className={cx('rounded-md font-semibold', type_.caption, tone.textMuted, tone.pressWash)}
+      >
+        {timeLabel(capturedAt)}
+      </button>
+      <input
+        ref={inputRef}
+        type="time"
+        value={localTimeOf(capturedAt)}
+        onChange={(e) => {
+          if (e.target.value) onSetTime(e.target.value)
+        }}
+        className="absolute inset-0 h-full w-full opacity-0"
+        tabIndex={-1}
+        aria-label="Change entry time"
+      />
+    </span>
+  )
+}
+
+/**
+ * The header's "+" action menu (#102): a single toggle whose `PlusIcon`
+ * rotates 45° into an "×", revealing six icon-only actions to its left
+ * (flex-wrap, so they wrap on narrow viewports). Every action is labelled
+ * via aria-label; the parent closes the menu inside each handler. The one
+ * exception is a mic error, where the audio slot becomes a retry button
+ * that only clears the error (menu stays open).
+ */
+function EntryActions({
+  open,
+  onToggle,
+  hasLocation,
+  micError,
+  onRetryMic,
+  onAddNote,
+  onAddPhoto,
+  onAddAudio,
+  onEditLocation,
+  onEditEntry,
+  onDelete,
+}: {
+  open: boolean
+  onToggle: () => void
+  hasLocation: boolean
+  micError: boolean
+  onRetryMic: () => void
+  onAddNote: () => void
+  onAddPhoto: () => void
+  onAddAudio: () => void
+  onEditLocation: () => void
+  onEditEntry: () => void
+  onDelete: () => void
+}) {
+  return (
+    <>
+      {open && (
+        <div className="flex flex-wrap items-center justify-end gap-1">
+          <IconButton aria-label="Add note" onClick={onAddNote}>
+            <NoteIcon size={16} />
+          </IconButton>
+          <IconButton aria-label="Add photo" onClick={onAddPhoto}>
+            <PhotoIcon size={16} />
+          </IconButton>
+          {micError ? (
+            <IconButton aria-label="Microphone unavailable, tap to retry" onClick={onRetryMic}>
+              <AudioIcon size={16} />
+            </IconButton>
+          ) : (
+            <IconButton aria-label="Add audio" onClick={onAddAudio}>
+              <AudioIcon size={16} />
+            </IconButton>
+          )}
+          <IconButton
+            aria-label={hasLocation ? 'Edit location' : 'Add location'}
+            onClick={onEditLocation}
+          >
+            {hasLocation ? <PinIcon size={16} /> : <PlusIcon size={16} />}
+          </IconButton>
+          <IconButton aria-label="Edit entry" onClick={onEditEntry}>
+            <SlidersIcon size={16} />
+          </IconButton>
+          <IconButton variant="danger" aria-label="Delete entry" onClick={onDelete}>
+            <TrashIcon size={16} />
+          </IconButton>
+        </div>
+      )}
+      <IconButton
+        aria-expanded={open}
+        aria-label={open ? 'Close actions' : 'Add or edit'}
+        onClick={onToggle}
+      >
+        <span className={cx('inline-flex transition-transform', open && 'rotate-45')}>
+          <PlusIcon size={18} />
+        </span>
+      </IconButton>
+    </>
+  )
+}
+
+/**
+ * The compact in-card recording bar: elapsed timer plus Discard/Done,
+ * replacing the action controls while this card's recorder is live.
+ */
+function RecordingBar({
+  elapsedSec,
+  onDiscard,
+  onDone,
+}: {
+  elapsedSec: number
+  onDiscard: () => void
+  onDone: () => void
+}) {
+  return (
+    <div
+      className={cx(
+        'mt-3 flex items-center gap-2 rounded-xl bg-clay px-3 py-2 dark:bg-clay-dark',
+        motion.scaleIn,
+      )}
+    >
+      <span className={cx('font-medium tabular-nums text-white', type_.ui)}>
+        {Math.floor(elapsedSec / 60)}:{String(elapsedSec % 60).padStart(2, '0')}
+      </span>
+      <button
+        onClick={onDiscard}
+        className={cx(
+          'ml-auto min-h-9 rounded-lg bg-clay-deep/60 px-3 font-medium text-white/85 active:bg-clay-deep/80 dark:bg-clay-deep-dark/60 dark:active:bg-clay-deep-dark/80',
+          type_.sub,
+        )}
+      >
+        Discard
+      </button>
+      <button
+        onClick={onDone}
+        className={cx(
+          'min-h-9 rounded-lg bg-white px-4 font-semibold text-clay-deep active:bg-clay-wash',
+          type_.sub,
+        )}
+      >
+        Done
+      </button>
+    </div>
   )
 }

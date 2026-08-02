@@ -550,10 +550,11 @@ sub-timeline ordered by each attachment's append timestamp, and the place card, 
 sheets/inputs those actions open.
 
 **Exports:** `EntryCard(props: EntryCardProps)` and `timeLabel(iso: string): string`
-(locale time like "9:04 AM"). Props: `entry`, `maxClipSec`, `sync?: SyncStatusRow`, and
-callbacks `onDelete`, `onSetTime(time)`, `onAddNote(text)`, `onAddPhoto(file)`,
-`onAddAudio(result)`, `onEditText(oldFile, text, derivedFrom?)`,
-`onRemoveAttachment(file)`, `onSetLocation(location | null)`, `onApplyEdit(patch)` —
+(locale time like "9:04 AM"). Props: `entry`, `maxClipSec`, `sync?: SyncStatusRow`,
+rail position `first?`/`last?`, optional `onCopy?(entry)`, and callbacks `onDelete`,
+`onSetTime(time)`, `onAddNote(text)`, `onAddPhoto(file)`, `onAddAudio(result)`,
+`onEditText(oldFile, text, derivedFrom?)`, `onRemoveAttachment(file)`,
+`onSetLocation(location | null)`, `onApplyEdit(patch)` —
 unchanged by #102's density pass, so `EntryList`'s amend wiring needed no changes.
 The card computes its own `EntryLifecycle` from `sync` + `hasPendingEnrichment(entry)`
 (`lifecycle.ts`, #79) and renders it via `LifecycleBadge`.
@@ -564,17 +565,17 @@ The card computes its own `EntryLifecycle` from `sync` + `hasPendingEnrichment(e
   state or `expanded` toggle. `menuOpen` is view-local and never persisted or emitted
   as an event. `AttachmentTimeline` owns visible attachment ordering and media/text
   pairing.
-- **Rail gutter + header:** the editable time moved out of the header into the
-  `TimelineRow` `time` slot (`timeControl` — the same tap-to-edit button, now in the
-  gutter beside the rail dot). When present, the location icon and label occupy the
-  gutter immediately before the timestamp. The header is one flex row holding the
-  lifecycle badge, copy action, and top-right action menu; attachment playback lives
-  in the sub-timeline. The
-  time button has no underline decoration; it is still the tap target for the native
-  picker (below), and the Edit sheet provides the second, labelled path to the same
-  field. The place label renders in the rail gutter when a location is present. Both are
-  metadata, not content (#85): the time button and place label are quiet
-  `type_.caption`/`type_.sub` (sans, tabular-nums on the time), never serif.
+- **Rail gutter + header:** the editable time lives in the `TimelineRow` `time` slot
+  (the `RailTime` subcomponent — the same tap-to-edit button, in the gutter above the
+  rail dot; the gutter stays fixed-width so every row's dot sits on one straight
+  rail). The header is one flex row: the location pin + place label leading
+  (truncated, only when a location is present), then the lifecycle badge, copy
+  action, and the "+" action menu trailing; attachment playback lives in the
+  sub-timeline. The time button has no underline decoration; it is still the tap
+  target for the native picker (below), and the Edit sheet provides the second,
+  labelled path to the same field. Both are metadata, not content (#85): the time
+  button and place label are quiet `type_.caption` (sans, tabular-nums on the time),
+  never serif.
 - **Rail position:** `first`/`last` props (threaded down from `EntryList`, defaulting
   false) trim the connecting line at the true ends of the rail so a run of entries reads
   as one continuous line, and the flush node drops the old heavy per-card border/shadow.
@@ -603,8 +604,8 @@ The card computes its own `EntryLifecycle` from `sync` + `hasPendingEnrichment(e
 - Hidden photo input (camera capture) and a `TextSheet` for "Add note" mirror the
   capture-screen patterns.
 - **The "+" action menu (#102, replaces #78's expanded labelled-action column):** the
-  single "+" `IconButton` (aria-expanded, aria-label "Add or edit"/"Close actions")
-  lives in the entry header, aligned to the right of the rail timestamp. It toggles
+  `EntryActions` subcomponent — a single "+" `IconButton` (aria-expanded, aria-label
+  "Add or edit"/"Close actions") at the right edge of the entry header. It toggles
   `menuOpen`; its `PlusIcon` rotates 45° into an "×" rather than drawing a second glyph.
   When open, six icon-only `IconButton`s appear to its left (`flex-wrap`, so they wrap
   on narrow viewports): "Add note", "Add photo", "Add audio" (or the mic-unavailable

@@ -17,15 +17,12 @@ import { cx, tone, type_ } from './tokens'
  * in one place. Tokens-only: the line/dot use `tone`, the time uses `type_`.
  */
 export function TimelineRow({
-  beforeTime,
   time,
   first = false,
   last = false,
   children,
   className,
 }: {
-  /** Optional context shown immediately before the rail timestamp. */
-  beforeTime?: ReactNode
   /** Time label shown in the gutter above the dot (e.g. "9:04 AM"). May be an
    *  interactive element (the entry's tap-to-edit time button). */
   time?: ReactNode
@@ -39,29 +36,28 @@ export function TimelineRow({
   return (
     <div className={cx('relative flex gap-3', className)}>
       {/* Gutter: the rail line (full-height, absolutely centred on the dot
-          column) plus the time label and the dot, stacked. */}
-      <div className="relative flex shrink-0 items-end gap-1">
-        {beforeTime}
-        <div className="relative flex w-14 flex-col items-center">
-          <span
-            aria-hidden="true"
-            className={cx(
-              'absolute w-px border-l',
-              tone.border,
-              first ? 'top-[1.75rem]' : 'top-0',
-              last ? 'h-0' : 'bottom-0',
-            )}
-          />
-          {time !== undefined && (
-            <span className={cx('mb-1 text-center tabular-nums', type_.caption, tone.textMuted)}>
-              {time}
-            </span>
+          column) plus the time label and the dot, stacked. The column is a
+          direct flex child so it stretches to the row's full height — the
+          line must span it for consecutive rows to read as one rail. */}
+      <div className="relative flex w-14 shrink-0 flex-col items-center">
+        <span
+          aria-hidden="true"
+          className={cx(
+            'absolute w-px border-l',
+            tone.border,
+            first ? 'top-[1.75rem]' : 'top-0',
+            last ? 'h-0' : 'bottom-0',
           )}
-          <span
+        />
+        {time !== undefined && (
+          <span className={cx('mb-1 text-center tabular-nums', type_.caption, tone.textMuted)}>
+            {time}
+          </span>
+        )}
+        <span
           aria-hidden="true"
           className={cx('relative z-10 h-2 w-2 rounded-full', tone.railDot)}
-          />
-        </div>
+        />
       </div>
       {/* Content column: everything the node shows, aligned beside the dot. */}
       <div className="min-w-0 flex-1 pb-4">{children}</div>
