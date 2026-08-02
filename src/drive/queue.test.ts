@@ -781,6 +781,30 @@ describe('drainStream', () => {
     expect((await getSyncStatuses('timelog')).get(e3.id)?.status).toBe('uploaded')
   })
 
+  it('reports no upload-progress for a parked batch, but still reports the healthy batch after it', async () => {
+    // Progress × parking (#87 × sync-progress indicator): a parked batch
+    // commits nothing, so it must not count toward upload-progress — the
+    // reducer would otherwise report more "done" than actually landed. The
+    // drain continuing past it, though, means the healthy batch behind it
+    // still reports normally in the same call.
+    const e1 = await captureWithAudio()
+    await import('./bootstrap').then((m) => m.ensureTree('tok', ['timelog']))
+    drive.failName(e1.attachments[0].file, 400)
+    const { drainStream } = await import('./queue')
+    for (let i = 1; i <= 5; i++) await drainStream('tok', 'timelog')
+
+    await captureWithAudio() // e2: a fresh, healthy row queued behind the parked e1
+    const events: unknown[] = []
+    const res = await drainStream('tok', 'timelog', (e) => events.push(e))
+    expect(res).toMatchObject({ outcome: 'error', uploaded: 1 })
+    // itemsTotal counts both rows (the parked one is neither "done" nor
+    // dropped from the total), but only e2's batch reports upload-progress.
+    expect(events).toEqual([
+      { kind: 'upload-start', stream: 'timelog', itemsTotal: 2 },
+      { kind: 'upload-progress', stream: 'timelog', delta: 1 },
+    ])
+  })
+
   it('never batches a parked row with a healthy neighbor (#87)', async () => {
     // Batching a still-poison row into a segment with a healthy neighbor
     // would fail the whole segment every drain (segments commit as a unit),
