@@ -29,6 +29,15 @@ npm run preview            # serve the production build locally
   `npm run build`, then deploys to GitHub Pages. Never push to `main` with
   failing tests — a push is a deploy.
 
+### Always open a PR
+
+- **Never push directly to `main`.** Every change — code or docs — goes on a
+  branch and is submitted as a pull request (`gh pr create --base main`), so
+  changes get CI and a review point before they deploy.
+- Branch names: `feat/…`, `fix/…`, or `docs/…` as appropriate.
+- A PR must be green (tests, lint, build) and self-contained: code, tests,
+  and the doc updates required by the policy below land in the same PR.
+
 ### Before any commit
 
 - Run `npm test` and `npm run lint` (and `npm run build` for type-checking
