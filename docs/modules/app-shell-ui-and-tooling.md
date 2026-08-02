@@ -48,7 +48,7 @@ Build-time constants: `GOOGLE_CLIENT_ID` (a public OAuth browser-client identifi
 
 ### src/ui/index.ts
 
-Barrel for the design system. Re-exports the tokens (`cx`, `motion`, `shape`, `tap`, `tone`, `type_`), every primitive: `Button`, `IconButton`, `Card`, `EmptyState`, `Section`, `ErrorBoundary`, `Sheet`, `useKeyboardInset`, `Toast`, `FieldRow`, `Select`, `TextArea`, `TextInput`, `Toggle`, `ScreenHeader`, and the shared icon set (`MicIcon`, `CameraIcon`, `PencilIcon`, `PlusIcon`, `PinIcon`, `TrashIcon`, `captureIcon`, types `CaptureKind`/`IconProps`). Screens import from here — never from token/palette classes directly (C15).
+Barrel for the design system. Re-exports the tokens (`cx`, `motion`, `shape`, `tap`, `tone`, `type_`), every primitive: `Button`, `IconButton`, `Card`, `EmptyState`, `Section`, `ErrorBoundary`, `Sheet`, `useKeyboardInset`, `Toast`, `FieldRow`, `Select`, `TextArea`, `TextInput`, `Toggle`, the numeric-draft helpers (`parseNumericDraft`, `canCommitNumericDraft`, `commitNumericDraft`), `ScreenHeader`, and the shared icon set (`MicIcon`, `CameraIcon`, `PencilIcon`, `PlusIcon`, `PinIcon`, `TrashIcon`, `captureIcon`, types `CaptureKind`/`IconProps`). Screens import from here — never from token/palette classes directly (C15).
 
 ### src/ui/tokens.ts
 
@@ -93,6 +93,20 @@ Form primitives sharing a `FIELD` base (control radius, strong border, surface b
 - `Toggle({ checked, onChange, label })` — labelled iOS-style switch (`role="switch"`, `aria-checked`); `onChange` receives the new boolean.
 - `FieldRow({ label, children })` — `min-h-11` label row with a trailing control.
 
+### src/ui/numberDraft.ts
+
+Pure draft-state helpers for numeric picker fields (place radius, max clip length).
+Numeric inputs keep their in-progress value as a string so empty and partial input stay
+representable while typing — the field never snaps back to a number mid-edit; validation
+and min/max clamping happen only at the commit boundary (Save tap or blur), never per
+keystroke. Exports: `parseNumericDraft(draft): number | undefined` (finite number, or
+`undefined` when empty/invalid), `canCommitNumericDraft(draft): boolean` (the can-save
+predicate — out-of-range values are still committable, commit clamps rather than
+rejects), and `commitNumericDraft(draft, min, max?): number | undefined` (round to a
+whole number and clamp into `[min, max]`; `undefined` for empty/invalid drafts so
+callers skip the commit or disable Save). Unit-tested in `numberDraft.test.ts` (empty
+allowed as draft but not committable, partial input, out-of-range clamping, round-trip).
+
 ### src/ui/ScreenHeader.tsx
 
 `ScreenHeader({ title, subtitle?, trailing? })` — screen title row: serif `type_.title` `<h1>`, optional muted subtitle, optional trailing element (button etc.). Sits below the iOS status bar because `App` pads `main` with `env(safe-area-inset-top)`.
@@ -106,8 +120,8 @@ Shared SVG icon set — every capture glyph is drawn once here so screens stay v
 Default-exports `SettingsScreen`; all state flows through `useAppStore`. Sections:
 
 - **Google** (private `GoogleSection`): shows connection status from `driveConnection` (`connected` / `expired` / `disconnected`, mapped through `CONNECTION_LABEL`), refreshing it on mount. A private `SyncStatusLine` renders the local sync-state rollup (`summarizeSyncStatuses` over the sync rows + the persisted `lastSyncAt`) above the buttons: "Out of sync" in the danger tone when anything is pending, anything errored, or no clean cycle has ever completed, else "Up to date"; plus "N entries waiting" / "N failed" counts, the last error message, and "Last synced …" / "Never synced". Connected → "Sync now" (`drainSync`, disabled while `syncing`), "Disconnect", and the target-calendar picker (private `CalendarPicker`, backed by `src/gcal` — see [gcal.md](gcal.md)); otherwise a Connect/Reconnect primary button. A manual sync's `SyncResult` is summarized inline via `syncResultLabel` — e.g. "Synced 2 entries · pulled 1 entry", "Sync busy — will retry shortly", or "Sync failed: …".
-- **Capture**: numeric max-clip-length field (clamped 10–120 s on change) and a "Keep audio locally" toggle, both writing `streamSettings` via `updateStreamSettings`.
-- **Location**: `locationEnabled` toggle plus places management — lists saved places (name, radius, optional "near {address}" line, per-row `dangerGhost` Remove). "Add current location as place" calls `navigator.geolocation.getCurrentPosition` (8 s timeout, 60 s `maximumAge`, low accuracy) into `pendingPlace`; the inline form collects name and radius, and `savePendingPlace` best-effort `reverseGeocode`s an address (never blocks the save) before `addPlace` with a `crypto.randomUUID()` id.
+- **Capture**: numeric max-clip-length field and a "Keep audio locally" toggle, both writing `streamSettings` via `updateStreamSettings`. The clip field is string-draft-backed (`src/ui/numberDraft`): while typing, the raw string — including empty — is shown untouched; valid values commit (clamped 10–120 s) as they're typed, empty/invalid drafts commit nothing, and blur snaps the field back to the last saved value.
+- **Location**: `locationEnabled` toggle plus places management — lists saved places (name, radius, optional "near {address}" line, per-row `dangerGhost` Remove). "Add current location as place" calls `navigator.geolocation.getCurrentPosition` (8 s timeout, 60 s `maximumAge`, low accuracy) into `pendingPlace`; the inline form collects name and a string-backed radius draft (empty while editing is fine; "Save place" is disabled until both the name and the radius draft are valid), and `savePendingPlace` clamps the radius via `commitNumericDraft` (floor 10 m) and best-effort `reverseGeocode`s an address (never blocks the save) before `addPlace` with a `crypto.randomUUID()` id.
 - **Assistant**: `assistantEnabled` toggle; when on, shows the model label (`modelLabel(appSettings.assistantModel)` from `assistant/config`) and a note that chat runs against `llm.elimelt.com` via read-only tools.
 - **Data** (private `StorageLines`): local + Drive storage usage, then "Wipe local data". Local numbers come from the store (`localSpace`/`appSpace`, refreshed via `refreshSpace()` on entry and by `wipe()` so the display never goes stale): the origin-level `storage.estimate()` line ("On this device: X used of Y", hidden when the API is unsupported) and an app-data breakdown (log / attachments / chats via `formatBytes`, from `src/store/space`). The Drive line renders only when connected and is fetched on demand — a "Check Drive storage" tap calls `fetchDriveSpace` (`src/drive/space`) and shows account usage/quota plus this app's footprint; failures show an inline retry note. Never polled: Settings entry stays network-free. "Wipe local data" uses an inline two-tap confirm (`wipeArmed` auto-disarms after 4 s; no `window.confirm`, which feels broken in standalone PWAs). The armed second tap calls `wipe()` then `loadSettings()`.
 
