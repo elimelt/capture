@@ -11,7 +11,7 @@ option. Camera and text entry are secondary paths one tap away. Every capture ta
 best-effort geolocation snapshot (`geo.ts`) that resolves concurrently with recording and
 never throws. Captured entries appear in a same-day list of `EntryCard`s that support
 playback, inline note/transcript editing, adding attachments (note/photo/audio),
-changing the captured time, editing location on a map, per-entry Drive sync status,
+changing the captured time, editing location on a map, a per-entry lifecycle badge,
 undoable delete, and an Edit sheet (`EditEntrySheet`) that changes the capture date
 and time and removes any attachment — every entry field is editable, always via new
 `amend`/`revoke` events, never mutation.
@@ -19,8 +19,12 @@ and time and removes any attachment — every entry field is editable, always vi
 The module writes exclusively through the zustand store (`src/store/appStore.ts`):
 `capture` appends a capture event, `amend` patches entries (time, location, attachment
 add/remove), and `revoke` deletes them. All writes land in the append-only local event
-log (`src/store/events.ts`, folded per `src/contract`) and are eagerly drained to Google
-Drive; `SyncBadge` reflects the per-event-id upload status from `src/store/db.ts`.
+log (`src/store/events.ts`, folded per `src/contract`) and are drained to Google Drive
+only from Settings' "Sync now" (manual-only, SPEC §8.4). Because of that, a fresh
+entry's sync row sits at `queued` indefinitely; `lifecycle.ts` (#79) maps the entry's
+real sync row plus its pending-enrichment state to one of three *display* lifecycles —
+`'understanding'`, `'settled'`, `'failed'` — so "Queued" (infrastructure language) never
+reaches the card. `LifecycleBadge` renders that mapping.
 
 Each `EntryCard` defaults to a **collapsed** state (#78): time, place-label context,
 the entry's primary text (clamped to two lines) or its primary clip's play button, and
@@ -201,8 +205,55 @@ hides the entry immediately and appends the revoke only after the undo window.
   `editPlan.draftPatch` from the Edit sheet's draft: a recomposed `capturedAt` and/or
   `removeAttachments`), so one sheet Save is exactly one amend event.
 
-It also reads `streamSettings.maxClipSec` and looks up each entry's sync status by
-`entry.id` from `syncStatuses`.
+It also reads `streamSettings.maxClipSec` and looks up each entry's sync row by
+`entry.id` from `syncStatuses`, passing the whole `SyncStatusRow | undefined` down as
+`EntryCard`'s `sync` prop — `EntryCard` (not `EntryList`) computes the display
+lifecycle, since it also needs the entry's attachments to derive
+`hasPendingEnrichment` (`lifecycle.ts`, #79).
+
+### src/capture/lifecycle.ts
+
+**Purpose:** Pure display-lifecycle mapping (#79) — no I/O, no React; tested directly
+(`lifecycle.test.ts`). Retires "Queued" from entry-card copy without inventing new
+stored state: it's a mapping over the existing `SyncStatusRow` (`src/store/db.ts`) and a
+derived pending-enrichment flag. Errors never get quieter than before.
+
+**Exports:**
+
+- `type EntryLifecycle = 'understanding' | 'settled' | 'failed'`.
+- `entryLifecycle(sync: SyncStatusRow | undefined, hasPendingEnrichment: boolean):
+  EntryLifecycle` — a sync `status: 'error'` always maps to `'failed'`, regardless of
+  `hasPendingEnrichment` (invariant: no input combination maps an error to anything
+  else). Otherwise: `'understanding'` while `hasPendingEnrichment`, else `'settled'`
+  (covers both `'queued'` — manual-sync-only, so this is the common case — and
+  `'uploaded'`, and an absent row for a never-queued pulled entry).
+- `lifecycleLabel(lifecycle): string | null` — `null` for `'settled'` (render nothing);
+  `'Organizing…'` for `'understanding'` (the design review's suggested quiet, integrated
+  copy — covers photo captioning as well as audio transcription, so it reads better than
+  "Listening…"); `'Upload failed — will retry'` for `'failed'` (unchanged from the old
+  SyncBadge's error copy).
+- `hasPendingEnrichment(entry: Entry): boolean` — true iff the entry has an audio or
+  photo attachment with no machine text derived from it yet, reusing
+  `isTranscript`/`isCaption` (`src/transcribe/plan.ts`, `src/vision/plan.ts`) rather than
+  re-deriving the discriminator. Evaluated over the entry's current (folded)
+  attachments, not the raw event history those two plan functions walk — a deliberate
+  trade-off so the card can compute this synchronously from an `Entry` alone; true for
+  the whole time a transcript/caption is streaming in, since the derived text has no
+  persisted attachment until the runner's amend lands, so this one boolean covers both
+  "pending" and "streaming" without consulting the live-text stores
+  (`src/store/livetext.ts`) directly.
+
+Pure function of its inputs, so it composes independently of the (concurrent)
+`enrichmentEnabled` setting: with enrichment disabled, `hasPendingEnrichment` is always
+false and non-error entries read `'settled'`.
+
+### src/capture/lifecycle.test.ts
+
+Vitest unit tests for `entryLifecycle`/`lifecycleLabel`/`hasPendingEnrichment`:
+exhaustive over the 3 (`status`: `queued`/`uploaded`/absent) × 2 (`hasPendingEnrichment`)
+space plus the `error` cases, the "error always wins" invariant, `lifecycleLabel`'s
+per-lifecycle copy (including that `'failed'` mentions retry and `'settled'` is `null`),
+and `hasPendingEnrichment` over audio/photo/note/mixed attachment combinations.
 
 ### src/capture/cardView.ts
 
@@ -233,17 +284,19 @@ place label / address / bare-coordinate / no-location cases.
 ### src/capture/EntryCard.tsx
 
 **Purpose:** One entry's card, defaulting to a **collapsed** state and expanding
-in-place to reveal everything else (#78): header (editable time, place label, sync
+in-place to reveal everything else (#78): header (editable time, place label, lifecycle
 badge, duration, play button), collapsed primary-text preview or full attachment body +
 mini map when expanded, labelled action row (expanded only), and the sheets/inputs
 those actions open.
 
 **Exports:** `EntryCard(props: EntryCardProps)` and `timeLabel(iso: string): string`
-(locale time like "9:04 AM"). Props: `entry`, `maxClipSec`, `syncStatus?`, and callbacks
-`onDelete`, `onSetTime(time)`, `onAddNote(text)`, `onAddPhoto(file)`,
+(locale time like "9:04 AM"). Props: `entry`, `maxClipSec`, `sync?: SyncStatusRow`, and
+callbacks `onDelete`, `onSetTime(time)`, `onAddNote(text)`, `onAddPhoto(file)`,
 `onAddAudio(result)`, `onEditText(oldFile, text, derivedFrom?)`,
 `onRemoveAttachment(file)`, `onSetLocation(location | null)`, `onApplyEdit(patch)` —
 unchanged by the collapse/expand work, so `EntryList`'s amend wiring needed no changes.
+The card computes its own `EntryLifecycle` from `sync` + `hasPendingEnrichment(entry)`
+(`lifecycle.ts`, #79) and renders it via `LifecycleBadge`.
 
 **Key behaviors:**
 
@@ -515,17 +568,21 @@ interactive map. Lazy chunk (Leaflet JS + CSS loaded only when a card has a loca
   when `placeLabel` is set, a spruce accuracy `Circle` of radius
   `max(accuracyM, 40)` meters.
 
-### src/capture/SyncBadge.tsx
+### src/capture/LifecycleBadge.tsx
 
-**Purpose:** Per-entry Drive upload status badge (SPEC §8.4), fed from the sync rows the
-drive drainer advances.
+**Purpose:** Per-entry display-lifecycle badge (#79; replaces the old SyncBadge).
+Renders the pure `entryLifecycle` mapping (`lifecycle.ts`) instead of raw sync status,
+so "Queued" cannot reach the card.
 
-**Export:** `SyncBadge({ status }: { status: SyncStatus | undefined })` where
-`SyncStatus` is `'queued' | 'uploaded' | 'error'` from `src/store/db`.
+**Export:** `LifecycleBadge({ lifecycle }: { lifecycle: EntryLifecycle })`.
 
-**Behavior:** renders nothing when `status` is `undefined` (never queued) or
-`'uploaded'` — a synced entry needs no chrome. Otherwise a small dot + label: "Queued"
-(faint) or "Failed" (danger tone, title "Upload failed — will retry").
+**Behavior:** renders nothing when `lifecycleLabel(lifecycle)` is `null` — the
+`'settled'` case, covering both a still-`queued` (manual-sync-only, SPEC §8.4) and an
+already-`uploaded` entry with nothing pending; a synced-or-merely-queued entry needs no
+chrome. `'understanding'` renders quiet muted text with no dot ("Organizing…"), read as
+ambient processing rather than infrastructure. `'failed'` renders a small danger dot +
+label ("Upload failed — will retry") — unchanged from the old SyncBadge's error case,
+so real failures never get quieter.
 
 ### src/capture/useRecorder.ts
 
@@ -808,6 +865,13 @@ re-throw, matching the appStore `guard` convention.
 - **Card expansion is view state, never contract state (#78):** `EntryCard`'s `expanded`
   flag is local `useState`, never written to the event log and never read back from it —
   the append-only log carries user data, not UI state. Every card starts collapsed.
+- **"Queued" must never reach the card (#79):** `lifecycle.ts` is the only place that
+  decides entry-card copy from sync/enrichment state; a sync `error` always maps to
+  `'failed'` regardless of pending enrichment — real failures must never read quieter.
+  Don't reintroduce a raw `SyncStatus` render in `EntryCard`/`EntryList`; route through
+  `entryLifecycle`/`lifecycleLabel` instead. The Settings `SyncStatusLine` aggregate and
+  the app-icon badge (`badgeCount` in `App.tsx`) are separate surfaces, unaffected by
+  this mapping — they still report the real pending/failed counts.
 - **The six-icon action row only exists expanded:** the collapsed card renders no
   add/edit/delete affordances at all, only the pure-view-model-driven overflow button;
   all edit flows (note/photo/audio/location/edit/delete) are reachable exactly as
