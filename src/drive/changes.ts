@@ -16,9 +16,7 @@
  * whatever the old engine ignored, then mints a fresh cursor.
  */
 import { getDb } from '../store/db'
-
-const CHANGES_PREFIX = 'drive:changes:'
-const CHANGES_KEY = (stream: string) => `${CHANGES_PREFIX}${stream}`
+import { DRIVE_CHANGES_PREFIX as CHANGES_PREFIX, driveChangesKey as CHANGES_KEY } from '../store/metaKeys'
 
 /**
  * Format 2: this engine reads batched log segments (SPEC §5.7). A format-1

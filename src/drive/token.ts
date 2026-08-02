@@ -6,8 +6,8 @@
  * testable storage + expiry layer the rest of drive/ reads.
  */
 import { getDb } from '../store/db'
+import { DRIVE_TOKEN_KEY as TOKEN_KEY } from '../store/metaKeys'
 
-const TOKEN_KEY = 'drive:token'
 /** Treat a token as expired a minute early so an in-flight drain never 401s. */
 const SKEW_MS = 60_000
 

@@ -26,6 +26,12 @@ import { deviceTz, toLocalIso } from '../contract/time'
 import { BUILTIN_STREAMS } from '../streams/registry'
 import type { TimeboxDB } from './db'
 import {
+  LEGACY_SETTINGS_APP_KEY,
+  legacySettingsStreamKey,
+  SETTINGS_MIGRATION_MARKER,
+  seqKey,
+} from './metaKeys'
+import {
   appSettingsEntries,
   APP_SETTINGS_DEFAULTS,
   diffSettings,
@@ -37,8 +43,10 @@ import {
   type SettingsValue,
 } from './settings'
 
-/** Meta key marking the migration as applied (the idempotency guard). */
-export const SETTINGS_MIGRATION_MARKER = 'migrated:settings-stream-v1'
+/** Meta key marking the migration as applied (the idempotency guard) —
+ * re-exported from the central registry (`store/metaKeys.ts`, issue #57) so
+ * existing imports of this module keep working. */
+export { SETTINGS_MIGRATION_MARKER }
 
 /**
  * Wide enough for both callers: the versionchange upgrade tx (db.ts) and a
@@ -78,14 +86,14 @@ export async function migrateSettingsV1(tx: MigrationTx): Promise<void> {
 
   const payloads: SettingsSetPayload[] = [
     ...payloadsFromLegacy(
-      await meta.get('settings:app'),
+      await meta.get(LEGACY_SETTINGS_APP_KEY),
       appSettingsEntries(APP_SETTINGS_DEFAULTS),
     ),
   ]
   for (const { id } of BUILTIN_STREAMS) {
     payloads.push(
       ...payloadsFromLegacy(
-        await meta.get(`settings:stream:${id}`),
+        await meta.get(legacySettingsStreamKey(id)),
         streamSettingsEntries(id, STREAM_SETTINGS_DEFAULTS),
       ),
     )
@@ -94,8 +102,8 @@ export async function migrateSettingsV1(tx: MigrationTx): Promise<void> {
   // Mirror events.ts#append() by hand: seq counter, event record, blob, and
   // queued sync row, all inside this upgrade transaction. capturedAt equals
   // loggedAt (no meaningful domain time), no location.
-  const seqKey = `nextSeq:${SETTINGS_STREAM}`
-  let seq = ((await meta.get(seqKey)) as number | undefined) ?? 1
+  const settingsSeqKey = seqKey(SETTINGS_STREAM)
+  let seq = ((await meta.get(settingsSeqKey)) as number | undefined) ?? 1
   for (const payload of payloads) {
     const loggedAt = toLocalIso(new Date())
     const event: CaptureEvent = {
@@ -125,6 +133,6 @@ export async function migrateSettingsV1(tx: MigrationTx): Promise<void> {
       phase: 'attachments-pending',
     })
   }
-  if (payloads.length > 0) await meta.put(seq, seqKey)
+  if (payloads.length > 0) await meta.put(seq, settingsSeqKey)
   await meta.put(true, SETTINGS_MIGRATION_MARKER)
 }

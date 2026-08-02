@@ -16,12 +16,11 @@
  */
 import { getDb } from '../store/db'
 import { stripPendingFileIds } from '../store/events'
+import { DRIVE_ACCOUNT_KEY as ACCOUNT_KEY } from '../store/metaKeys'
 import { getAboutUser } from './client'
 import { clearAllChangesTokens } from './changes'
 import { resetIdPool } from './ids'
 import { clearTree } from './tree'
-
-const ACCOUNT_KEY = 'drive:account'
 
 /** The permissionId the local caches are bound to, if any grant ever completed. */
 export async function getStoredAccountId(): Promise<string | undefined> {

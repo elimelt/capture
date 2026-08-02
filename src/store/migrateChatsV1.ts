@@ -27,6 +27,7 @@ import { newEventId } from '../contract/ids'
 import { deviceTz, toLocalIso } from '../contract/time'
 import { EVENT_SCHEMA, type AmendEvent, type CaptureEvent } from '../contract/types'
 import type { StoredChatRow, TimeboxDB } from './db'
+import { CHATS_MIGRATION_MARKER, seqKey } from './metaKeys'
 
 /**
  * Stream id + payload schema. Owned by `assistant/chatSync.ts`; duplicated
@@ -36,10 +37,12 @@ import type { StoredChatRow, TimeboxDB } from './db'
 export const MIGRATED_CHATS_STREAM = 'assistant-chats'
 export const MIGRATED_CHAT_MESSAGE_PAYLOAD_SCHEMA = 'capture.chatmessage.v1'
 
-/** Meta key marking the migration as applied on this device. */
-export const CHATS_MIGRATION_MARKER = 'migrated:chats:v1'
+/** Meta key marking the migration as applied on this device — re-exported
+ * from the central registry (`store/metaKeys.ts`, issue #57) so existing
+ * imports of this module keep working. */
+export { CHATS_MIGRATION_MARKER }
 
-const SEQ_KEY = `nextSeq:${MIGRATED_CHATS_STREAM}`
+const SEQ_KEY = seqKey(MIGRATED_CHATS_STREAM)
 
 /**
  * Works inside the versionchange upgrade transaction and, for tests and

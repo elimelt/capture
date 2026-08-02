@@ -13,6 +13,7 @@
 import { newEventId } from '../../contract/ids'
 import { deviceTz, toLocalIso } from '../../contract/time'
 import { getDb } from '../../store/db'
+import { seqKey } from '../../store/metaKeys'
 import { compareOverlayEvents, foldOverlay, type OverlayFoldOptions } from './fold'
 import type {
   CalendarEventRef,
@@ -26,8 +27,9 @@ import type {
 } from './types'
 import { OVERLAY_SCHEMA, OVERLAY_STREAM } from './types'
 
-/** Same per-stream counter convention as store/events.ts (`nextSeq:<stream>`). */
-const SEQ_KEY = `nextSeq:${OVERLAY_STREAM}`
+/** Same shared per-stream counter convention as store/events.ts, via the
+ * central `store/metaKeys.ts` registry (issue #57) — no re-derived template. */
+const SEQ_KEY = seqKey(OVERLAY_STREAM)
 
 interface AppendBase {
   id: string
