@@ -58,6 +58,19 @@ export default defineConfig({
               cacheableResponse: { statuses: [0, 200] },
             },
           },
+          // Reverse-geocoding (Nominatim). Its usage policy *requires* caching
+          // results client-side; we also cache in IndexedDB. Cache-first here
+          // is a second line of defence so repeat coordinate cells never
+          // re-hit the donated server.
+          {
+            urlPattern: /^https:\/\/nominatim\.openstreetmap\.org\//,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'nominatim',
+              expiration: { maxEntries: 200, maxAgeSeconds: 60 * 60 * 24 * 90 },
+              cacheableResponse: { statuses: [0, 200] },
+            },
+          },
         ],
       },
       manifest: {

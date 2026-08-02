@@ -10,6 +10,8 @@ export interface GeoLocation {
   lng: number
   accuracyM: number
   placeLabel?: string
+  /** Short reverse-geocoded address ("near …"); lazily filled, best-effort. */
+  address?: string
 }
 
 export type AttachmentKind = 'audio' | 'text' | 'photo'
@@ -51,6 +53,12 @@ export interface CaptureEvent extends EventBase {
 export interface AmendPatch {
   capturedAt?: string
   location?: GeoLocation
+  /**
+   * Clear the entry's location (append-only removal — the prior capture/amend
+   * still carries it in the log). Distinct from an absent `location`, which
+   * means "no change". Ignored if `location` is also present.
+   */
+  clearLocation?: boolean
   /**
    * Files of prior attachments the fold hides from the entry (append-only
    * removal — the files and their history stay in the log). Editing a note

@@ -199,13 +199,15 @@ interface CaptureEvent extends EventBase {
   capturedAt: string;          // domain time: when the capture button was tapped
   attachments: Attachment[];   // >= 1; primary kind comes from the stream config
   location?: { lat: number; lng: number; accuracyM: number;
-               capturedAt: string; placeLabel?: string };
+               capturedAt: string; placeLabel?: string;
+               address?: string };   // reverse-geocoded "near …" label
 }
 
 interface AmendEvent extends EventBase {
   type: 'amend';
   targets: string[];           // ids of prior capture events
   patch?: { capturedAt?: string; location?: GeoLocation;
+            clearLocation?: boolean;         // append-only location removal
             removeAttachments?: string[] };  // files the fold hides (append-only
                                              // removal; files stay in the log)
   attachments?: Attachment[];  // appended to the target entry
@@ -613,9 +615,15 @@ this scenario is the acceptance test for the extensibility invariant (§5.5).
 
 - Snapshot at capture only, via `getCurrentPosition`; never blocks capture; entirely
   optional (Settings toggle removes all geolocation calls).
-- No reverse-geocoding service in v1 — labels come from user-defined Places (§3.4).
+- Labels come from user-defined Places (§3.4). A best-effort reverse geocode
+  (OSM Nominatim) adds a short `address` ("near …") to Places and to a location that a
+  user edits on an entry; it never blocks, is cached in IndexedDB by a rounded coordinate
+  cell, and is throttled to ≤1 req/sec per Nominatim's usage policy.
 - Coordinates + label travel inside entry metadata to Drive; the timelog skill may put
   the label in the event `location` field.
+- Entry location is editable in-app (a small map preview in the card expands to a
+  draggable-pin editor); edits emit an amend with `patch.location`, and clearing emits
+  `patch.clearLocation` (append-only — prior events keep the coordinate in the log).
 
 ---
 

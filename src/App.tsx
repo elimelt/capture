@@ -12,14 +12,9 @@ import { Toast, cx, tone, type_ } from './ui'
 // chat bundle (AI SDK + markdown renderer).
 const ChatScreen = lazy(() => import('./assistant/ChatScreen'))
 
-// Lazy so Leaflet + its CSS stay out of the initial bundle; only users who
-// open the Map tab download it.
-const MapScreen = lazy(() => import('./places/MapScreen'))
-
 const TABS = [
   { to: '/', label: 'Capture' },
   { to: '/day', label: 'Day' },
-  { to: '/map', label: 'Map' },
   { to: '/chat', label: 'Chat', assistant: true },
   { to: '/settings', label: 'Settings' },
 ]
@@ -96,14 +91,6 @@ export default function App() {
             <Route path="/" element={<CaptureScreen />} />
             <Route path="/day" element={<DayScreen />} />
             <Route path="/day/:date" element={<DayScreen />} />
-            <Route
-              path="/map"
-              element={
-                <Suspense fallback={null}>
-                  <MapScreen />
-                </Suspense>
-              }
-            />
             <Route
               path="/chat"
               element={

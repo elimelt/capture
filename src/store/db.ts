@@ -32,6 +32,17 @@ export interface Place {
   lat: number
   lng: number
   radiusM: number
+  /** Reverse-geocoded address ("near …"); filled when the place is added. */
+  address?: string
+}
+
+/** Cached reverse-geocode result, keyed by rounded "lat,lng" (SPEC §7). */
+export interface GeocacheRow {
+  /** Rounded "lat,lng" cell key. */
+  key: string
+  address: string
+  /** ISO local time the lookup was cached. */
+  cachedAt: string
 }
 
 /**
@@ -69,6 +80,11 @@ interface TimeboxDB extends DBSchema {
     key: string
     value: Place
   }
+  /** Reverse-geocode cache: coordinates → address, so we hit Nominatim once. */
+  geocache: {
+    key: string
+    value: GeocacheRow
+  }
   /** Small key-value bag: settings, per-stream counters. */
   meta: {
     key: string
@@ -86,7 +102,7 @@ export type TimeboxDatabase = IDBPDatabase<TimeboxDB>
 let dbPromise: Promise<TimeboxDatabase> | undefined
 
 export function getDb(): Promise<TimeboxDatabase> {
-  dbPromise ??= openDB<TimeboxDB>('timebox', 3, {
+  dbPromise ??= openDB<TimeboxDB>('timebox', 4, {
     async upgrade(db, oldVersion, _newVersion, tx) {
       if (oldVersion < 1) {
         const events = db.createObjectStore('events', { keyPath: ['stream', 'seq'] })
@@ -127,6 +143,10 @@ export function getDb(): Promise<TimeboxDatabase> {
           })
         }
         if (legacy !== undefined) await meta.delete('assistant:chat')
+      }
+      if (oldVersion < 4) {
+        // v4: reverse-geocode cache so a coordinate cell is looked up once.
+        db.createObjectStore('geocache', { keyPath: 'key' })
       }
     },
   })

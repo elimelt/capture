@@ -238,11 +238,26 @@ describe('parseEvent round-trips', () => {
     const e: AmendEvent = {
       ...AMEND,
       patch: {
-        location: { lat: 40.7, lng: -74, accuracyM: 10 },
+        location: { lat: 40.7, lng: -74, accuracyM: 10, address: 'Main St, Cambridge' },
         removeAttachments: ['000041_2026-08-02T09-04-11-0400_a1b2c3.m4a'],
       },
     }
     expect(parseEvent(serializeEvent(e))).toEqual(e)
+  })
+
+  it('round-trips an amend that clears the location', () => {
+    const e: AmendEvent = { ...AMEND, patch: { clearLocation: true } }
+    expect(parseEvent(serializeEvent(e))).toEqual(e)
+  })
+
+  it('omits clearLocation from the wire format when a location is also set', () => {
+    const e: AmendEvent = {
+      ...AMEND,
+      patch: { location: { lat: 40.7, lng: -74, accuracyM: 10 }, clearLocation: true },
+    }
+    const parsed = parseEvent(serializeEvent(e)) as AmendEvent
+    expect(parsed.patch?.location).toEqual({ lat: 40.7, lng: -74, accuracyM: 10 })
+    expect('clearLocation' in (parsed.patch ?? {})).toBe(false)
   })
 })
 

@@ -37,6 +37,7 @@ export function fold(events: readonly LogEvent[], opts: FoldOptions = {}): Entry
           if (!entry || entry.revoked) continue
           if (e.patch?.capturedAt !== undefined) entry.capturedAt = e.patch.capturedAt
           if (e.patch?.location !== undefined) entry.location = e.patch.location
+          else if (e.patch?.clearLocation) entry.location = undefined
           // Removals before additions: an edit is one amend that removes the
           // old file and adds its replacement.
           if (e.patch?.removeAttachments !== undefined) {

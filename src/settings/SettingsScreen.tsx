@@ -1,6 +1,7 @@
 /** Screen 3 — Settings (SPEC §4.3, M1 subset). */
 import { useEffect, useState } from 'react'
 import { modelLabel } from '../assistant/config'
+import { reverseGeocode } from '../places/geocode'
 import { useAppStore } from '../store/appStore'
 import {
   Button,
@@ -67,12 +68,15 @@ export default function SettingsScreen() {
 
   async function savePendingPlace() {
     if (!pendingPlace || !placeName.trim()) return
+    // Best-effort reverse geocode for a "near …" label; never blocks the save.
+    const address = await reverseGeocode(pendingPlace.lat, pendingPlace.lng)
     await addPlace({
       id: crypto.randomUUID(),
       name: placeName.trim(),
       lat: pendingPlace.lat,
       lng: pendingPlace.lng,
       radiusM: placeRadius,
+      ...(address ? { address } : {}),
     })
     setPendingPlace(null)
   }
@@ -151,11 +155,16 @@ export default function SettingsScreen() {
                     tone.textSecondary,
                   )}
                 >
-                  <span className="truncate">
+                  <span className="min-w-0 truncate">
                     {p.name}
                     <span className={cx('ml-1.5', type_.caption, tone.textFaint)}>
                       {p.radiusM}m
                     </span>
+                    {p.address && (
+                      <span className={cx('block truncate', type_.caption, tone.textFaint)}>
+                        near {p.address}
+                      </span>
+                    )}
                   </span>
                   <Button variant="dangerGhost" size="sm" onClick={() => void removePlace(p.id)}>
                     Remove
