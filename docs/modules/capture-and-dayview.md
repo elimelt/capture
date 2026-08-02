@@ -162,12 +162,17 @@ actions open.
 
 **Key behaviors:**
 
+- **Header grouping:** one flex row — time + place label tightly grouped on the left,
+  sync badge + clip duration + play button pushed to the far right. The time label has
+  no underline decoration; it is still the tap target for the native picker (below),
+  and the Edit sheet provides the second, labelled path to the same field.
 - **Time editing (B8):** the time label is a button layered over an invisible
   `<input type="time">`; tapping calls `showPicker()` (fallback `focus()`) so iOS shows
   its native wheel picker. `onChange` fires `onSetTime` only for non-empty values.
 - **Primary clip playback (B10):** the *first* audio attachment plays from the header
-  via `useAudioPlayback(audio?.file)`; while playing, a progress fill widens behind the
-  ▶/■ icon. Later clips render inside `AttachmentBody`.
+  via `useAudioPlayback(audio?.file)` as an `accent`-variant `IconButton` (accent wash +
+  border so it reads as interactive against the card); while playing, a progress fill
+  widens behind the ▶/■ icon. Later clips render inside `AttachmentBody`.
 - **Per-card recorder:** "+ audio" uses its own `useRecorder()` instance so entries can
   hold multiple clips; while recording, the action row is replaced by a compact timer
   bar with Discard/Done. If that recorder errors, the "+ audio" button becomes a
@@ -179,12 +184,15 @@ actions open.
   `durationSec`s for the primary clip; `SyncBadge` reflects `syncStatus`.
 - Hidden photo input (camera capture) and a `TextSheet` for "+ note" mirror the
   capture-screen patterns.
-- **Action-row icons:** the note/photo/audio buttons render the same glyphs as the main
-  CTA — pencil/camera/mic via `captureIcon` from `src/ui` — so an entry's add actions
-  share the capture control's visual language; location uses `PinIcon`/`PlusIcon`,
-  edit uses `SlidersIcon`, and delete uses `TrashIcon` from the same shared set.
-- **Edit sheet:** an "Edit" ghost button (sliders glyph — the pencil already means
-  *text* in this row) opens `EditEntrySheet`; its Save calls `onApplyEdit(patch)`.
+- **Action bar:** a full-bleed hairline divider separates the card's content from a
+  footer of icon-only 44 px `IconButton`s (no text labels; names live in `aria-label`
+  and `title`): add actions on the left — note/photo/audio render the same glyphs as
+  the main CTA (pencil/camera/mic via `captureIcon` from `src/ui`, so an entry's add
+  actions share the capture control's visual language) plus location
+  (`PinIcon`/`PlusIcon`) — and on the right, Edit (`SlidersIcon` — the pencil already
+  means *text* here) opening `EditEntrySheet` (Save → `onApplyEdit(patch)`), then
+  Delete (`TrashIcon`, `danger` variant — muted clay) at the far edge. A recorder
+  error swaps the audio button for a labelled "mic unavailable" reset button.
 
 ### src/capture/editPlan.ts
 
@@ -225,6 +233,27 @@ emits the patch and closes. Removals are append-only fold-time hides
 (`patch.removeAttachments`); note/transcript *text* editing stays inline on the card
 (`AttachmentBody`), and location keeps its own map sheet.
 
+### src/capture/attachmentGroups.ts
+
+**Purpose:** Pure grouping of an entry's attachments for card rendering — no I/O,
+tested directly (`attachmentGroups.test.ts`).
+
+**Exports:** `groupAttachments(attachments): AttachmentGroups` plus the `PhotoGroup`
+and `AttachmentGroups` interfaces. Splits attachments into machine **captions**
+(`isCaption` from `src/vision/plan`: text with `derivedFrom` pointing at a `_photo`
+file), audio **transcripts** (text with `derivedFrom`, not a caption), user **notes**
+(text without `derivedFrom`), and **audio** (all clips, in order — the first plays
+from the card header). Each photo is paired with the captions derived from it
+(`photoGroups: { photo, captions }[]`, so thumbnail + caption render as one row);
+captions whose source photo is no longer on the entry come back as `orphanCaptions`.
+
+### src/capture/attachmentGroups.test.ts
+
+Vitest unit tests for `groupAttachments`: empty input, transcript/note/caption
+classification, photo↔caption pairing (only its own captions, attachment order
+preserved), captionless photos, orphan captions when the photo was removed, and audio
+clip ordering.
+
 ### src/capture/AttachmentBody.tsx
 
 **Purpose:** Renders an entry's content beyond the primary clip (B7).
@@ -232,15 +261,19 @@ emits the patch and closes. Removals are append-only fold-time hides
 **Export:** `AttachmentBody({ attachments, onEditText, onRemoveAttachment }:
 AttachmentBodyProps)`.
 
-**Ordering/classification:** splits attachments into machine photo **captions**
-(`isCaption` from `src/vision/plan`: text with `derivedFrom` pointing at a `_photo` file),
-audio **transcripts** (text with `derivedFrom`, not a caption), user **notes** (text
-without `derivedFrom`), **extra audio** (`kind === 'audio'` beyond the first, which plays
-from the card header), and **photos**. Render order: transcripts (primary text styling —
-they are the spoken content), then any still-**streaming** transcripts, notes
-(secondary), extra audio rows, photo thumbnails, captions (secondary, below their
-photos), then any still-streaming captions. Returns `null` if every group is empty
-(streaming transcripts count — a fresh audio-only entry shows its transcript growing).
+**Ordering/classification:** delegates to the pure `groupAttachments`
+(`attachmentGroups.ts`). Render order: transcripts, then any still-**streaming**
+transcripts, notes, extra audio rows (clips beyond the first, which plays from the
+card header), then one horizontal row per photo — 64 px thumbnail left, its caption(s)
+or still-streaming caption right — then any orphan captions (photo since removed).
+Returns `null` if every group is empty (streaming transcripts count — a fresh
+audio-only entry shows its transcript growing).
+
+**Type scale:** transcripts and notes are the entry's main text and render at
+`type_.bodyStrong` (transcripts in `textPrimary` — they are the spoken content —
+notes in `textSecondary`); photo captions are descriptive metadata and render at
+`type_.bodySmall` in `textMuted`, beside their thumbnail rather than as a competing
+text block.
 
 **Key behaviors:**
 
