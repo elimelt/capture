@@ -181,6 +181,44 @@ export async function listPendingSync(stream: string): Promise<SyncStatusRow[]> 
     .sort((a, b) => a.seq - b.seq || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
 }
 
+/** Local rollup of sync rows for the Settings status line. */
+export interface SyncSummary {
+  /** Rows not yet uploaded (status !== 'uploaded'), errored rows included. */
+  pending: number
+  /** Rows with status 'error'. */
+  errors: number
+  /** Error message of the latest (highest-seq) errored row, if any. */
+  lastError?: string
+}
+
+/** Pure rollup of sync rows: pending/error counts + the latest error message. */
+export function summarizeSyncStatuses(rows: Iterable<SyncStatusRow>): SyncSummary {
+  let pending = 0
+  let errors = 0
+  let lastErrored: SyncStatusRow | undefined
+  for (const row of rows) {
+    if (row.status !== 'uploaded') pending++
+    if (row.status === 'error') {
+      errors++
+      if (!lastErrored || row.seq > lastErrored.seq) lastErrored = row
+    }
+  }
+  return { pending, errors, ...(lastErrored?.error ? { lastError: lastErrored.error } : {}) }
+}
+
+const LAST_SYNC_KEY = (stream: string) => `lastSyncAt:${stream}`
+
+/** Moment the last full pull+push cycle completed cleanly; unset = never synced. */
+export async function getLastSyncAt(stream: string): Promise<string | undefined> {
+  const db = await getDb()
+  return (await db.get('meta', LAST_SYNC_KEY(stream))) as string | undefined
+}
+
+export async function setLastSyncAt(stream: string, at: string): Promise<void> {
+  const db = await getDb()
+  await db.put('meta', at, LAST_SYNC_KEY(stream))
+}
+
 export async function getEventById(id: string): Promise<LogEvent | undefined> {
   const db = await getDb()
   return db.get('events', id)

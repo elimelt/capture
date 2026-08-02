@@ -23,7 +23,6 @@ const TABS = [
 export default function App() {
   const init = useAppStore((s) => s.init)
   const refresh = useAppStore((s) => s.refresh)
-  const drainSync = useAppStore((s) => s.drainSync)
   const entries = useAppStore((s) => s.entries)
   const ready = useAppStore((s) => s.ready)
   const lastError = useAppStore((s) => s.lastError)
@@ -45,22 +44,14 @@ export default function App() {
 
   useEffect(() => {
     void init()
-    // Drain the upload queue on the natural gestures a no-backend token model
-    // relies on (SPEC §8.2/§8.4): return to foreground and regained network.
+    // Returning to the foreground re-reads local state only; Drive sync is
+    // manual-only via "Sync now" in Settings.
     const onVisible = () => {
-      if (document.visibilityState === 'visible') {
-        void refresh()
-        void drainSync()
-      }
+      if (document.visibilityState === 'visible') void refresh()
     }
-    const onOnline = () => void drainSync()
     document.addEventListener('visibilitychange', onVisible)
-    window.addEventListener('online', onOnline)
-    return () => {
-      document.removeEventListener('visibilitychange', onVisible)
-      window.removeEventListener('online', onOnline)
-    }
-  }, [init, refresh, drainSync])
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [init, refresh])
 
   // Background media understanding: whenever entries change (capture,
   // foreground refresh), transcribe any audio still missing a transcript and

@@ -3,14 +3,18 @@ import { openDB } from 'idb'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { eventBaseName } from '../contract/filenames'
 import { getDb, resetDbCache } from './db'
+import type { SyncStatusRow } from './db'
 import {
   appendAmend,
   appendCapture,
   appendRevoke,
   getBlob,
+  getLastSyncAt,
   getSyncStatuses,
   listEntries,
   listEvents,
+  setLastSyncAt,
+  summarizeSyncStatuses,
   wipeAll,
 } from './events'
 
@@ -153,5 +157,63 @@ describe('wipeAll', () => {
     expect((await getSyncStatuses('timelog')).size).toBe(0)
     const fresh = await appendCapture({ stream: 'timelog', capturedAt: AT, attachments: [] })
     expect(fresh.seq).toBe(1)
+  })
+
+  it('clears the last-sync timestamp', async () => {
+    await setLastSyncAt('timelog', AT)
+    await wipeAll()
+    expect(await getLastSyncAt('timelog')).toBeUndefined()
+  })
+})
+
+describe('summarizeSyncStatuses', () => {
+  const row = (over: Partial<SyncStatusRow>): SyncStatusRow => ({
+    id: 'id',
+    stream: 'timelog',
+    seq: 1,
+    status: 'queued',
+    phase: 'record-pending',
+    attempts: 0,
+    ...over,
+  })
+
+  it('reports zero pending and zero errors when everything is uploaded', () => {
+    const rows = [row({ id: 'a', status: 'uploaded', phase: 'done' })]
+    expect(summarizeSyncStatuses(rows)).toEqual({ pending: 0, errors: 0 })
+  })
+
+  it('counts every non-uploaded row as pending, errored rows included', () => {
+    const rows = [
+      row({ id: 'a', seq: 1, status: 'uploaded', phase: 'done' }),
+      row({ id: 'b', seq: 2, status: 'queued' }),
+      row({ id: 'c', seq: 3, status: 'error', error: 'Drive full' }),
+    ]
+    expect(summarizeSyncStatuses(rows)).toEqual({
+      pending: 2,
+      errors: 1,
+      lastError: 'Drive full',
+    })
+  })
+
+  it('surfaces the highest-seq error message as lastError', () => {
+    const rows = [
+      row({ id: 'b', seq: 5, status: 'error', error: 'newer failure' }),
+      row({ id: 'a', seq: 2, status: 'error', error: 'older failure' }),
+    ]
+    expect(summarizeSyncStatuses(rows).lastError).toBe('newer failure')
+  })
+
+  it('omits lastError when the errored row carries no message', () => {
+    const rows = [row({ id: 'a', status: 'error' })]
+    expect(summarizeSyncStatuses(rows)).toEqual({ pending: 1, errors: 1 })
+  })
+})
+
+describe('lastSyncAt', () => {
+  it('is unset until a sync is recorded, then round-trips per stream', async () => {
+    expect(await getLastSyncAt('timelog')).toBeUndefined()
+    await setLastSyncAt('timelog', AT)
+    expect(await getLastSyncAt('timelog')).toBe(AT)
+    expect(await getLastSyncAt('meals')).toBeUndefined()
   })
 })

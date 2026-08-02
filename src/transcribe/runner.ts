@@ -79,6 +79,14 @@ async function drain(streamId: string): Promise<number> {
         await markSkipped(audio.file)
         continue
       }
+      // A sync pull may have imported another device's transcript while the
+      // API call was in flight; re-plan against the current log and drop the
+      // result if this audio no longer needs one (at-most-once globally).
+      const stillPending = pendingTranscriptions(await listEvents(streamId))
+      if (!stillPending.some((p) => p.audio.file === audio.file)) {
+        retryState.delete(audio.file)
+        continue
+      }
       await appendAmend({
         stream,
         targets: [entryId],
