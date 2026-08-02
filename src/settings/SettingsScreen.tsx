@@ -1,6 +1,7 @@
 /** Screen 3 — Settings (SPEC §4.3, M1 subset). */
 import { useEffect, useState } from 'react'
 import { modelLabel } from '../assistant/config'
+import type { DrainResult } from '../drive/queue'
 import { reverseGeocode } from '../places/geocode'
 import { useAppStore } from '../store/appStore'
 import {
@@ -274,6 +275,23 @@ const CONNECTION_LABEL: Record<string, string> = {
   disconnected: 'Not connected',
 }
 
+/** Human summary of a manual "Sync now" outcome; null when there's nothing
+ * to say (the reconnect case is already covered by the connection pill). */
+function syncResultLabel(result: DrainResult): string | null {
+  switch (result.outcome) {
+    case 'drained':
+      return result.uploaded === 1 ? 'Synced 1 entry' : `Synced ${result.uploaded} entries`
+    case 'idle':
+      return 'Already up to date'
+    case 'retry-later':
+      return 'Sync busy — will retry shortly'
+    case 'error':
+      return `Sync failed${result.error ? `: ${result.error}` : ''}`
+    case 'reconnect':
+      return null
+  }
+}
+
 function GoogleSection() {
   const connection = useAppStore((s) => s.driveConnection)
   const syncing = useAppStore((s) => s.syncing)
@@ -281,10 +299,16 @@ function GoogleSection() {
   const disconnectDrive = useAppStore((s) => s.disconnectDrive)
   const drainSync = useAppStore((s) => s.drainSync)
   const refreshConnection = useAppStore((s) => s.refreshConnection)
+  const [syncNote, setSyncNote] = useState<string | null>(null)
 
   useEffect(() => {
     void refreshConnection()
   }, [refreshConnection])
+
+  const handleSync = async () => {
+    setSyncNote(null)
+    setSyncNote(syncResultLabel(await drainSync()))
+  }
 
   const connected = connection === 'connected'
   return (
@@ -296,7 +320,7 @@ function GoogleSection() {
       <div className="flex gap-2">
         {connected ? (
           <>
-            <Button variant="secondary" block disabled={syncing} onClick={() => void drainSync()}>
+            <Button variant="secondary" block disabled={syncing} onClick={() => void handleSync()}>
               {syncing ? 'Syncing…' : 'Sync now'}
             </Button>
             <Button variant="dangerGhost" block onClick={() => void disconnectDrive()}>
@@ -309,6 +333,9 @@ function GoogleSection() {
           </Button>
         )}
       </div>
+      {connected && syncNote && !syncing && (
+        <p className={cx(type_.sub, tone.textFaint)}>{syncNote}</p>
+      )}
     </div>
   )
 }
