@@ -20,9 +20,8 @@ import { EditEntrySheet } from './EditEntrySheet'
 import { TextSheet } from './TextSheet'
 import { AttachmentTimeline } from './AttachmentTimeline'
 import { LifecycleBadge } from './LifecycleBadge'
-import { entryLifecycle, hasPendingEnrichment } from './lifecycle'
+import { entryLifecycle, hasPendingEnrichment, lifecycleLabel } from './lifecycle'
 import { PlaceCard } from './PlaceCard'
-import { locationName } from './placeCardModel'
 import { useRecorder, type RecordingResult } from './useRecorder'
 
 // Leaflet-backed; lazy so its chunk (JS + CSS) stays out of the initial
@@ -112,21 +111,14 @@ export function EntryCard({
       last={last}
       className={motion.riseIn}
     >
-      {/* Header: place label leading, lifecycle badge trailing. Actions live
-          in the always-visible footer row; attachment media sits between. */}
-      <div className="flex min-h-5 items-center gap-2">
-        <div className="flex min-w-0 flex-1 items-center">
-          {entry.location && (
-            <span className={cx('flex min-w-0 items-center gap-1', type_.caption, tone.textMuted)}>
-              <PinIcon size={13} />
-              <span className="truncate">{locationName(entry.location)}</span>
-            </span>
-          )}
-        </div>
-        <span className="shrink-0">
+      {/* Header: only the lifecycle badge, and only when it has something to
+          say — location lives solely in the PlaceCard row below (#81), so it
+          is never shown twice on one card. */}
+      {lifecycleLabel(lifecycle) !== null && (
+        <div className="flex items-center justify-end">
           <LifecycleBadge lifecycle={lifecycle} />
-        </span>
-      </div>
+        </div>
+      )}
 
       <AttachmentTimeline
         attachments={entry.attachments}

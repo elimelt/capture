@@ -343,11 +343,11 @@ export default function CaptureScreen() {
           )}
         </EmptyState>
       ) : (
-        // No gap between nodes: the timeline rail's connecting line abuts
-        // across cards so the whole day reads as one continuous rail.
+        // Only the most recent entry (SPEC §4.1's latest-entry card): the
+        // full day lives on the Day screen, keeping the two views distinct.
         <div className="flex flex-col">
           <EntryList
-            entries={todayEntries}
+            entries={todayEntries.slice(0, 1)}
             onDelete={handleDelete}
             onCopy={(entry) => void copyEntry(entry)}
           />

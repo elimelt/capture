@@ -34,14 +34,15 @@ reads as one continuous line, and each card is a flush node (no heavy per-card b
 shadow) rather than a boxed card.
 
 `EntryCard` renders its content **unconditionally** (#102, inverting #78's collapse):
-place-label context, the entry's full primary text (no line clamp) or its primary
-clip's waveform fingerprint, then an attachment sub-timeline ordered by each
-attachment's append timestamp. Audio waveforms and their transcripts share a row,
-photos and their captions share a row, and notes/orphaned descriptions occupy their
-own rows. The compact place card follows — nothing attachment-shaped is ever hidden. The only things that
-collapse are chrome: a single "+" affordance expands into a compact icon-only action
-menu (add note / add photo / add audio / location / edit / delete — each icon still
-carries an `aria-label`), Both toggles are view-local `useState`, never persisted, never an event.
+the entry's full primary text (no line clamp) or its primary clip's waveform
+fingerprint, then an attachment sub-timeline ordered by each attachment's append
+timestamp. Audio waveforms and their transcripts share a row, photos and their
+captions share a row, and notes/orphaned descriptions occupy their own rows. The
+compact place card follows — the card's single location surface — then an
+always-visible compact action row (add note / add photo / add audio / location /
+edit / copy / delete — each icon carries an `aria-label`). Nothing attachment-shaped
+is ever hidden and no chrome collapses; sheet-open state is view-local `useState`,
+never persisted, never an event.
 
 ### `src/dayview`
 
@@ -64,10 +65,11 @@ edit sheet, and overlay store live here.
 **Composition:** renders `ScreenHeader`, `RecordPanel`, a hidden photo `<input
 type="file" accept="image/*" capture="environment">` (the plain camera button, always a
 new capture), a second dedicated hidden photo input for the gesture accelerator's photo
-add-on (always an amend — see below), either an `EmptyState` or `EntryList` for today's
-entries, an optional `TextSheet` (plain text capture, and a second instance for the
-accelerator's note add-on), and one of three toasts (captured-with-Undo,
-deleted-with-Undo, discarded).
+add-on (always an amend — see below), either an `EmptyState` or an `EntryList` holding
+**only today's most recent entry** (SPEC §4.1's latest-entry card — the full day lives
+on the Day screen, which is what keeps the two views distinct), an optional `TextSheet`
+(plain text capture, and a second instance for the accelerator's note add-on), and one
+of three toasts (captured-with-Undo, deleted-with-Undo, discarded).
 
 **Key behaviors:**
 
@@ -114,8 +116,11 @@ deleted-with-Undo, discarded).
   auto-clears after 5s. "Undo" on the captured toast calls `revoke([entryId])`
   immediately. Delete requests (`handleDelete`) clear any capture toast first so only
   one toast shows, then delegate to `usePendingDelete.request`.
-- **Today filter:** shows entries where `!revoked`, `id !== del.pendingId` (hides the
-  pending delete), and `localDateOf(capturedAt)` equals today; sorted newest-first.
+- **Today filter:** `todayEntries` holds entries where `!revoked`,
+  `id !== del.pendingId` (hides the pending delete), and `localDateOf(capturedAt)`
+  equals today; sorted newest-first. The header/prompt/day-summary derivations use the
+  whole array, but the list renders only `todayEntries.slice(0, 1)` — the latest-entry
+  card. Deleting it reveals the next-most-recent entry.
 - **Install nudge (C14):** before the first-ever entry, non-standalone visitors see an
   "Add to Home Screen" hint in the empty state (checks `display-mode: standalone` media
   query and iOS `navigator.standalone`).
@@ -519,11 +524,11 @@ stored state, no heuristics on text content.
 **Exports:**
 
 - `type Authorship = 'authored' | 'spoken' | 'derived'` — `'authored'`: user-typed text,
-  no `derivedFrom`. `'spoken'`: text derived from audio (a transcript) — machine-derived
-  but represents what the user *said*, so it is classed with authored text, not
-  inference (decision recorded on #80/#89, so implementers don't relitigate). `'derived'`:
-  machine inference over the entry's content — photo captions today, any future derived
-  text.
+  no `derivedFrom`. `'spoken'`: text derived from audio (a transcript); it now shares
+  the derived visual treatment (transcribed text must be visibly distinct from written
+  text) but keeps its own class so the `SpokenMark` glyph and "Edit transcript" title
+  still apply. `'derived'`: machine inference over the entry's content — photo captions
+  today, any future derived text.
 - `authorship(a: Attachment): Authorship` — absent `derivedFrom` → `'authored'`;
   `derivedFrom` set and `isCaption(a)` (`src/vision/plan`) → `'derived'`; `derivedFrom`
   set and not a caption → `'spoken'`. Depends only on `derivedFrom`/`kind`, never on text
@@ -542,12 +547,12 @@ derived; exhaustive over attachment shapes with/without `derivedFrom` across all
 
 ### src/capture/EntryCard.tsx
 
-**Purpose:** One entry's card (#78, inverted by #102: **content is always visible;
-actions are what collapse**), rendered as a node on the timeline rail (`TimelineRow`):
-the captured time + rail dot in the gutter, then the content column with a header (place
-label, lifecycle badge, and the action menu aligned to the right), an attachment
-sub-timeline ordered by each attachment's append timestamp, and the place card, plus the
-sheets/inputs those actions open.
+**Purpose:** One entry's card (#78, inverted by #102: **everything is always
+visible** — content and actions alike), rendered as a node on the timeline rail
+(`TimelineRow`): the captured time + rail dot in the gutter, then the content column
+with an optional lifecycle badge, an attachment sub-timeline ordered by each
+attachment's append timestamp, the place card (the card's single location surface),
+and the always-visible action row, plus the sheets/inputs those actions open.
 
 **Exports:** `EntryCard(props: EntryCardProps)` and `timeLabel(iso: string): string`
 (locale time like "9:04 AM"). Props: `entry`, `maxClipSec`, `sync?: SyncStatusRow`,
@@ -568,13 +573,13 @@ The card computes its own `EntryLifecycle` from `sync` + `hasPendingEnrichment(e
 - **Rail gutter + header:** the editable time lives in the `TimelineRow` `time` slot
   (the `RailTime` subcomponent — the same tap-to-edit button, in the gutter above the
   rail dot; the gutter stays fixed-width so every row's dot sits on one straight
-  rail). The header is one flex row: the location pin + place label leading
-  (truncated, only when a location is present) and the lifecycle badge trailing;
-  attachment playback lives in the sub-timeline. The time button has no underline
-  decoration; it is still the tap target for the native picker (below), and the Edit
-  sheet provides the second, labelled path to the same field. Both are metadata, not
-  content (#85): the time button and place label are quiet `type_.caption` (sans,
-  tabular-nums on the time), never serif.
+  rail). The header renders only when the lifecycle badge has something to say
+  (`lifecycleLabel(lifecycle) !== null`) — a settled entry has no header row at all.
+  Location appears **only** in the `PlaceCard` row (never a second header chip), so
+  a card shows its place exactly once. The time button has no underline decoration;
+  it is still the tap target for the native picker (below), and the Edit sheet
+  provides the second, labelled path to the same field. The time is metadata, not
+  content (#85): quiet `type_.caption` (sans, tabular-nums), never serif.
 - **Rail position:** `first`/`last` props (threaded down from `EntryList`, defaulting
   false) trim the connecting line at the true ends of the rail so a run of entries reads
   as one continuous line, and the flush node drops the old heavy per-card border/shadow.
@@ -703,16 +708,17 @@ in-grid captions compose the exact same tokens/edit flow rather than re-deriving
 streaming helpers so transcripts, notes, captions, and live enrichment keep the
 same authored-vs-generated treatment.
 
-**Type scale (#80):** authored notes and spoken transcripts both render at
+**Type scale (#80, revised):** authored notes render at
 `type_.bodyStrong`/`tone.textPrimary` — the heaviest, darkest treatment, **full text, no
-line clamp** (#102: "content is always visible") — since both are the user's own words;
-a transcript additionally gets the quiet `SpokenMark` glyph (small muted mic icon,
-`aria-hidden`) inline before the text, noting it was transcribed rather than typed,
-without ever reading lighter than a note. Orphan captions render in
-`type_.derived`/`tone.textDerived` (serif, italic, 14 px) — never bolder than
-authored/spoken text. The composition table (`AUTHORSHIP_STYLE`) and the `TextSheet`
-edit-title table (`EDIT_TITLE`) are both keyed by `Authorship`, so every call site
-(including `PhotoGrid`) agrees with the classifier.
+line clamp** (#102: "content is always visible") — the user's own typed words. All
+machine text — spoken transcripts and captions alike — renders in
+`type_.derived`/`tone.textDerived` (serif, italic, 14 px, never bolder than authored
+text), so transcribed text is visibly distinct from written text and matches the
+photo-caption treatment; a transcript additionally gets the quiet `SpokenMark` glyph
+(small muted mic icon, `aria-hidden`) inline before the text, which is now what tells
+a transcript apart from a caption. The composition table (`AUTHORSHIP_STYLE`) and the
+`TextSheet` edit-title table (`EDIT_TITLE`) are both keyed by `Authorship`, so every
+call site (including `PhotoGrid`) agrees with the classifier.
 
 **Key behaviors:**
 
@@ -1269,14 +1275,14 @@ re-throw, matching the appStore `guard` convention.
   user's edit. `onEditText` performs remove-old + add-new in a *single* amend. This is
   also why an edited transcript/caption never changes visual class (#80): `authorship()`
   depends only on `derivedFrom`.
-- **`derivedFrom` alone drives authored-vs-generated (#80):** `authorship()`
+- **`derivedFrom` alone drives authored-vs-generated (#80, revised):** `authorship()`
   (`authorship.ts`) is the single place that interprets it for rendering — absent means
-  authored (heaviest/darkest), present-and-a-caption means derived (quiet
-  `type_.derived`/`tone.textDerived`), present-and-not-a-caption means spoken (same
-  heaviest/darkest weight as authored, plus a quiet `SpokenMark` glyph). Never add a
-  heuristic on text content to this decision, and never introduce new stored state for
-  it — every renderer (`AttachmentBody`, `EntryCard`'s collapsed preview and related-rows
-  snippet) composes the same two tokens.
+  authored (heaviest/darkest `type_.bodyStrong`/`tone.textPrimary`), present means
+  machine text in the quiet `type_.derived`/`tone.textDerived` pairing, with
+  present-and-not-a-caption (spoken) additionally carrying the `SpokenMark` glyph.
+  Never add a heuristic on text content to this decision, and never introduce new
+  stored state for it — every renderer composes the same tokens via
+  `AUTHORSHIP_STYLE`.
 - **`capturedAt` semantics:** for voice entries it is the record-tap time, not the stop
   time; text/photo entries use submit time. Inline time edits change only the
   time-of-day, re-rendered in the device zone (`withTimeOfDayIso`); the Edit sheet

@@ -25,8 +25,8 @@ export const tone = {
   textMuted: 'text-ink-muted dark:text-ink-muted-dark',
   textFaint: 'text-ink-faint dark:text-ink-faint-dark',
   /**
-   * Paired with `type_.derived` (#80): machine-inferred/generated content —
-   * photo captions. Same hue
+   * Paired with `type_.derived` (#80): machine-generated content —
+   * transcripts and photo captions. Same hue
    * as `textMuted` (quiet, not the faintest ramp) but named for what it
    * means at the call site — authored-vs-generated, not just "muted" for
    * some other reason — so intent stays legible. Compose the two together,
@@ -68,23 +68,22 @@ export const type_ = {
   heading: 'font-serif text-[17px] font-semibold leading-snug',
   /** Primary reading content: entries, notes. */
   body: 'font-serif text-[16px] leading-normal',
-  /** Main entry text — transcripts and notes, rendered in full (#102: content
-   *  is never clamped/hidden). A step up from `body` so the entry's own
-   *  words lead the card over descriptive metadata. `leading-snug` (not
+  /** Main entry text — the user's typed notes, rendered in full (#102:
+   *  content is never clamped/hidden). A step up from `body` so the entry's
+   *  own words lead the card over descriptive metadata. `leading-snug` (not
    *  `leading-normal`) so it reads as a compact fragment of speech rather
    *  than a roomy headline (#85), even at full, unclamped length. */
   bodyStrong: 'font-serif text-[17px] font-medium leading-snug',
   /** Secondary descriptive content: photo captions and similar derived text. */
   bodySmall: 'font-serif text-[14px] leading-normal',
   /**
-   * Machine-inferred/generated text (#80): photo captions, AI-derived
-   * attachments — never
-   * bolder than authored/spoken text (`bodyStrong`). Still content the
-   * user reads (serif, #85's split), but italic marks it as the app's
-   * inference rather than the user's own words. Pairs with
-   * `tone.textDerived`; compose the two together, never apart. See
-   * `src/capture/authorship.ts` for the classification that decides when
-   * this applies.
+   * Machine-generated text (#80, revised): transcripts, photo captions,
+   * AI-derived attachments — never bolder than authored text
+   * (`bodyStrong`). Still content the user reads (serif, #85's split), but
+   * italic marks it as machine output rather than the user's own typed
+   * words. Pairs with `tone.textDerived`; compose the two together, never
+   * apart. See `src/capture/authorship.ts` for the classification that
+   * decides when this applies.
    */
   derived: 'font-serif text-[14px] italic leading-normal',
   /** Functional secondary: subtitles, labels. */

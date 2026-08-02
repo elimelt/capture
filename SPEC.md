@@ -439,9 +439,11 @@ Design principle: **three screens**; capture is 95% of usage and must be near-in
 - **Failure behavior**: if mic permission is denied or `MediaRecorder` fails at tap time,
   the button becomes a text-entry field (keyboard dictation available) — capture must
   never dead-end.
-- Below the fold: today's entries (folded view, §3.3), newest first, each with replay,
-  status badge (⬆ queued / ✓ uploaded / ✅ processed / ⚠ error), and **delete** —
-  which always appends a `revoke` event, whether or not the capture has uploaded yet.
+- Below the fold: only today's **most recent** entry (folded view, §3.3) — the
+  latest-entry card, with replay, status badge (⬆ queued / ✓ uploaded / ✅ processed /
+  ⚠ error), and **delete** — which always appends a `revoke` event, whether or not the
+  capture has uploaded yet. The full day's entries live on Screen 2 (§4.2), keeping the
+  two screens distinct: Capture is for logging, Day is for reading back.
 
 ### 4.2 Screen 2 — Day (timelog timeline)
 

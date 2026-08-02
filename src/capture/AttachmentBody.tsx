@@ -33,17 +33,16 @@ export function useLiveText(store: LiveTextStore): ReadonlyMap<string, string> {
  * grid replaces the old one-thumbnail-per-row layout), so this component
  * only owns text/audio and has no attachment-removal affordance of its own.
  *
- * Authored-vs-generated (#80): user notes and machine transcripts both
- * render as the entry's own voice — the heaviest, darkest treatment
- * (`type_.bodyStrong`/`tone.textPrimary`) — a transcript IS machine-derived
- * but represents what the user *said*, so it gets only a quiet `SpokenMark`
- * glyph, never a lighter weight. Orphan captions (photo since removed) are
- * true inference with no photo left to sit beside, so they render here in
- * the quiet `type_.derived`/`tone.textDerived` pairing. Classification is
- * the pure `authorship()` (`authorship.ts`), driven solely by
- * `derivedFrom`; edited transcripts/captions keep their `derivedFrom` link
- * so they are never re-derived and never change class. Grouping/pairing
- * itself is the pure `groupAttachments`.
+ * Authored-vs-generated (#80, revised): only user-typed notes render as
+ * the entry's own voice — the heaviest, darkest treatment
+ * (`type_.bodyStrong`/`tone.textPrimary`). Machine text — transcripts and
+ * captions alike — shares the quiet `type_.derived`/`tone.textDerived`
+ * pairing, so anything the app generated reads the same at a glance;
+ * a transcript keeps its `SpokenMark` glyph to tell it apart from a
+ * caption. Classification is the pure `authorship()` (`authorship.ts`),
+ * driven solely by `derivedFrom`; edited transcripts/captions keep their
+ * `derivedFrom` link so they are never re-derived and never change class.
+ * Grouping/pairing itself is the pure `groupAttachments`.
  *
  * While a transcript is still streaming in from its service, the partial
  * text appears in the same position via the transient `liveTranscripts`
@@ -149,18 +148,20 @@ export function renderWithMath(text: string): React.ReactNode[] {
 }
 
 /**
- * Authored-vs-generated token composition (#80): authored notes and spoken
- * transcripts share the heaviest, darkest treatment — both are the user's
- * own words — while derived text (captions, any future machine inference)
- * renders in the quiet `type_.derived`/`tone.textDerived` pairing. Never key
- * this off text content or attachment kind directly; always go through
+ * Authored-vs-generated token composition (#80, revised): authored notes
+ * keep the heaviest, darkest treatment — the user's own typed words — while
+ * all machine text (spoken transcripts and derived captions alike) renders
+ * in the quiet `type_.derived`/`tone.textDerived` pairing, so transcribed
+ * text is visibly distinct from written text; the `SpokenMark` glyph still
+ * marks a transcript as speech rather than inference. Never key this off
+ * text content or attachment kind directly; always go through
  * `authorship()` (`authorship.ts`), which is the single place the
  * `derivedFrom` contract is interpreted. Exported so `PhotoGrid` (#102)
  * composes the same tokens for in-grid captions rather than re-deriving them.
  */
 export const AUTHORSHIP_STYLE: Record<Authorship, string> = {
   authored: cx(type_.bodyStrong, tone.textPrimary),
-  spoken: cx(type_.bodyStrong, tone.textPrimary),
+  spoken: cx(type_.derived, tone.textDerived),
   derived: cx(type_.derived, tone.textDerived),
 }
 
@@ -174,12 +175,12 @@ export const EDIT_TITLE: Record<Authorship, string> = {
 }
 
 /**
- * The quiet marker for `'spoken'` text (#80 req. 2): a transcript IS
- * machine-derived but renders at authored weight, so a small muted mic
- * glyph — never bold, never a competing text block — is the only visual
- * note that it was transcribed rather than typed. `aria-hidden`: the
- * surrounding control's "Edit transcript" label already carries the
- * distinction for screen readers.
+ * The quiet marker for `'spoken'` text (#80 req. 2): a small muted mic
+ * glyph — never bold, never a competing text block — noting the text was
+ * transcribed from speech; with transcripts now sharing the caption's
+ * derived styling, it is what tells a transcript apart from a caption.
+ * `aria-hidden`: the surrounding control's "Edit transcript" label already
+ * carries the distinction for screen readers.
  */
 export function SpokenMark() {
   return (

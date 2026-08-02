@@ -40,7 +40,7 @@ Four screens, one route table in `App.tsx`, one fixed bottom tab bar:
 
 | Route | Screen | Tab label | Notes |
 | --- | --- | --- | --- |
-| `/` | Capture (`src/capture/CaptureScreen`) | Capture | Screen 1; voice-first capture + today's entries |
+| `/` | Capture (`src/capture/CaptureScreen`) | Capture | Screen 1; voice-first capture + the latest entry (the full day lives on the Day screen) |
 | `/day`, `/day/:date` | Day view (`src/dayview/DayScreen`) | Today | Screen 2; merged per-day timeline of entries + calendar pseudo-entries, prev/next-day nav via the route param |
 | `/chat` | Chat (`src/assistant/ChatScreen`) | Recall | Opt-in; `lazy()`-loaded; guarded — redirects to `/` unless `assistantEnabled` |
 | `/settings` | Settings (`src/settings/SettingsScreen`) | Settings | Screen 3; Google (Drive + target-calendar picker), capture, location/places, assistant, notifications, data |

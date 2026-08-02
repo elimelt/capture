@@ -33,10 +33,10 @@ describe('type_ functional contract (serif = content, sans = chrome)', () => {
     expect(type_.sub).toMatch(/\bfont-sans\b/)
   })
 
-  it('type_.derived never reads bolder than authored/spoken text (#80)', () => {
-    // Machine-inferred content must never outweigh the user's own words
-    // (`bodyStrong`, which carries font-medium); `derived` is italic
-    // instead of bold-and-never bold itself.
+  it('type_.derived never reads bolder than authored text (#80)', () => {
+    // Machine-generated content (transcripts, captions) must never outweigh
+    // the user's own typed words (`bodyStrong`, which carries font-medium);
+    // `derived` is italic instead of bold-and-never bold itself.
     expect(type_.derived).not.toContain('font-medium')
     expect(type_.derived).not.toContain('font-semibold')
     expect(type_.derived).toContain('italic')
