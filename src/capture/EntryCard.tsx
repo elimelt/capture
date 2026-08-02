@@ -1,7 +1,7 @@
 import { Suspense, lazy, useEffect, useRef, useState } from 'react'
 import type { AmendPatch, Entry, GeoLocation } from '../contract/types'
 import { localTimeOf } from '../contract/time'
-import type { SyncStatus } from '../store/db'
+import type { SyncStatusRow } from '../store/db'
 import { getBlob } from '../store/events'
 import {
   Button,
@@ -21,7 +21,8 @@ import {
 import { EditEntrySheet } from './EditEntrySheet'
 import { TextSheet } from './TextSheet'
 import { AttachmentBody } from './AttachmentBody'
-import { SyncBadge } from './SyncBadge'
+import { LifecycleBadge } from './LifecycleBadge'
+import { entryLifecycle, hasPendingEnrichment } from './lifecycle'
 import { groupAttachments } from './attachmentGroups'
 import { cardViewModel } from './cardView'
 import { useAudioPlayback } from './useAudioPlayback'
@@ -47,8 +48,8 @@ export function timeLabel(iso: string): string {
 interface EntryCardProps {
   entry: Entry
   maxClipSec: number
-  /** Drive upload status for this entry's seq (SPEC §8.4); absent = not queued. */
-  syncStatus?: SyncStatus
+  /** Drive sync row for this entry's seq (SPEC §8.4); absent = never queued locally. */
+  sync?: SyncStatusRow
   onDelete: () => void
   /** New time-of-day "HH:mm" on the entry's own date (B8). */
   onSetTime: (time: string) => void
@@ -66,7 +67,7 @@ interface EntryCardProps {
 export function EntryCard({
   entry,
   maxClipSec,
-  syncStatus,
+  sync,
   onDelete,
   onSetTime,
   onAddNote,
@@ -90,6 +91,7 @@ export function EntryCard({
   // Per-card recorder for "+ audio" — entries can hold multiple clips.
   const rec = useRecorder()
   const vm = cardViewModel(entry, groupAttachments(entry.attachments))
+  const lifecycle = entryLifecycle(sync, hasPendingEnrichment(entry))
 
   async function handleAudioTap() {
     if (rec.state === 'recording') {
@@ -139,7 +141,7 @@ export function EntryCard({
           )}
         </div>
         <span className="shrink-0">
-          <SyncBadge status={syncStatus} />
+          <LifecycleBadge lifecycle={lifecycle} />
         </span>
         {audio?.durationSec !== undefined && (
           <span className={cx('shrink-0 tabular-nums', type_.caption, tone.textFaint)}>
