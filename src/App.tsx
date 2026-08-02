@@ -3,7 +3,10 @@ import { NavLink, Navigate, Route, Routes } from 'react-router-dom'
 import CaptureScreen from './capture/CaptureScreen'
 import DayScreen from './dayview/DayScreen'
 import SettingsScreen from './settings/SettingsScreen'
+import { applyAppBadge, badgeCount } from './notify/badge'
+import { showAppNotification } from './notify/local'
 import { useAppStore } from './store/appStore'
+import { summarizeSyncStatuses } from './store/events'
 import { drainTranscriptions } from './transcribe/runner'
 import { drainCaptions } from './vision/runner'
 import { ReconnectPill } from './drive/ReconnectPill'
@@ -12,6 +15,16 @@ import { Toast, cx, tone, type_ } from './ui'
 // Opt-in assistant: lazy so users who never enable it never download the
 // chat bundle (AI SDK + markdown renderer).
 const ChatScreen = lazy(() => import('./assistant/ChatScreen'))
+
+/** "2 transcripts ready · 1 caption ready" — only the parts that happened. */
+function enrichmentNoticeBody(transcribed: number, captioned: number): string {
+  const parts: string[] = []
+  if (transcribed > 0)
+    parts.push(transcribed === 1 ? '1 transcript ready' : `${transcribed} transcripts ready`)
+  if (captioned > 0)
+    parts.push(captioned === 1 ? '1 caption ready' : `${captioned} captions ready`)
+  return parts.join(' · ')
+}
 
 const TABS = [
   { to: '/', label: 'Capture' },
@@ -56,16 +69,38 @@ export default function App() {
   // Background media understanding: whenever entries change (capture,
   // foreground refresh), transcribe any audio still missing a transcript and
   // caption any photo still missing a caption. Appending the amend refreshes
-  // entries, which re-runs this and finds nothing pending.
+  // entries, which re-runs this and finds nothing pending. If a drain
+  // completes while the app is hidden (user switched away mid-run), announce
+  // it — best-effort by design; see src/notify/local.ts.
   const currentStreamId = useAppStore((s) => s.currentStreamId)
   useEffect(() => {
     if (entries.length === 0) return
     Promise.all([drainTranscriptions(currentStreamId), drainCaptions(currentStreamId)])
       .then(([transcribed, captioned]) => {
-        if (transcribed + captioned > 0) void refresh()
+        if (transcribed + captioned > 0) {
+          void refresh()
+          if (document.visibilityState === 'hidden') {
+            void showAppNotification({
+              title: 'Capture',
+              body: enrichmentNoticeBody(transcribed, captioned),
+              tag: 'enrichment-done', // coalesce successive drains into one banner
+            })
+          }
+        }
       })
       .catch(() => {}) // per-file errors back off in the runners; a drain-level failure just waits for the next trigger
   }, [entries, currentStreamId, refresh])
+
+  // Home Screen icon badge = entries waiting to sync (pending + failed sync
+  // rows). setAppBadge persists after the app is backgrounded or closed, so
+  // it is the one "come back and sync" signal that outlives the app on iOS —
+  // rendered there only once notification permission is granted (Settings →
+  // Notifications), and a silent no-op where the Badging API is missing.
+  const syncStatuses = useAppStore((s) => s.syncStatuses)
+  useEffect(() => {
+    const { pending } = summarizeSyncStatuses(syncStatuses.values())
+    void applyAppBadge(badgeCount({ pendingSync: pending }))
+  }, [syncStatuses])
 
   useEffect(() => {
     if (!lastError) return

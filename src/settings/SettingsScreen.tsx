@@ -9,6 +9,7 @@ import { CalendarError, listCalendars } from '../gcal/client'
 import { getTargetCalendar, resolveTargetSelection, setTargetCalendar } from '../gcal/config'
 import type { CalendarSummary } from '../gcal/events'
 import { reverseGeocode } from '../places/geocode'
+import { NotificationsSection } from './NotificationsSection'
 import { useAppStore } from '../store/appStore'
 import { summarizeSyncStatuses } from '../store/events'
 import { formatBytes } from '../store/space'
@@ -249,6 +250,8 @@ export default function SettingsScreen() {
           )}
         </div>
       </Section>
+
+      <NotificationsSection />
 
       <Section title="Data">
         <StorageLines />
