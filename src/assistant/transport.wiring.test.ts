@@ -4,9 +4,9 @@
  * the way ChatScreen builds it) → createAssistantTransport → ToolLoopAgent —
  * and actually execute. The OpenAI-compatible provider is mocked at the
  * module boundary so a scripted model can (a) prove every tool definition,
- * including create_entry and update_entry, reaches the model request, and
- * (b) drive both write tools end-to-end into a mocked EntryWriter with the
- * results streaming back as UI tool-output chunks.
+ * including create_entry, update_entry, and delete_entry, reaches the model
+ * request, and (b) drive all three write tools end-to-end into a mocked
+ * EntryWriter with the results streaming back as UI tool-output chunks.
  */
 import 'fake-indexeddb/auto'
 import { describe, expect, it, vi } from 'vitest'
@@ -57,6 +57,7 @@ function recordedWriter() {
     patch?: AmendPatch
     attachments?: NewAttachment[]
   }> = []
+  const revokes: string[][] = []
   const writer: EntryWriter = {
     capture: async (input) => {
       captures.push(input)
@@ -75,8 +76,11 @@ function recordedWriter() {
     amend: async (input) => {
       amends.push(input)
     },
+    revoke: async (targets) => {
+      revokes.push(targets)
+    },
   }
-  return { writer, captures, amends }
+  return { writer, captures, amends, revokes }
 }
 
 async function drain(stream: ReadableStream<{ type: string }>) {
@@ -92,8 +96,8 @@ async function drain(stream: ReadableStream<{ type: string }>) {
 }
 
 describe('assistant transport wiring (write tools)', () => {
-  it('registers create_entry/update_entry with the model and executes them end-to-end', async () => {
-    // Turn 1: the model calls both write tools; turn 2: it answers in text.
+  it('registers create_entry/update_entry/delete_entry with the model and executes them end-to-end', async () => {
+    // Turn 1: the model calls all three write tools; turn 2: it answers in text.
     const model = new MockLanguageModelV3({
       doStream: [
         {
@@ -111,6 +115,12 @@ describe('assistant transport wiring (write tools)', () => {
               toolName: 'update_entry',
               input: JSON.stringify({ id: 'e1', text: 'walked the dog at the park' }),
             },
+            {
+              type: 'tool-call',
+              toolCallId: 'call-3',
+              toolName: 'delete_entry',
+              input: JSON.stringify({ id: 'e2' }),
+            },
             { type: 'finish', finishReason: { unified: 'tool-calls', raw: 'tool_calls' }, usage: USAGE },
           ]),
         },
@@ -118,7 +128,7 @@ describe('assistant transport wiring (write tools)', () => {
           stream: convertArrayToReadableStream<LanguageModelV3StreamPart>([
             { type: 'stream-start', warnings: [] },
             { type: 'text-start', id: 't1' },
-            { type: 'text-delta', id: 't1', delta: 'Done — logged it and fixed the entry.' },
+            { type: 'text-delta', id: 't1', delta: 'Done — logged it, fixed the entry, and deleted the other one.' },
             { type: 'text-end', id: 't1' },
             { type: 'finish', finishReason: { unified: 'stop', raw: 'stop' }, usage: USAGE },
           ]),
@@ -128,9 +138,9 @@ describe('assistant transport wiring (write tools)', () => {
     holder.model = model
 
     // Toolset built exactly like ChatScreen.getChat: store getters + the
-    // two write actions, wrapped by createAssistantTools.
-    const entries = [noteEntry('e1')]
-    const { writer, captures, amends } = recordedWriter()
+    // three write actions, wrapped by createAssistantTools.
+    const entries = [noteEntry('e1'), noteEntry('e2')]
+    const { writer, captures, amends, revokes } = recordedWriter()
     const transport = createAssistantTransport(
       'gpt-oss:20b',
       () => buildInstructions(),
@@ -147,14 +157,15 @@ describe('assistant transport wiring (write tools)', () => {
         chatId: 'wiring-test',
         messageId: undefined,
         abortSignal: undefined,
-        messages: [userMessage('log "buy milk" and fix my 9am entry')],
+        messages: [userMessage('log "buy milk", fix my 9am entry, and delete the other one')],
       }),
     )
 
-    // (a) Every tool — the three reads AND both writes — reached the model.
+    // (a) Every tool — the three reads AND all three writes — reached the model.
     const sentTools = (model.doStreamCalls[0]?.tools ?? []).map((t) => t.name)
     expect(sentTools.sort()).toEqual([
       'create_entry',
+      'delete_entry',
       'get_places',
       'list_entries',
       'search_entries',
@@ -164,12 +175,14 @@ describe('assistant transport wiring (write tools)', () => {
     // The system prompt that travelled with the request affirms writes.
     const system = model.doStreamCalls[0]?.prompt.find((m) => m.role === 'system')
     expect(system?.content).toContain('you are not read-only')
+    expect(system?.content).toContain('call delete_entry')
 
-    // (b) Both write tools executed against the injected writer.
+    // (b) All three write tools executed against the injected writer.
     expect(captures).toHaveLength(1)
     expect(await captures[0].attachments[0].blob.text()).toBe('buy milk')
     expect(amends).toHaveLength(1)
     expect(amends[0].targets).toEqual(['e1'])
+    expect(revokes).toEqual([['e2']])
 
     // The tool results surfaced on the UI stream and the loop continued to a
     // final text answer (two model steps total).
@@ -178,6 +191,7 @@ describe('assistant transport wiring (write tools)', () => {
       .map((c) => c.output)
     expect(outputs).toContain('Created entry new1.')
     expect(outputs).toContain('Updated entry e1.')
+    expect(outputs).toContain('Deleted entry e2: 2026-08-02 09:00 — (empty entry)')
     expect(model.doStreamCalls).toHaveLength(2)
     const text = chunks
       .filter((c) => c.type === 'text-delta')
