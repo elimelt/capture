@@ -5,6 +5,8 @@ ever compromising the offline-first capture path. Five features share this subsy
 
 - **Audio transcription** (`src/transcribe`) — Whisper transcripts for captured audio.
 - **Photo captioning** (`src/vision`) — vision-LLM captions for captured photos.
+  Both bind onto a shared drain engine and failure taxonomy in `src/enrich` — see
+  below.
 - **Place matching & reverse geocoding** (`src/places`) — coordinates → labels/addresses.
 - **Chat assistant** (`src/assistant`) — an opt-in, client-side agent over the local log.
 - **Day synthesis prose** (`src/dayview`) — an opt-in, explicit-tap daily recap (#82);
@@ -43,13 +45,17 @@ Both media pipelines (`src/transcribe`, `src/vision`) are the same four-part mac
 |---|---|---|
 | `plan.ts` | pure, no I/O | `(events) => Pending…[]` — what still needs processing |
 | `stream.ts` | pure, no I/O | incremental wire-format parsing + partial/final assembly |
-| `api.ts` | one async fn | call one external service, streaming; 60 s timeout; throw on bad HTTP |
-| `runner.ts` | impure drain | plan → fetch blob → API → `appendAmend`; backoff & skips |
+| `api.ts` | one async fn | call one external service, streaming; 60 s timeout; throw `EnrichmentError` on bad HTTP |
+| `runner.ts` | thin binding | binds plan/api/live-store onto `src/enrich/runner.ts`'s shared drain |
 
 The split keeps the decision "what needs work" testable as a pure function over the
 event log, isolates each external service behind a single function, keeps the streaming
-mechanics (chunk assembly, truncation detection) pure and unit-testable, and confines
-all state (retry maps, in-flight coalescing, skip markers) to the runner.
+mechanics (chunk assembly, truncation detection) pure and unit-testable, and — since
+issue #51 — confines all drain state and behavior (retry maps, in-flight coalescing,
+skip markers, failure classification, the circuit breaker) to one shared engine
+(`src/enrich/runner.ts`) both pipelines' `runner.ts` bind onto, rather than two
+hand-kept-in-sync copies. See [Media pipelines & places](../modules/pipelines-and-places.md)
+for the engine's full file-by-file detail.
 
 ### Results stream in; only the final text is persisted
 
@@ -123,25 +129,42 @@ a pure, unit-tested `shouldDrain(online, enrichmentEnabled)` predicate — so a 
 caller that forgets the call-site check still can't reach `transcribe.elimelt.com` or
 `llm.elimelt.com`.
 
-Failure handling is identical in both runners:
+Failure handling is identical in both runners, because both bind onto the same
+`src/enrich/runner.ts` engine (issues #51/#55/#60/#62 — previously this was two
+hand-copied drains that had already drifted, e.g. the vision runner was missing the
+re-plan guard below):
 
 - **Offline** (`!navigator.onLine`): the drain returns 0 immediately; nothing is
   marked failed. Work simply waits for the next trigger.
 - **Enrichment disabled**: the drain returns 0 immediately, checked right after the
   offline check and before any IndexedDB read.
-- **Transient failure** (API throws): in-memory per-file exponential backoff, 15 s base,
-  max 5 attempts per session; the map resets on app relaunch.
-- **Permanent failure** (source blob missing locally, or the service returned empty
-  text): a skip marker (`transcribe:skip:<file>` / `caption:skip:<file>`) is written to
-  the IndexedDB `meta` store — never retried, across sessions. Empty results are valid
-  API outcomes (silent clip, uncaptionable image), not errors.
+- **Failure classification, not a blanket "assume transient"**
+  (`src/enrich/error.ts`): `EnrichmentError.retryable` distinguishes a permanent
+  rejection (HTTP 4xx other than 408/429, or a local decode failure) from a transient
+  one (network error, timeout, 408/429/5xx); unrecognized thrown values still default
+  to retryable, so nothing that used to back off now silently stops retrying.
+- **Transient failure**: in-memory per-file exponential backoff, 15 s base, max 5
+  attempts per session; the map resets on app relaunch. A `hostDown` transient failure
+  (network error or request timeout, as opposed to a same-request HTTP rejection) also
+  trips a **per-drain circuit breaker**: the rest of that drain's pending items are left
+  untouched rather than each burning its own 60 s timeout against a stalled host.
+- **Permanent failure** (a classified non-retryable error, or the service returned
+  empty text): a skip marker `{ reason, at }` is written to the IndexedDB `meta` store
+  (`transcribe:skip:<file>` / `caption:skip:<file>`) — never retried, across sessions,
+  until an explicit `retry(file)` call (Settings' "Retry" button — see
+  [pipelines-and-places.md](../modules/pipelines-and-places.md)) clears it. Empty
+  results are valid API outcomes (silent clip, uncaptionable image), not errors.
+- **Missing source blob**: deferred, not skipped — a blob pruned locally after upload
+  (`keepAudioLocally=false`) is indistinguishable from one never downloaded, and both
+  are retried for free the moment a blob is local again, rather than the former
+  permanently and silently losing the transcript.
 - **Coalescing**: re-entrant drain calls share the single in-flight promise.
 
-One cross-device guard is transcription-specific: after the API call resolves, the
-transcribe runner **re-plans against the current log** and drops the result if that
-audio no longer needs a transcript — a sync pull may have imported another device's
-transcript while the call was in flight. This keeps transcription at-most-once
-globally, not just per device.
+One cross-device guard used to be transcription-specific and is now shared: after the
+API call resolves, the runner **re-plans against the current log** and drops the
+result if that source no longer needs one — a sync pull may have imported another
+device's result while the call was in flight. This keeps enrichment at-most-once
+globally, not just per device, for both pipelines identically.
 
 ## Place matching & reverse geocoding
 
