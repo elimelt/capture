@@ -29,6 +29,7 @@ npm run preview      # serve the production build locally
 | `src/drive/` | GIS auth, Drive client, tree bootstrap, upload queue, pull engine. |
 | `src/gcal/` | Read-only Google Calendar client + target-calendar config (timelog read-back; feeds the Day view). |
 | `src/transcribe/`, `src/vision/`, `src/places/` | Post-capture enrichment pipelines. |
+| `src/notify/` | Notification capability detection, app-icon badging, best-effort local notifications, Web Push plumbing (no server to send push today). |
 | `src/capture/`, `src/dayview/`, `src/settings/`, `src/assistant/` | The four screens. |
 | `src/ui/` | Design system: tokens + primitives. The only place visual identity lives. |
 | `src/App.tsx`, `src/main.tsx` | Routing, tab bar, app-level lifecycle, boot. |
@@ -38,7 +39,7 @@ Subsystem and module docs live in `docs/subsystems/` and `docs/modules/`.
 ## Architecture rules (must follow)
 
 **Layering.** The generic layers — `streams/`, `capture/`, `contract/`, `store/`,
-`places/`, `drive/`, `transcribe/`, `vision/`, `ui/` — are stream-agnostic and must
+`places/`, `drive/`, `transcribe/`, `vision/`, `notify/`, `ui/` — are stream-agnostic and must
 not import from the timelog-specific or app-level directories `gcal/`, `dayview/`,
 `settings/`, or `assistant/`. This is enforced by `src/layering.test.ts`, which
 scans every source file in the generic layers and fails on forbidden imports. If

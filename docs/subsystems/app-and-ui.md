@@ -43,7 +43,7 @@ Four screens, one route table in `App.tsx`, one fixed bottom tab bar:
 | `/` | Capture (`src/capture/CaptureScreen`) | Screen 1; voice-first capture + today's entries |
 | `/day`, `/day/:date` | Day view (`src/dayview/DayScreen`) | Screen 2; per-day timeline + read-only calendar events, prev/next-day nav via the route param |
 | `/chat` | Chat (`src/assistant/ChatScreen`) | Opt-in; `lazy()`-loaded; guarded — redirects to `/` unless `assistantEnabled` |
-| `/settings` | Settings (`src/settings/SettingsScreen`) | Screen 3; Google (Drive + target-calendar picker), capture, location/places, assistant, data |
+| `/settings` | Settings (`src/settings/SettingsScreen`) | Screen 3; Google (Drive + target-calendar picker), capture, location/places, assistant, notifications, data |
 
 Unknown paths redirect to `/`. The Chat tab is filtered out of the tab bar unless the
 assistant is enabled, and its chunk (AI SDK + markdown) is never downloaded by users
@@ -58,6 +58,12 @@ sync status are current — and it runs background transcription/captioning when
 `entries` change, calling `refresh()` when work completed so the effect re-runs
 until nothing is pending. Drive sync is **manual-only**: the sole trigger is the
 "Sync now" button in Settings, so Drive is contacted only on an explicit user ask.
+`App.tsx` also owns the two notification hooks (`src/notify`, see
+[modules/notify.md](../modules/notify.md)): the Home Screen icon badge tracks the
+pending-sync count whenever `syncStatuses` change (the one signal that outlives the
+app process on iOS), and a best-effort local notification announces a
+transcription/caption drain that completes while the app is hidden. There is no
+push server — Capture has no backend — so nothing is ever pushed remotely.
 New long-running background work should hook the entries-changed effect rather than
 invent its own scheduler.
 
