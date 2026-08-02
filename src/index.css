@@ -1,20 +1,73 @@
 @import "tailwindcss";
 
+/* Warm Editorial Slate palette + type. Light/dark pairs; consumed via
+   src/ui/tokens.ts. */
+@theme {
+  /* Backgrounds/surfaces */
+  --color-paper: #F8F6F3;
+  --color-paper-dark: #1A1918;
+  --color-card: #FFFFFF;
+  --color-card-dark: #242321;
+  --color-well: #F1EEE9;
+  --color-well-dark: #2E2C29;
+
+  /* Hairlines/borders */
+  --color-line: #E8E4DD;
+  --color-line-dark: #33312E;
+  --color-line-strong: #D6D1C7;
+  --color-line-strong-dark: #45423E;
+
+  /* Text (espresso → bone ramp) */
+  --color-ink: #2C2B29;
+  --color-ink-dark: #EBE9E4;
+  --color-ink-secondary: #57544F;
+  --color-ink-secondary-dark: #C5C2BB;
+  --color-ink-muted: #787570;
+  --color-ink-muted-dark: #96938D;
+  --color-ink-faint: #A9A59D;
+  --color-ink-faint-dark: #6E6B66;
+
+  /* Interactive tint (spruce) */
+  --color-spruce: #3A605B;
+  --color-spruce-dark: #5A8C85;
+  --color-spruce-deep: #2F4F4B;
+  --color-spruce-deep-dark: #4E7B75;
+  --color-spruce-wash: #E9EFEE;
+  --color-spruce-wash-dark: #263533;
+
+  /* Warm accent (clay — recording, destructive, badges) */
+  --color-clay: #C46D4D;
+  --color-clay-dark: #D98365;
+  --color-clay-deep: #AC5B3E;
+  --color-clay-deep-dark: #C77052;
+  --color-clay-wash: #F7EAE4;
+  --color-clay-wash-dark: #3A2A23;
+
+  --font-serif: "Libertinus Serif", ui-serif, Georgia, serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
+    system-ui, sans-serif;
+}
+
 html,
 body {
   overscroll-behavior: none;
   -webkit-tap-highlight-color: transparent;
 }
 
+/* Chrome defaults to system sans; content opts into serif via tokens. */
+body {
+  font-family: var(--font-sans);
+}
+
 /* Paint the document itself so nothing white shows beneath the app on iOS
    (home-indicator area, overscroll bounce). Must match tone.bg in
-   src/ui/tokens.ts: slate-50 / slate-950. */
+   src/ui/tokens.ts: paper / paper-dark. */
 html {
-  background-color: #f8fafc;
+  background-color: #F8F6F3;
   color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
   html {
-    background-color: #020617;
+    background-color: #1A1918;
   }
 }

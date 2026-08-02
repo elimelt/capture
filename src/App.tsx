@@ -1,8 +1,10 @@
+import { useEffect } from 'react'
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom'
 import CaptureScreen from './capture/CaptureScreen'
 import DayScreen from './dayview/DayScreen'
 import SettingsScreen from './settings/SettingsScreen'
-import { cx, tone, type_ } from './ui'
+import { useAppStore } from './store/appStore'
+import { Toast, cx, tone, type_ } from './ui'
 
 const TABS = [
   { to: '/', label: 'Capture' },
@@ -11,6 +13,28 @@ const TABS = [
 ]
 
 export default function App() {
+  const init = useAppStore((s) => s.init)
+  const refresh = useAppStore((s) => s.refresh)
+  const lastError = useAppStore((s) => s.lastError)
+  const clearError = useAppStore((s) => s.clearError)
+
+  useEffect(() => {
+    void init()
+    // M2 seam: on return to foreground this also becomes where the upload
+    // queue drains.
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void refresh()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [init, refresh])
+
+  useEffect(() => {
+    if (!lastError) return
+    const t = setTimeout(clearError, 6000)
+    return () => clearTimeout(t)
+  }, [lastError, clearError])
+
   return (
     <div className={cx('min-h-dvh', tone.bg, tone.textPrimary)}>
       <div className="mx-auto flex min-h-dvh max-w-md flex-col">
@@ -25,11 +49,12 @@ export default function App() {
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>
+        {/* iOS-style tab bar: translucent surface + blur (not tone.surface). */}
         <nav
           className={cx(
-            'fixed inset-x-0 bottom-0 border-t pb-[env(safe-area-inset-bottom)]',
+            'fixed inset-x-0 bottom-0 border-t pb-[env(safe-area-inset-bottom)] backdrop-blur-xl',
             tone.border,
-            tone.surface,
+            'bg-card/80 dark:bg-card-dark/80',
           )}
         >
           <div className="mx-auto flex max-w-md">
@@ -40,9 +65,11 @@ export default function App() {
                 end={tab.to === '/'}
                 className={({ isActive }) =>
                   cx(
-                    'flex min-h-14 flex-1 items-center justify-center font-medium',
+                    'flex min-h-14 flex-1 items-center justify-center',
                     type_.sub,
-                    isActive ? tone.accent : tone.textMuted,
+                    isActive
+                      ? cx('font-semibold', tone.accent)
+                      : cx('font-medium', tone.textMuted),
                   )
                 }
               >
@@ -52,6 +79,11 @@ export default function App() {
           </div>
         </nav>
       </div>
+      {lastError && (
+        <Toast actionLabel="Dismiss" onAction={clearError}>
+          {lastError}
+        </Toast>
+      )}
     </div>
   )
 }

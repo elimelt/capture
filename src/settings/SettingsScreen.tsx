@@ -18,7 +18,6 @@ export default function SettingsScreen() {
   const streamSettings = useAppStore((s) => s.streamSettings)
   const places = useAppStore((s) => s.places)
   const loadSettings = useAppStore((s) => s.loadSettings)
-  const loadPlaces = useAppStore((s) => s.loadPlaces)
   const updateSettings = useAppStore((s) => s.updateSettings)
   const updateStreamSettings = useAppStore((s) => s.updateStreamSettings)
   const addPlace = useAppStore((s) => s.addPlace)
@@ -33,8 +32,6 @@ export default function SettingsScreen() {
   const [usage, setUsage] = useState<string | null>(null)
 
   useEffect(() => {
-    void loadSettings()
-    void loadPlaces()
     if (navigator.storage?.estimate) {
       void navigator.storage.estimate().then((est) => {
         if (est.usage !== undefined) {
@@ -42,7 +39,7 @@ export default function SettingsScreen() {
         }
       })
     }
-  }, [loadSettings, loadPlaces])
+  }, [])
 
   function addCurrentLocation() {
     setLocateError(null)
@@ -222,7 +219,7 @@ export default function SettingsScreen() {
           variant={wipeArmed ? 'danger' : 'dangerGhost'}
           block
           onClick={() => void wipeData()}
-          className={cx(!wipeArmed && 'border border-red-300 dark:border-red-900')}
+          className={cx(!wipeArmed && 'border border-clay/40 dark:border-clay-dark/40')}
         >
           {wipeArmed ? 'Tap again to wipe everything' : 'Wipe local data'}
         </Button>

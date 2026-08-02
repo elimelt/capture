@@ -14,8 +14,9 @@ export function Toast({ children, actionLabel, onAction }: ToastProps) {
       className={cx(
         'fixed inset-x-4 z-40 mx-auto flex max-w-md items-center justify-between gap-3',
         shape.control,
-        'bg-slate-900 px-4 py-3 text-white shadow-lg dark:bg-slate-700',
-        type_.body,
+        'border border-transparent bg-ink px-4 py-3 text-paper shadow-lg',
+        'dark:border-line-dark dark:bg-card-dark dark:text-ink-dark',
+        type_.ui,
       )}
       style={{ bottom: 'calc(env(safe-area-inset-bottom) + 5.5rem)' }}
       role="status"
@@ -24,7 +25,7 @@ export function Toast({ children, actionLabel, onAction }: ToastProps) {
       {actionLabel && onAction && (
         <button
           onClick={onAction}
-          className="min-h-11 shrink-0 px-2 font-semibold text-sky-300"
+          className="min-h-11 shrink-0 px-2 font-semibold text-spruce-dark"
         >
           {actionLabel}
         </button>

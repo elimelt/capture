@@ -48,7 +48,7 @@ export function EntryCard({ entry, onDelete, onSetTime, onAddNote, onAddPhoto }:
                 className={cx(
                   'rounded-md font-semibold tabular-nums underline decoration-dotted underline-offset-4',
                   tone.textPrimary,
-                  'decoration-slate-300 dark:decoration-slate-600',
+                  'decoration-line-strong dark:decoration-line-strong-dark',
                 )}
               >
                 {timeLabel(entry.capturedAt)}
@@ -86,7 +86,7 @@ export function EntryCard({ entry, onDelete, onSetTime, onAddNote, onAddPhoto }:
             {/* Progress fill behind the icon (B10). */}
             {playback.playing && (
               <span
-                className="absolute inset-y-0 left-0 bg-sky-500/20 transition-[width] duration-200 ease-linear"
+                className="absolute inset-y-0 left-0 bg-spruce/20 transition-[width] duration-200 ease-linear dark:bg-spruce-dark/25"
                 style={{ width: `${playback.progress * 100}%` }}
               />
             )}

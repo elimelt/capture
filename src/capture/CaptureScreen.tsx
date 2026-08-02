@@ -6,40 +6,29 @@ import { useAppStore } from '../store/appStore'
 import { Button, EmptyState, ScreenHeader, Toast } from '../ui'
 import { useRecorder, type RecordingResult } from './useRecorder'
 import { snapshotLocation } from './geo'
+import { usePendingDelete } from './usePendingDelete'
 import { EntryList } from './EntryList'
 import { RecordPanel } from './RecordPanel'
 import { TextSheet } from './TextSheet'
 
-type ToastState =
-  | { kind: 'captured'; entryId: string }
-  | { kind: 'deleted'; entryId: string }
-  | { kind: 'discarded' }
+type ToastState = { kind: 'captured'; entryId: string } | { kind: 'discarded' }
 
 export default function CaptureScreen() {
   const entries = useAppStore((s) => s.entries)
   const places = useAppStore((s) => s.places)
   const appSettings = useAppStore((s) => s.appSettings)
   const streamSettings = useAppStore((s) => s.streamSettings)
-  const refresh = useAppStore((s) => s.refresh)
-  const loadPlaces = useAppStore((s) => s.loadPlaces)
-  const loadSettings = useAppStore((s) => s.loadSettings)
   const capture = useAppStore((s) => s.capture)
   const revoke = useAppStore((s) => s.revoke)
 
   const recorder = useRecorder()
+  const del = usePendingDelete(revoke)
   const [textOpen, setTextOpen] = useState(false)
   const [toast, setToast] = useState<ToastState | null>(null)
   const [here, setHere] = useState<GeoLocation | null>(null)
-  const [pendingDelete, setPendingDelete] = useState<string | null>(null)
   const tapStartRef = useRef<Date>(new Date())
   const locationRef = useRef<Promise<GeoLocation | undefined>>(Promise.resolve(undefined))
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
-
-  useEffect(() => {
-    void refresh()
-    void loadPlaces()
-    void loadSettings()
-  }, [refresh, loadPlaces, loadSettings])
 
   useEffect(() => () => clearTimeout(toastTimerRef.current), [])
 
@@ -141,46 +130,17 @@ export default function CaptureScreen() {
     await revoke([entryId])
   }
 
-  // B9: delete hides the entry at once; the revoke is appended when the undo
-  // window closes (or on unmount), so undo needs no un-revoke in the contract.
-  const pendingDeleteRef = useRef<string | null>(null)
-  pendingDeleteRef.current = pendingDelete
-  const revokeRef = useRef(revoke)
-  revokeRef.current = revoke
-
-  function commitPendingDelete() {
-    const id = pendingDeleteRef.current
-    if (id) {
-      pendingDeleteRef.current = null
-      setPendingDelete(null)
-      void revokeRef.current([id])
-    }
-  }
-  const commitPendingDeleteRef = useRef(commitPendingDelete)
-  commitPendingDeleteRef.current = commitPendingDelete
-
-  useEffect(() => () => commitPendingDeleteRef.current(), [])
-
+  // B9 lives in usePendingDelete; requesting a delete replaces any capture
+  // toast so only one toast shows at a time.
   function handleDelete(entryId: string) {
-    commitPendingDelete() // only one pending delete at a time
-    clearTimeout(toastTimerRef.current)
-    setPendingDelete(entryId)
-    setToast({ kind: 'deleted', entryId })
-    toastTimerRef.current = setTimeout(() => {
-      setToast(null)
-      commitPendingDeleteRef.current()
-    }, 5000)
-  }
-
-  function undoDelete() {
     clearTimeout(toastTimerRef.current)
     setToast(null)
-    setPendingDelete(null)
+    del.request(entryId)
   }
 
   const today = localDateOf(toLocalIso(new Date()))
   const todayEntries = entries
-    .filter((e) => !e.revoked && e.id !== pendingDelete && localDateOf(e.capturedAt) === today)
+    .filter((e) => !e.revoked && e.id !== del.pendingId && localDateOf(e.capturedAt) === today)
     .sort((a, b) => b.capturedAt.localeCompare(a.capturedAt))
   const recording = recorder.state === 'recording'
 
@@ -249,8 +209,8 @@ export default function CaptureScreen() {
           Entry captured
         </Toast>
       )}
-      {toast?.kind === 'deleted' && (
-        <Toast actionLabel="Undo" onAction={undoDelete}>
+      {!toast && del.toastOpen && (
+        <Toast actionLabel="Undo" onAction={del.undo}>
           Entry deleted
         </Toast>
       )}

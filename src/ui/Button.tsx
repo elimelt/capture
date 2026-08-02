@@ -15,11 +15,14 @@ const VARIANT: Record<ButtonVariant, string> = {
   ),
   ghost: cx(tone.textSecondary, tone.pressWash, 'font-medium'),
   danger: cx(tone.dangerBg, tone.dangerBgActive, 'text-white font-medium'),
-  dangerGhost: cx(tone.danger, 'font-medium active:bg-red-50 dark:active:bg-red-950'),
+  dangerGhost: cx(
+    tone.danger,
+    'font-medium active:bg-clay-wash dark:active:bg-clay-wash-dark',
+  ),
 }
 
 const SIZE: Record<ButtonSize, string> = {
-  md: cx(tap, 'px-4', type_.body),
+  md: cx(tap, 'px-4', type_.ui),
   sm: cx('min-h-9 px-3', type_.sub),
 }
 

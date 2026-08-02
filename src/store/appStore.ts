@@ -28,10 +28,14 @@ interface AppState {
   places: Place[]
   appSettings: AppSettings
   streamSettings: StreamSettings
+  /** Last failed write, as a short human message; App shows it as a toast. */
+  lastError: string | null
 
   refresh: (streamId?: string) => Promise<void>
   loadPlaces: () => Promise<void>
   loadSettings: () => Promise<void>
+  init: () => Promise<void>
+  clearError: () => void
 
   capture: (input: {
     capturedAt: string
@@ -51,73 +55,106 @@ interface AppState {
   wipe: () => Promise<void>
 }
 
-export const useAppStore = create<AppState>()((set, get) => ({
-  currentStreamId: 'timelog',
-  entries: [],
-  syncStatuses: new Map(),
-  places: [],
-  appSettings: { locationEnabled: true },
-  streamSettings: { maxClipSec: 60, keepAudioLocally: true },
+export const useAppStore = create<AppState>()((set, get) => {
+  // Write actions run through guard: failures set lastError (surfaced as a
+  // toast in App) and re-throw for callers that await. M2's reconnect pill
+  // builds on this channel.
+  const guard =
+    <A extends unknown[], R>(label: string, fn: (...args: A) => Promise<R>) =>
+    async (...args: A): Promise<R> => {
+      try {
+        return await fn(...args)
+      } catch (err) {
+        set({ lastError: `${label}: ${err instanceof Error ? err.message : String(err)}` })
+        throw err
+      }
+    }
 
-  refresh: async (streamId) => {
-    const stream = streamId ?? get().currentStreamId
-    const [entries, syncStatuses] = await Promise.all([
-      listEntries(stream),
-      getSyncStatuses(stream),
-    ])
-    set({ currentStreamId: stream, entries, syncStatuses })
-  },
+  return {
+    currentStreamId: 'timelog',
+    entries: [],
+    syncStatuses: new Map(),
+    places: [],
+    appSettings: { locationEnabled: true },
+    streamSettings: { maxClipSec: 60, keepAudioLocally: true },
+    lastError: null,
 
-  loadPlaces: async () => {
-    set({ places: await listPlaces() })
-  },
+    refresh: async (streamId) => {
+      const stream = streamId ?? get().currentStreamId
+      const [entries, syncStatuses] = await Promise.all([
+        listEntries(stream),
+        getSyncStatuses(stream),
+      ])
+      set({ currentStreamId: stream, entries, syncStatuses })
+    },
 
-  loadSettings: async () => {
-    const [appSettings, streamSettings] = await Promise.all([
-      getSettings(),
-      getStreamSettings(get().currentStreamId),
-    ])
-    set({ appSettings, streamSettings })
-  },
+    loadPlaces: async () => {
+      set({ places: await listPlaces() })
+    },
 
-  capture: async (input) => {
-    const event = await appendCapture({ stream: get().currentStreamId, ...input })
-    await get().refresh()
-    return event
-  },
+    loadSettings: async () => {
+      const [appSettings, streamSettings] = await Promise.all([
+        getSettings(),
+        getStreamSettings(get().currentStreamId),
+      ])
+      set({ appSettings, streamSettings })
+    },
 
-  revoke: async (targets) => {
-    await appendRevoke({ stream: get().currentStreamId, targets })
-    await get().refresh()
-  },
+    init: async () => {
+      await Promise.all([get().refresh(), get().loadPlaces(), get().loadSettings()])
+    },
 
-  amend: async (input) => {
-    await appendAmend({ stream: get().currentStreamId, ...input })
-    await get().refresh()
-  },
+    clearError: () => set({ lastError: null }),
 
-  addPlace: async (place) => {
-    await savePlace(place)
-    await get().loadPlaces()
-  },
+    capture: guard(
+      'Could not save entry',
+      async (input: {
+        capturedAt: string
+        location?: GeoLocation
+        attachments: NewAttachment[]
+      }) => {
+        const event = await appendCapture({ stream: get().currentStreamId, ...input })
+        await get().refresh()
+        return event
+      },
+    ),
 
-  removePlace: async (id) => {
-    await deletePlace(id)
-    await get().loadPlaces()
-  },
+    revoke: guard('Could not delete entry', async (targets: string[]) => {
+      await appendRevoke({ stream: get().currentStreamId, targets })
+      await get().refresh()
+    }),
 
-  updateSettings: async (settings) => {
-    await saveSettings(settings)
-    set({ appSettings: settings })
-  },
+    amend: guard(
+      'Could not update entry',
+      async (input: { targets: string[]; patch?: AmendPatch; attachments?: NewAttachment[] }) => {
+        await appendAmend({ stream: get().currentStreamId, ...input })
+        await get().refresh()
+      },
+    ),
 
-  updateStreamSettings: async (settings) => {
-    await saveStreamSettings(get().currentStreamId, settings)
-    set({ streamSettings: settings })
-  },
+    addPlace: guard('Could not save place', async (place: Place) => {
+      await savePlace(place)
+      await get().loadPlaces()
+    }),
 
-  wipe: async () => {
-    await wipeAll()
-    await Promise.all([get().refresh(), get().loadPlaces()])
-  },
-}))
+    removePlace: guard('Could not remove place', async (id: string) => {
+      await deletePlace(id)
+      await get().loadPlaces()
+    }),
+
+    updateSettings: guard('Could not save settings', async (settings: AppSettings) => {
+      await saveSettings(settings)
+      set({ appSettings: settings })
+    }),
+
+    updateStreamSettings: guard('Could not save settings', async (settings: StreamSettings) => {
+      await saveStreamSettings(get().currentStreamId, settings)
+      set({ streamSettings: settings })
+    }),
+
+    wipe: guard('Could not wipe data', async () => {
+      await wipeAll()
+      await Promise.all([get().refresh(), get().loadPlaces()])
+    }),
+  }
+})

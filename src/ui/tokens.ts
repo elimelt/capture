@@ -2,56 +2,66 @@
  * Design tokens — the single place visual identity lives. Components in
  * src/ui/ compose these; screens never hardcode palette classes. A future
  * design pass edits this file (and the primitives), not the screens.
+ *
+ * Warm Editorial Slate: serif (Libertinus) for content the user reads,
+ * system sans for UI chrome. The split is deliberate — editorial content
+ * in a native-feeling shell. Palette lives in src/index.css @theme.
  */
 
 export const tone = {
   /** App background. */
-  bg: 'bg-slate-50 dark:bg-slate-950',
+  bg: 'bg-paper dark:bg-paper-dark',
   /** Raised surfaces: cards, sheets, nav. */
-  surface: 'bg-white dark:bg-slate-900',
+  surface: 'bg-card dark:bg-card-dark',
   /** Sunken/inset surfaces: inputs, wells. */
-  sunken: 'bg-slate-100 dark:bg-slate-800',
+  sunken: 'bg-well dark:bg-well-dark',
   /** Hairline borders on surfaces. */
-  border: 'border-slate-200 dark:border-slate-800',
+  border: 'border-line dark:border-line-dark',
   /** Stronger borders: inputs, secondary buttons. */
-  borderStrong: 'border-slate-300 dark:border-slate-700',
+  borderStrong: 'border-line-strong dark:border-line-strong-dark',
 
-  textPrimary: 'text-slate-900 dark:text-slate-100',
-  textSecondary: 'text-slate-600 dark:text-slate-300',
-  textMuted: 'text-slate-500 dark:text-slate-400',
-  textFaint: 'text-slate-400 dark:text-slate-500',
+  textPrimary: 'text-ink dark:text-ink-dark',
+  textSecondary: 'text-ink-secondary dark:text-ink-secondary-dark',
+  textMuted: 'text-ink-muted dark:text-ink-muted-dark',
+  textFaint: 'text-ink-faint dark:text-ink-faint-dark',
 
-  accent: 'text-sky-600 dark:text-sky-400',
-  accentBg: 'bg-sky-600',
-  accentBgActive: 'active:bg-sky-700',
+  accent: 'text-spruce dark:text-spruce-dark',
+  accentBg: 'bg-spruce dark:bg-spruce-dark',
+  accentBgActive: 'active:bg-spruce-deep dark:active:bg-spruce-deep-dark',
+  /** Subtle spruce-tinted fill. */
+  accentWash: 'bg-spruce-wash dark:bg-spruce-wash-dark',
 
-  danger: 'text-red-600 dark:text-red-400',
-  dangerBg: 'bg-red-600',
-  dangerBgActive: 'active:bg-red-700',
+  danger: 'text-clay-deep dark:text-clay-dark',
+  dangerBg: 'bg-clay',
+  dangerBgActive: 'active:bg-clay-deep',
+  /** Subtle clay-tinted fill. */
+  dangerWash: 'bg-clay-wash dark:bg-clay-wash-dark',
 
   /** Pressed-state wash for bordered/ghost controls. */
-  pressWash: 'active:bg-slate-100 dark:active:bg-slate-800',
+  pressWash: 'active:bg-well dark:active:bg-well-dark',
 } as const
 
 export const shape = {
-  card: 'rounded-2xl',
+  card: 'rounded-[14px]',
   control: 'rounded-xl',
   pill: 'rounded-full',
 } as const
 
 export const type_ = {
-  /** Screen titles. */
-  title: 'text-lg font-semibold tracking-tight',
+  /** Screen titles — the editorial voice. */
+  title: 'font-serif text-[26px] font-semibold leading-tight tracking-[-0.01em]',
   /** Section headings. */
-  heading: 'text-sm font-semibold',
-  /** Primary content. */
-  body: 'text-[15px] leading-snug',
-  /** Secondary content. */
-  sub: 'text-[13px] leading-snug',
-  /** Labels, badges, metadata. */
-  caption: 'text-xs',
+  heading: 'font-serif text-[17px] font-semibold leading-snug',
+  /** Primary reading content: entries, notes. */
+  body: 'font-serif text-[16px] leading-normal',
+  /** Functional secondary: subtitles, labels. */
+  sub: 'font-sans text-[13px] leading-snug',
+  /** Timestamps, metadata. */
+  caption: 'font-sans text-[12px] leading-snug',
   /** Tiny uppercase section labels. */
-  overline: 'text-[11px] font-medium uppercase tracking-wider',
+  overline: 'font-sans text-[11px] font-medium uppercase tracking-[0.08em]',
+  /** Buttons and controls — chrome, never serif. */
+  ui: 'font-sans text-[15px] leading-snug',
 } as const
 
 /** Minimum tap target (Apple HIG 44pt). */

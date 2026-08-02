@@ -42,7 +42,7 @@ function NoteText({ file }: { file: string }) {
   }, [file])
   if (text === null) return null
   return (
-    <p className={cx('whitespace-pre-wrap break-words', type_.sub, tone.textSecondary)}>
+    <p className={cx('whitespace-pre-wrap break-words', type_.body, tone.textSecondary)}>
       {text}
     </p>
   )

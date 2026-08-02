@@ -6,6 +6,7 @@
 export { cx, shape, tap, tone, type_ } from './tokens'
 export { Button, IconButton } from './Button'
 export { Card, EmptyState, Section } from './Card'
+export { ErrorBoundary } from './ErrorBoundary'
 export { Sheet } from './Sheet'
 export { Toast } from './Toast'
 export { FieldRow, TextArea, TextInput, Toggle } from './fields'

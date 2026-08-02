@@ -1,4 +1,5 @@
 import 'fake-indexeddb/auto'
+import { openDB } from 'idb'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { eventBaseName } from '../contract/filenames'
 import { getDb, resetDbCache } from './db'
@@ -74,6 +75,48 @@ describe('appendCapture', () => {
     await appendCapture({ stream: 'timelog', capturedAt: AT, attachments: [] })
     const statuses = await getSyncStatuses('timelog')
     expect(statuses.get(1)?.status).toBe('queued')
+  })
+
+  it('queues with attempts 0 and phase per attachment presence (SPEC §5.2)', async () => {
+    await appendCapture({ stream: 'timelog', capturedAt: AT, attachments: [] })
+    await appendCapture({ stream: 'timelog', capturedAt: AT, attachments: [audioAttachment()] })
+    const statuses = await getSyncStatuses('timelog')
+    expect(statuses.get(1)).toMatchObject({ attempts: 0, phase: 'record-pending' })
+    expect(statuses.get(2)).toMatchObject({ attempts: 0, phase: 'attachments-pending' })
+  })
+})
+
+describe('db migration v1 → v2', () => {
+  it('adds attempts and phase to existing sync rows', async () => {
+    const v1 = await openDB('timebox', 1, {
+      upgrade(db) {
+        const events = db.createObjectStore('events', { keyPath: ['stream', 'seq'] })
+        events.createIndex('by-stream', 'stream')
+        db.createObjectStore('blobs', { keyPath: 'file' })
+        db.createObjectStore('sync', { keyPath: ['stream', 'seq'] })
+        db.createObjectStore('places', { keyPath: 'id' })
+        db.createObjectStore('meta')
+      },
+    })
+    await v1.put('sync', { stream: 'timelog', seq: 1, status: 'queued' })
+    await v1.put('sync', { stream: 'timelog', seq: 2, status: 'uploaded' })
+    v1.close()
+    resetDbCache()
+    const statuses = await getSyncStatuses('timelog')
+    expect(statuses.get(1)).toEqual({
+      stream: 'timelog',
+      seq: 1,
+      status: 'queued',
+      attempts: 0,
+      phase: 'attachments-pending',
+    })
+    expect(statuses.get(2)).toEqual({
+      stream: 'timelog',
+      seq: 2,
+      status: 'uploaded',
+      attempts: 0,
+      phase: 'done',
+    })
   })
 })
 

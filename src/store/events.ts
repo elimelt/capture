@@ -72,7 +72,13 @@ async function append({ stream, build, attachments = [] }: AppendArgs): Promise<
   for (let i = 0; i < attachments.length; i++) {
     await tx.objectStore('blobs').put({ file: attachmentMeta[i].file, blob: attachments[i].blob })
   }
-  await tx.objectStore('sync').put({ stream, seq: event.seq, status: 'queued' })
+  await tx.objectStore('sync').put({
+    stream,
+    seq: event.seq,
+    status: 'queued',
+    attempts: 0,
+    phase: attachments.length > 0 ? 'attachments-pending' : 'record-pending',
+  })
   await tx.done
   return event
 }

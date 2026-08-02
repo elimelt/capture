@@ -3,11 +3,11 @@ import { cx, shape, tap, tone, type_ } from './tokens'
 
 const FIELD = cx(
   shape.control,
-  'border',
+  'border font-sans',
   tone.borderStrong,
   tone.surface,
   tone.textPrimary,
-  'outline-none focus:border-sky-500',
+  'outline-none focus:border-spruce dark:focus:border-spruce-dark',
 )
 
 export function TextInput({
@@ -15,7 +15,7 @@ export function TextInput({
   ...rest
 }: InputHTMLAttributes<HTMLInputElement>) {
   return (
-    <input {...rest} className={cx(FIELD, tap, 'px-3', type_.body, className)} />
+    <input {...rest} className={cx(FIELD, tap, 'px-3', type_.ui, className)} />
   )
 }
 
@@ -39,7 +39,7 @@ export function Toggle({ checked, onChange, label }: ToggleProps) {
     <label
       className={cx(
         'flex min-h-11 items-center justify-between gap-3',
-        type_.body,
+        type_.ui,
         tone.textSecondary,
       )}
     >
@@ -50,7 +50,7 @@ export function Toggle({ checked, onChange, label }: ToggleProps) {
         onClick={() => onChange(!checked)}
         className={cx(
           'relative h-7 w-12 shrink-0 rounded-full transition-colors',
-          checked ? tone.accentBg : 'bg-slate-300 dark:bg-slate-700',
+          checked ? tone.accentBg : 'bg-line-strong dark:bg-line-strong-dark',
         )}
       >
         <span
@@ -76,7 +76,7 @@ export function FieldRow({
     <label
       className={cx(
         'flex min-h-11 items-center justify-between gap-3',
-        type_.body,
+        type_.ui,
         tone.textSecondary,
       )}
     >

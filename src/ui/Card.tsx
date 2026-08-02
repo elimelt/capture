@@ -15,7 +15,7 @@ export function Card({
         'border',
         tone.border,
         tone.surface,
-        'p-3 shadow-sm shadow-slate-900/[0.03] dark:shadow-none',
+        'p-3 shadow-sm shadow-ink/[0.04] dark:shadow-none',
         className,
       )}
     >
@@ -43,7 +43,7 @@ export function EmptyState({
 }) {
   return (
     <div className="flex flex-col items-center gap-1.5 px-6 py-10 text-center">
-      <p className={cx(type_.body, 'font-medium', tone.textMuted)}>{title}</p>
+      <p className={cx('font-serif text-[16px] italic', tone.textMuted)}>{title}</p>
       {children && <div className={cx(type_.sub, tone.textFaint)}>{children}</div>}
     </div>
   )
