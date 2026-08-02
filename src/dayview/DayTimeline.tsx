@@ -128,12 +128,18 @@ export function DayTimeline({ date, entries, onDeleteEntry, onCopyEntry, emptyTi
       {groups.length === 0 ? (
         <EmptyState title={emptyTitle} />
       ) : (
-        <div className="flex flex-col gap-2">
-          {groups.map((group) =>
+        // No gap between nodes: real entries and calendar pseudo-entries share
+        // one continuous rail, so the connecting line abuts across groups. The
+        // rail's true ends (first/last group) trim the line stub; every
+        // interior run/pseudo keeps its line so the rail never breaks.
+        <div className="flex flex-col">
+          {groups.map((group, g) =>
             group.kind === 'pseudo' ? (
               <PseudoEntryCard
                 key={group.pseudo.id}
                 entry={group.pseudo}
+                first={g === 0}
+                last={g === groups.length - 1}
                 onEdit={() => setEditingId(group.pseudo.id)}
                 onHide={() => handleHide(group.pseudo)}
                 onRemove={() => {
@@ -148,6 +154,8 @@ export function DayTimeline({ date, entries, onDeleteEntry, onCopyEntry, emptyTi
                 entries={group.entries}
                 onDelete={onDeleteEntry}
                 onCopy={onCopyEntry}
+                firstOnRail={g === 0}
+                lastOnRail={g === groups.length - 1}
               />
             ),
           )}

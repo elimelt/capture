@@ -21,18 +21,19 @@ interface PhotoGridProps {
 }
 
 /**
- * Tight thumbnail grid for an entry's photos (#102): replaces the old
- * one-64px-thumbnail-per-row-with-caption-beside layout with a 3-across
- * grid so photos read as content at a glance rather than hiding behind
- * expansion. Always mounted — nothing photo-shaped is hidden any more.
+ * An entry's photos as timeline rows (#102): one row per photo, a fixed-size
+ * thumbnail on the left with its caption text horizontally aligned to its
+ * right — so a photo's related text reads beside its asset, the way the rest
+ * of the timeline aligns content to its node. Replaces the earlier 3-across
+ * grid (caption stacked underneath). Always mounted — nothing photo-shaped is
+ * hidden any more.
  *
- * Each tile still carries the full previous feature set, just laid out
- * more tightly: tap the thumbnail for the existing full-screen
- * `PhotoViewer` (with its own "Remove photo" action), tap a persisted
- * caption to edit it inline (same `TextSheet` flow as `AttachmentBody`'s
- * `NoteText`), and a still-streaming caption (`src/store/livetext.ts`)
- * renders with the same `StreamingText` treatment as a streaming
- * transcript, keyed by the *photo's* file since that's the caption
+ * Each row still carries the full previous feature set: tap the thumbnail for
+ * the existing full-screen `PhotoViewer` (with its own "Remove photo" action),
+ * tap a persisted caption to edit it inline (same `TextSheet` flow as
+ * `AttachmentBody`'s `NoteText`), and a still-streaming caption
+ * (`src/store/livetext.ts`) renders with the same `StreamingText` treatment as
+ * a streaming transcript, keyed by the *photo's* file since that's the caption
  * runner's source key.
  */
 export function PhotoGrid({ photoGroups, onEditText, onRemoveAttachment }: PhotoGridProps) {
@@ -44,7 +45,7 @@ export function PhotoGrid({ photoGroups, onEditText, onRemoveAttachment }: Photo
   if (photoGroups.length === 0) return null
 
   return (
-    <div className="mt-2 grid grid-cols-3 gap-1.5">
+    <div className="mt-2 flex flex-col gap-2">
       {photoGroups.map(({ photo, captions }) => (
         <PhotoTile
           key={photo.file}
@@ -121,12 +122,16 @@ function PhotoTile({
   if (!url) return null
 
   return (
-    <div className="flex flex-col gap-0.5">
+    // One timeline row: fixed-size thumbnail on the left, caption text aligned
+    // to its right (top-aligned so a multi-line caption reads from the photo's
+    // top edge). `items-start` + `min-w-0` keeps a long caption wrapping in its
+    // own column rather than pushing the thumbnail.
+    <div className="flex items-start gap-3">
       <button
         type="button"
         onClick={() => setViewerOpen(true)}
         aria-label="View photo"
-        className={cx('block aspect-square w-full overflow-hidden rounded-lg border', tone.border)}
+        className={cx('block h-20 w-20 shrink-0 overflow-hidden rounded-lg border', tone.border)}
       >
         <img src={url} alt="" className="h-full w-full object-cover" />
       </button>
@@ -135,13 +140,15 @@ function PhotoTile({
           type="button"
           onClick={() => onEditCaption(caption.file, captionText, caption.derivedFrom)}
           aria-label={EDIT_TITLE.derived}
-          className="text-left"
+          className="min-w-0 flex-1 text-left"
         >
-          <span className={cx('line-clamp-2 block', AUTHORSHIP_STYLE.derived)}>{captionText}</span>
+          <span className={cx('block', AUTHORSHIP_STYLE.derived)}>{captionText}</span>
         </button>
-      ) : (
-        liveCaption && <StreamingText text={liveCaption} authorship="derived" />
-      )}
+      ) : liveCaption ? (
+        <span className="min-w-0 flex-1">
+          <StreamingText text={liveCaption} authorship="derived" />
+        </span>
+      ) : null}
       {viewerOpen && (
         <PhotoViewer
           src={url}

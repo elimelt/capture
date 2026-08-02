@@ -343,7 +343,15 @@ export default function CaptureScreen() {
           )}
         </EmptyState>
       ) : (
-        <EntryList entries={todayEntries} onDelete={handleDelete} onCopy={(entry) => void copyEntry(entry)} />
+        // No gap between nodes: the timeline rail's connecting line abuts
+        // across cards so the whole day reads as one continuous rail.
+        <div className="flex flex-col">
+          <EntryList
+            entries={todayEntries}
+            onDelete={handleDelete}
+            onCopy={(entry) => void copyEntry(entry)}
+          />
+        </div>
       )}
 
       {textOpen && (
