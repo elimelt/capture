@@ -1,5 +1,5 @@
 import { Suspense, lazy, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
-import { NavLink, Navigate, Route, Routes } from 'react-router-dom'
+import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import CaptureScreen from './capture/CaptureScreen'
 import ContextScreen from './context/ContextScreen'
 import DayScreen from './dayview/DayScreen'
@@ -62,6 +62,8 @@ function enrichmentNoticeBody(transcribed: number, captioned: number): string {
 }
 
 export default function App() {
+  const navigate = useNavigate()
+  const location = useLocation()
   const init = useAppStore((s) => s.init)
   const refresh = useAppStore((s) => s.refresh)
   const entries = useAppStore((s) => s.entries)
@@ -181,7 +183,32 @@ export default function App() {
           )}
         >
           <div className="mx-auto flex max-w-md">
-            {tabs.map((tab) => (
+            {tabs.map((tab) => (tab.button ? (
+              <button
+                key={tab.to}
+                type="button"
+                aria-label="Context export"
+                onClick={() => navigate(tab.to)}
+                className={cx(
+                  'relative flex min-h-14 flex-1 flex-col items-center justify-center gap-1',
+                  type_.sub,
+                  location.pathname === tab.to
+                    ? cx('font-semibold', tone.accent)
+                    : cx('font-medium', tone.textMuted),
+                )}
+              >
+                <ExportIcon />
+                {tab.label}
+                <span
+                  aria-hidden="true"
+                  className={cx(
+                    'h-[3px] w-5',
+                    shape.pill,
+                    location.pathname === tab.to ? tone.accentBg : 'bg-transparent',
+                  )}
+                />
+              </button>
+            ) : (
               <NavLink
                 key={tab.to}
                 to={tab.to}
@@ -233,7 +260,7 @@ export default function App() {
                   </>
                 )}
               </NavLink>
-            ))}
+            )))}
           </div>
         </nav>
       </div>
@@ -252,5 +279,24 @@ export default function App() {
         </Toast>
       )}
     </div>
+  )
+}
+
+function ExportIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-4 w-4"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M12 3v12" />
+      <path d="m7 8 5-5 5 5" />
+      <path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7" />
+    </svg>
   )
 }
