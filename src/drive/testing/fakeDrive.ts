@@ -49,14 +49,19 @@ const FOLDER_MIME = 'application/vnd.google-apps.folder'
  * client mock translates it at the boundary. */
 class FakeHttpError extends Error {
   status: number
-  constructor(status: number, message: string) {
+  /** Mirrors `DriveError.reason` (Drive's `error.errors[0].reason`, e.g.
+   * `storageQuotaExceeded`) so quota/rate-limit classification tests can
+   * exercise the fake without depending on the real class. */
+  reason?: string
+  constructor(status: number, message: string, reason?: string) {
     super(message)
     this.status = status
+    this.reason = reason
   }
 }
 
-function throwHttp(status: number, message: string): never {
-  throw new FakeHttpError(status, message)
+function throwHttp(status: number, message: string, reason?: string): never {
+  throw new FakeHttpError(status, message, reason)
 }
 
 export interface FakeNode {
@@ -99,8 +104,9 @@ export interface FakeDrive {
   touch(fileId: string): void
   /** Journal a removal (permanent delete / lost visibility). */
   remove(fileId: string): void
-  /** Fail every upload with this HTTP status until cleared (`null`). */
-  failNext(status: number | null): void
+  /** Fail every upload with this HTTP status (and optional Drive `reason`
+   * code, e.g. `storageQuotaExceeded`) until cleared (`null`). */
+  failNext(status: number | null, reason?: string): void
   /** Fail every upload of exactly this file name, forever, regardless of
    * `failNext` — simulates one deterministically-poison row while its
    * neighbors succeed. */
@@ -142,7 +148,7 @@ export function fakeDrive(): FakeDrive {
   const uploadOrder: string[] = []
   let n = 0
   let idGen = 0
-  let failWith: { status: number } | null = null
+  let failWith: { status: number; reason?: string } | null = null
   let failNameWith: { name: string; status: number } | null = null
   let failOn: 'list' | 'read' | 'changes' | null = null
   let failStatus = 500
@@ -190,8 +196,8 @@ export function fakeDrive(): FakeDrive {
     remove(fileId) {
       journal.push({ fileId, removed: true })
     },
-    failNext(status) {
-      failWith = status === null ? null : { status }
+    failNext(status, reason) {
+      failWith = status === null ? null : { status, ...(reason ? { reason } : {}) }
     },
     failName(name, status = 400) {
       failNameWith = name === null ? null : { name, status }
@@ -225,7 +231,7 @@ export function fakeDrive(): FakeDrive {
       if (failNameWith && a.name === failNameWith.name) {
         throwHttp(failNameWith.status, 'boom-name')
       }
-      if (failWith) throwHttp(failWith.status, 'boom')
+      if (failWith) throwHttp(failWith.status, 'boom', failWith.reason)
       // Mirror the real client's contract: re-uploading a pre-generated id
       // that already landed yields 409 upstream, which uploadFile swallows
       // and reports as success without creating anything.
@@ -319,7 +325,9 @@ export async function driveClientMock(): Promise<Record<string, unknown>> {
       try {
         return await call(...a)
       } catch (err) {
-        if (err instanceof FakeHttpError) throw new actual.DriveError(err.status, err.message)
+        if (err instanceof FakeHttpError) {
+          throw new actual.DriveError(err.status, err.message, err.reason)
+        }
         throw err
       }
     }

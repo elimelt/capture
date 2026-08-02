@@ -17,6 +17,7 @@ export interface NavTab {
 export const TABS: readonly NavTab[] = [
   { to: '/', label: 'Capture' },
   { to: '/day', label: 'Today' },
+  { to: '/context', label: 'Context' },
   { to: '/chat', label: 'Recall', assistant: true },
   { to: '/settings', label: 'Settings' },
 ]

@@ -2,6 +2,7 @@ import type { Entry } from '../contract/types'
 import { useAppStore } from '../store/appStore'
 import { withTimeOfDayIso } from '../contract/time'
 import { EntryCard } from './EntryCard'
+import { downscalePhoto } from './photo'
 
 interface EntryListProps {
   entries: Entry[]
@@ -42,12 +43,13 @@ export function EntryList({ entries, onDelete }: EntryListProps) {
             })
           }
           onAddPhoto={(file) =>
-            void amend({
-              targets: [entry.id],
-              attachments: [
-                { kind: 'photo', blob: file, mimeType: file.type || 'image/jpeg' },
-              ],
-            })
+            void (async () => {
+              const photo = await downscalePhoto(file)
+              await amend({
+                targets: [entry.id],
+                attachments: [{ kind: 'photo', blob: photo.blob, mimeType: photo.mimeType }],
+              })
+            })()
           }
           onAddAudio={(result) =>
             void amend({

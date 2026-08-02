@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AmendEvent } from '../contract/types'
+import { EVENT_SCHEMA } from '../contract/types'
 import { useFreshIndexedDb } from '../testing/freshDb'
 
 useFreshIndexedDb()
@@ -43,6 +44,28 @@ function amendsOf(events: readonly { type: string }[]): AmendEvent[] {
   return events.filter((e): e is AmendEvent => e.type === 'amend')
 }
 
+/** A caption amend as another device would have pushed it to Drive. */
+function remoteCaptionAmend(targetId: string, photoFile: string): AmendEvent {
+  return {
+    schema: EVENT_SCHEMA,
+    type: 'amend',
+    id: 'remote1',
+    seq: 2,
+    stream: 'timelog',
+    loggedAt: AT,
+    deviceTz: 'America/New_York',
+    targets: [targetId],
+    attachments: [
+      {
+        kind: 'text',
+        file: '000002_remote_note.txt',
+        mimeType: 'text/plain',
+        derivedFrom: photoFile,
+      },
+    ],
+  }
+}
+
 beforeEach(() => {
   captionPhoto.mockReset()
   vi.stubGlobal('navigator', { onLine: true })
@@ -74,7 +97,7 @@ describe('drainCaptions', () => {
     expect(captionPhoto).toHaveBeenCalledTimes(1)
   })
 
-  it('skips an empty caption permanently via a meta marker', async () => {
+  it('skips an empty caption permanently via a meta marker with a reason', async () => {
     const s = await setup()
     captionPhoto.mockResolvedValue('')
     const cap = await appendPhotoCapture(s)
@@ -82,23 +105,34 @@ describe('drainCaptions', () => {
 
     expect(await s.drainCaptions('timelog')).toBe(0)
     const db = await s.getDb()
-    expect(await db.get('meta', `caption:skip:${file}`)).toBe(true)
+    expect(await db.get('meta', `caption:skip:${file}`)).toMatchObject({ reason: 'empty-result' })
+    expect(await s.listSkippedCaptions()).toEqual([
+      { file, reason: 'empty-result', at: expect.any(String) },
+    ])
 
     expect(await s.drainCaptions('timelog')).toBe(0)
     expect(captionPhoto).toHaveBeenCalledTimes(1)
   })
 
-  it('skips photos whose blob is missing without calling the API', async () => {
+  it('defers (does not skip) photos whose blob is missing, retrying once one appears', async () => {
+    // #55: a source pruned locally after upload is indistinguishable from
+    // one never downloaded — both must be retried once a blob is local.
     const s = await setup()
+    captionPhoto.mockResolvedValue('A latte.')
     const cap = await appendPhotoCapture(s)
     const file = cap.attachments[0].file
     const db = await s.getDb()
+    const blob = await db.get('blobs', file)
     await db.delete('blobs', file)
 
     expect(await s.drainCaptions('timelog')).toBe(0)
     expect(captionPhoto).not.toHaveBeenCalled()
-    expect(await db.get('meta', `caption:skip:${file}`)).toBe(true)
+    expect(await db.get('meta', `caption:skip:${file}`)).toBeUndefined()
     expect(amendsOf(await s.listEvents('timelog'))).toEqual([])
+
+    await db.put('blobs', blob!)
+    expect(await s.drainCaptions('timelog')).toBe(1)
+    expect(captionPhoto).toHaveBeenCalledTimes(1)
   })
 
   it('backs off after a captioning failure', async () => {
@@ -111,6 +145,48 @@ describe('drainCaptions', () => {
 
     expect(await s.drainCaptions('timelog')).toBe(0)
     expect(captionPhoto).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not re-caption a photo whose caption arrived via a pulled amend', async () => {
+    // The pull-race guard (issue #51): the vision runner previously lacked
+    // this check that the transcribe runner already had, which could
+    // produce duplicate captions on a photo synced from two devices.
+    const s = await setup()
+    captionPhoto.mockResolvedValue('A latte on a wooden table.')
+    const cap = await appendPhotoCapture(s)
+    await s.importEvents(
+      'timelog',
+      [remoteCaptionAmend(cap.id, cap.attachments[0].file)],
+      new Map<string, Blob>(),
+    )
+
+    expect(await s.drainCaptions('timelog')).toBe(0)
+    expect(captionPhoto).not.toHaveBeenCalled()
+    expect(amendsOf(await s.listEvents('timelog'))).toHaveLength(1)
+  })
+
+  it('drops an in-flight caption when a pull imports a remote one mid-drain', async () => {
+    const s = await setup()
+    let resolveText!: (text: string) => void
+    captionPhoto.mockImplementation(
+      () =>
+        new Promise((res) => {
+          resolveText = res
+        }),
+    )
+    const cap = await appendPhotoCapture(s)
+
+    const drain = s.drainCaptions('timelog')
+    await vi.waitFor(() => expect(captionPhoto).toHaveBeenCalledTimes(1))
+    await s.importEvents(
+      'timelog',
+      [remoteCaptionAmend(cap.id, cap.attachments[0].file)],
+      new Map<string, Blob>(),
+    )
+    resolveText('A latte on a wooden table.')
+
+    expect(await drain).toBe(0)
+    expect(amendsOf(await s.listEvents('timelog'))).toHaveLength(1)
   })
 
   it('does nothing while offline', async () => {
@@ -183,6 +259,30 @@ describe('drainCaptions', () => {
     expect(await s.drainCaptions('timelog')).toBe(0)
     expect(s.liveCaptions.snapshot().has(file)).toBe(false)
     expect(amendsOf(await s.listEvents('timelog'))).toEqual([])
+  })
+
+  it('clears live text when a pull imports a remote caption mid-drain', async () => {
+    const s = await setup()
+    let emitPartial!: (text: string) => void
+    let resolveText!: (text: string) => void
+    captionPhoto.mockImplementation(
+      (_blob, onPartial) =>
+        new Promise((res) => {
+          emitPartial = onPartial!
+          resolveText = res
+        }),
+    )
+    const cap = await appendPhotoCapture(s)
+    const file = cap.attachments[0].file
+
+    const drain = s.drainCaptions('timelog')
+    await vi.waitFor(() => expect(captionPhoto).toHaveBeenCalledTimes(1))
+    emitPartial('local partial')
+    await s.importEvents('timelog', [remoteCaptionAmend(cap.id, file)], new Map<string, Blob>())
+    resolveText('local final')
+
+    expect(await drain).toBe(0)
+    expect(s.liveCaptions.snapshot().has(file)).toBe(false)
   })
 
   it('coalesces overlapping drains onto one in-flight promise', async () => {

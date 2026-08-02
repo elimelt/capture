@@ -26,16 +26,18 @@ real sync row plus its pending-enrichment state to one of three *display* lifecy
 `'understanding'`, `'settled'`, `'failed'` — so "Queued" (infrastructure language) never
 reaches the card. `LifecycleBadge` renders that mapping.
 
-Each `EntryCard` defaults to a **collapsed** state (#78): time, place-label context,
-the entry's primary text (clamped to two lines) or its primary clip's play button, and
-one overflow affordance — no unlabeled action icons. Tapping the card content or the
-overflow button **expands** the card (view-local `useState`, never persisted, never an
-event) to reveal the full attachment body, a location preview, and the same edit
-affordances as labelled buttons (icon + text) instead of a bare icon row. The expanded
-card also surfaces up to two **related memories** (#83 v1) via a pure, local, explainable
-scorer (`related.ts`/`useRelated.ts`) — shared place, lexical overlap, and a recency
-factor; no embeddings, no LLM calls, gated by a minimum-score threshold so nothing shows
-unless it genuinely relates.
+`EntryCard` renders its content **unconditionally** (#102, inverting #78's collapse):
+time, place-label context, the entry's full primary text (no line clamp) or its primary
+clip's waveform fingerprint, every other note/transcript and extra audio clip
+(`AttachmentBody`), every photo in a tight capture-order grid (`PhotoGrid`), and the
+compact place card — nothing attachment-shaped is ever hidden. The only things that
+collapse are chrome: a single "+" affordance expands into a compact icon-only action
+menu (add note / add photo / add audio / location / edit / delete — each icon still
+carries an `aria-label`), and up to two **related memories** (#83 v1) stay behind their
+own small "Related" reveal, since scoring them is a full-log scan (`related.ts`/
+`useRelated.ts` — shared place, lexical overlap, and a recency factor; no embeddings, no
+LLM calls, gated by a minimum-score threshold so nothing shows unless it genuinely
+relates). Both toggles are view-local `useState`, never persisted, never an event.
 
 ### `src/dayview`
 
@@ -99,8 +101,11 @@ deleted-with-Undo, discarded).
   (`at <place>` when a saved place matches, `location on` when only coordinates are
   available, nothing when location is disabled).
 - **Text/photo capture:** `submitText(text)` and `submitPhoto(file)` each snapshot
-  location at submit time and call `capture` with a single `text` / `photo` attachment
-  (photo mime falls back to `image/jpeg` when `file.type` is empty).
+  location at submit time and call `capture` with a single `text` / `photo` attachment.
+  `submitPhoto` and the gesture accelerator's photo add-on both run the file through
+  `photo.ts#downscalePhoto` first (issue #58) — every photo attachment this screen ever
+  builds is the downscaled/re-encoded JPEG (or the original blob, on a decode failure),
+  never the multi-megabyte camera original.
 - **Toasts:** a single `ToastState` (`captured` with `entryId`, or `discarded`)
   auto-clears after 5s. "Undo" on the captured toast calls `revoke([entryId])`
   immediately. Delete requests (`handleDelete`) clear any capture toast first so only
@@ -113,10 +118,59 @@ deleted-with-Undo, discarded).
 - **Automatic place naming (§3.4):** after every successful capture,
   `maybePromptPlace(event)` checks `needsPlacePrompt(location, locationEnabled)` (from
   `geo.ts`) — a location captured at a coordinate matching no saved place (no
-  `placeLabel`) opens `NamePlaceSheet`. Saving calls `addPlace` (with a best-effort
-  `reverseGeocode` "near …" address) and retro-labels the just-captured entry via
+  `placeLabel`) opens `NamePlaceSheet`. Since a capture-time snapshot never carries
+  `address` (geocoding is lazy), `maybePromptPlace` also kicks off
+  `reverseGeocode(location.lat, location.lng)` in the background and feeds the result
+  into `pendingPlaceAddress` state as it resolves, so the sheet's "near …" hint can
+  actually appear (#59 — it used to read a field that was always empty at this point in
+  the flow, so it was dead code). A `pendingPlaceEntryIdRef` guards against a slow
+  lookup painting a stale address onto a newer prompt if the user dismisses one and
+  triggers another before it resolves. Saving calls `addPlace` (reusing
+  `pendingPlaceAddress` before falling back to a fresh `reverseGeocode`, which is cached
+  either way) and retro-labels the just-captured entry via
   `amend({ targets: [entryId], patch: { location } })`; skipping just closes the sheet —
   the entry is already saved.
+
+### src/capture/photo.ts
+
+**Purpose:** Photo downscaling at the capture boundary (issue #58) — a camera
+original (3-8MB JPEG/HEIC) is downscaled and re-encoded once here, before it ever
+reaches `capture`/`amend`, so every replica (local IndexedDB, every other device's
+pull) stores and syncs the same right-sized blob. Chosen over the alternative fix
+shape offered by the issue (a `keepPhotosLocally` setting + on-demand pull,
+mirroring `keepAudioLocally`) because photo *originals* were never the useful
+artifact here — every consumer (thumbnails, the full-screen viewer, the vision
+captioner's own 1024px re-encode) already works from a downscaled copy — and
+because deciding this once at capture time avoids retrofitting a multi-GB backlog
+later, which the issue calls out as the harder path.
+
+**Exports:**
+
+- `MAX_PHOTO_EDGE_PX = 2048` — long edge of the stored photo.
+- `scaledDimensions(width, height, maxEdge): { width; height }` — pure: target
+  dimensions preserving aspect ratio, capped at `maxEdge` on the long side, never
+  upscaling. The tested core (`photo.test.ts`).
+- `interface DownscaledPhoto { blob: Blob; mimeType: string }`.
+- `downscalePhoto(blob: Blob): Promise<DownscaledPhoto>` — decodes with
+  `createImageBitmap(blob, { imageOrientation: 'from-image' })` (bakes in EXIF
+  rotation so a portrait doesn't land sideways), draws to a canvas sized by
+  `scaledDimensions`, and re-encodes to JPEG at quality 0.85. Falls back to the
+  original blob untouched on any decode/encode failure (exotic formats, no canvas
+  context) — a bigger original beats a lost photo. Not unit-tested directly:
+  `createImageBitmap`/`canvas` are browser APIs unavailable under the project's
+  node test environment, the same untested-precedent as `vision/api.ts`'s
+  identical canvas path.
+
+Called from every place a photo attachment is built: `CaptureScreen.submitPhoto`,
+the gesture accelerator's photo add-on, and `EntryList.onAddPhoto`.
+
+### src/capture/photo.test.ts
+
+Vitest unit tests for `scaledDimensions` (the tested pure core; `downscalePhoto`
+itself isn't unit-tested — see above): a source already under the cap is left
+untouched, a source exactly at the cap is never upscaled, landscape/portrait/square
+sources downscale by their long edge preserving aspect ratio, and extreme aspect
+ratios never round a dimension down to zero.
 
 ### src/capture/holdGesture.ts
 
@@ -365,7 +419,9 @@ hides the entry immediately and appends the revoke only after the undo window.
 - `onSetTime(time)` → `patch.capturedAt = withTimeOfDayIso(entry.capturedAt, time)`
   (keeps the entry's date, changes only time-of-day).
 - `onAddNote` / `onAddPhoto` / `onAddAudio` → amend with a single new `text` / `photo` /
-  `audio` attachment.
+  `audio` attachment. `onAddPhoto` runs the file through `photo.ts#downscalePhoto`
+  first, same as `CaptureScreen` (issue #58) — no photo attachment anywhere in the app
+  skips downscaling.
 - `onEditText(oldFile, text, derivedFrom?)` → one amend that both removes the old file
   (`patch.removeAttachments: [oldFile]`) and adds the replacement text; `derivedFrom` is
   carried over so an edited transcript/caption stays machine-derived and is never
@@ -474,142 +530,149 @@ derived; exhaustive over attachment shapes with/without `derivedFrom` across all
 
 ### src/capture/cardView.ts
 
-**Purpose:** Pure view-model for the collapsed-vs-expanded entry card (#78) — no I/O, no
+**Purpose:** Pure view-model for the entry card (#78, revised by #102) — no I/O, no
 React; tested directly (`cardView.test.ts`). Builds on `groupAttachments`; never
-re-derives grouping semantics, only picks a primary among them.
+re-derives grouping semantics, only picks/orders among them. #102's core inversion:
+the card no longer has a content-hiding collapsed state, so this module's job changed
+from "what does the collapsed card show" to "what leads, and what does the photo grid
+render" — every attachment surfaces somewhere in `EntryCard`, and `extraCount` (the old
+"+N hidden" hint) is gone along with the content it used to count as hidden.
 
 **Exports:**
 
 - `CardViewModel` — `{ primaryText?: { file: string; authorship: Authorship };
-  primaryAudio?: Attachment; collapsedShowsLocation: boolean; extraCount: number }`.
+  primaryAudio?: Attachment; collapsedShowsLocation: boolean; photoGroups: PhotoGroup[] }`.
   `primaryText.authorship` is always `'authored'` or `'spoken'` in practice (a photo
   caption is never chosen as primary text below) but typed as the full `Authorship`
   union so callers compose against the one classification (#80) rather than
-  re-deriving it from a raw `derivedFrom` string.
+  re-deriving it from a raw `derivedFrom` string. `primaryText`/`primaryAudio` are now
+  purely *layout* signals (which text leads; whether the header's compact waveform or
+  the full-width audio-only one applies) — they no longer gate visibility, since any
+  additional transcripts/notes/clips render too, via `EntryCard`'s unconditional
+  `AttachmentBody`.
 - `cardViewModel(entry, groups): CardViewModel` — `primaryText` is the first transcript,
   else the first user note (undefined for an audio-only or photo-only entry), with its
   `authorship()` (`authorship.ts`) precomputed; `primaryAudio` is the first audio
   attachment (the one that plays from the card header); `collapsedShowsLocation` mirrors
-  the header's place-label/address condition; `extraCount` is the count of attachments
-  that are neither `primaryText` nor `primaryAudio` — everything the collapsed card
-  doesn't surface, driving the overflow button's "+N" hint. Actions (edit/delete/etc.)
-  are not attachments and are never counted.
+  the header's place-label/address condition; `photoGroups` is a pass-through of
+  `groups.photoGroups` (every photo, paired with its captions, in capture order) — the
+  source for the card's always-visible thumbnail grid (`PhotoGrid`).
 
 ### src/capture/cardView.test.ts
 
 Vitest unit tests for `cardViewModel`: all-empty model for an attachment-and-location-
 free entry, transcript-over-note primacy (asserting `authorship: 'spoken'` and
 `'authored'` respectively), audio-only entries (`primaryText` undefined, audio as
-primary), exact hidden-attachment counting, and `collapsedShowsLocation` for place
-label / address / bare-coordinate / no-location cases.
+primary), `collapsedShowsLocation` for place label / address / bare-coordinate /
+no-location cases, and (#102) that `photoGroups` exposes every photo for the
+always-visible grid — including alongside a primary text/audio (nothing is hidden any
+more), deterministic capture-order ordering across multiple photos regardless of
+caption-attachment insertion order, a captionless photo pairing with an empty
+`captions` array rather than being omitted, and an empty array for a photo-free entry.
 
 ### src/capture/EntryCard.tsx
 
-**Purpose:** One entry's card, defaulting to a **collapsed** state and expanding
-in-place to reveal everything else (#78): header (editable time, place label, lifecycle
-badge, duration, play button), collapsed primary-text preview or full attachment body +
-mini map when expanded, labelled action row (expanded only), and the sheets/inputs
-those actions open.
+**Purpose:** One entry's card (#78, inverted by #102: **content is always visible;
+actions are what collapse**): header (editable time, place label, lifecycle badge,
+duration, play button), then unconditionally every note/transcript, every extra audio
+clip, every photo (tight grid), and the place card, then a footer holding a "Related"
+reveal and the single "+" action menu, plus the sheets/inputs those actions open.
 
 **Exports:** `EntryCard(props: EntryCardProps)` and `timeLabel(iso: string): string`
 (locale time like "9:04 AM"). Props: `entry`, `maxClipSec`, `sync?: SyncStatusRow`, and
 callbacks `onDelete`, `onSetTime(time)`, `onAddNote(text)`, `onAddPhoto(file)`,
 `onAddAudio(result)`, `onEditText(oldFile, text, derivedFrom?)`,
 `onRemoveAttachment(file)`, `onSetLocation(location | null)`, `onApplyEdit(patch)` —
-unchanged by the collapse/expand work, so `EntryList`'s amend wiring needed no changes.
+unchanged by #102's density pass, so `EntryList`'s amend wiring needed no changes.
 The card computes its own `EntryLifecycle` from `sync` + `hasPendingEnrichment(entry)`
 (`lifecycle.ts`, #79) and renders it via `LifecycleBadge`.
 
 **Key behaviors:**
 
-- **Collapsed by default (#78):** `expanded` is `useState(false)`, view-local only —
-  never persisted, never an event; a fresh card (e.g. after a list re-render) always
-  starts collapsed. The pure `cardViewModel(entry, groupAttachments(entry.attachments))`
-  decides what the collapsed card shows.
-- **Header grouping (always visible, collapsed or expanded):** one flex row — time +
-  place label tightly grouped on the left, sync badge + clip duration + play button
-  pushed to the far right. The time label has no underline decoration; it is still the
-  tap target for the native picker (below), and the Edit sheet provides the second,
-  labelled path to the same field. The place label renders only when
-  `vm.collapsedShowsLocation` is true. Both are metadata, not content (#85): the time
-  button and place label are explicitly `type_.sub` (sans, tabular-nums on the time) —
-  the row no longer wraps in `type_.body`, which previously leaked serif onto the time
-  via inheritance.
+- **Content is always visible (#102):** there is no more content-hiding "collapsed"
+  state or `expanded` toggle. `menuOpen` (the "+" action menu) and `relatedOpen` (the
+  one thing still allowed to stay behind a reveal) are separate, unrelated, view-local
+  `useState`s — never persisted, never an event — so opening one never implies the
+  other. The pure `cardViewModel(entry, groupAttachments(entry.attachments))` still
+  decides header layout and the photo grid's contents, but no longer decides what's
+  visible at all.
+- **Header grouping:** one flex row — time + place label tightly grouped on the left,
+  sync badge + clip duration + play button pushed to the far right. The time label has
+  no underline decoration; it is still the tap target for the native picker (below), and
+  the Edit sheet provides the second, labelled path to the same field. The place label
+  renders only when `vm.collapsedShowsLocation` is true. Both are metadata, not content
+  (#85): the time button and place label are explicitly `type_.sub` (sans, tabular-nums
+  on the time) — the row no longer wraps in `type_.body`, which previously leaked serif
+  onto the time via inheritance.
 - **Time editing (B8):** the time label is a button layered over an invisible
   `<input type="time">`; tapping calls `showPicker()` (fallback `focus()`) so iOS shows
   its native wheel picker. `onChange` fires `onSetTime` only for non-empty values.
 - **Primary clip playback (B10):** the *first* audio attachment plays from the header
   via `useAudioPlayback(audio?.file)` as an `accent`-variant `IconButton` (accent wash +
   border so it reads as interactive against the card); while playing, a progress fill
-  widens behind the ▶/■ icon. This is the collapsed card's "play" affordance; later
-  clips render inside `AttachmentBody`, expanded only. A `Waveform` strip
-  (`waveformMath.ts`/`Waveform.tsx`, #86, fed the same `playback.progress`) renders
-  beside this button whenever the collapsed primary-content slot below *isn't* also
-  showing this clip's fingerprint — i.e. whenever the card has `vm.primaryText` (a
-  transcribed clip; the slot below is text) or is expanded (that slot has unmounted).
-  The one case that skips it is a collapsed, audio-only card, where the fingerprint
-  already renders as the primary content itself — so it is never drawn twice for the
-  same clip, and never absent while the audio is visible (req. 5).
-- **Collapsed content:** when collapsed and `vm.primaryText` is set, `PrimaryTextPreview`
-  (private) loads the text via `getBlob` (same stale-guarded pattern as
-  `AttachmentBody`'s `NoteText`) and renders it `line-clamp-2`, styled `bodyStrong` in
-  `textPrimary` for both a transcript and a note (#80: both are the user's own words,
-  heaviest/darkest, never distinguished by weight or color); a transcript
-  (`vm.primaryText.authorship === 'spoken'`) additionally gets the quiet `SpokenMark`
-  glyph (small muted mic icon, `aria-hidden`) noting it was transcribed rather than
-  typed. Tapping the preview expands the card rather than opening the inline editor —
-  editing lives behind expansion. `bodyStrong` is `leading-snug` (not `leading-normal`,
-  #85) so the two-line clamp reads as a compact fragment of speech, not a headline.
-  Audio-only entries (no `vm.primaryText`) show their `Waveform` fingerprint (#86) in
-  this same slot instead — full-width, fed `playback.progress`, wrapped in a button
-  that expands the card on tap like `PrimaryTextPreview` — so the primary clip's
-  signature *is* the collapsed content rather than a bare play button standing alone.
-- **Expanded content:** the full `AttachmentBody` (all attachments, inline editing) plus
-  a `PlaceCard` row (when `entry.location` is set) mount once `expanded` is true.
-  `PlaceCard` is leaflet-free — no network, no map tiles in the feed (#81); tapping it
-  sets `mapOpen`, which mounts the lazy `MiniMap` full-screen dialog. Leaflet's chunk
-  now loads only on that explicit tap, not for every expanded card with a location.
-- **Per-card recorder:** "+ audio"/"Add audio" uses its own `useRecorder()` instance so
-  entries can hold multiple clips; while recording, the footer (labelled actions or the
-  overflow toggle) is replaced by a compact timer bar with Discard/Done, regardless of
-  collapse state (recording can only start from the expanded footer, so the card is
-  already expanded whenever this bar shows). If that recorder errors, "Add audio"
-  becomes a "mic unavailable" button that just calls `rec.resetError`.
+  widens behind the ▶/■ icon. Later clips render inside `AttachmentBody`, always. A
+  `Waveform` strip (`waveformMath.ts`/`Waveform.tsx`, #86, fed the same
+  `playback.progress`) renders beside this button whenever the content area below
+  *isn't* also showing this clip's fingerprint — i.e. whenever the card has
+  `vm.primaryText` (a transcribed clip; the content area shows text, not audio). The one
+  case that skips it is an audio-only card (no `vm.primaryText`), where the fingerprint
+  renders full-width in the content area instead — the two conditions are mutually
+  exclusive and exhaustive, so the fingerprint is never drawn twice for the same clip,
+  and never absent while the audio is visible (req. 5), independent of `menuOpen`.
+- **Content, unconditional (#102):** an audio-only entry (no `vm.primaryText`) leads
+  with its `Waveform` fingerprint (#86) full-width, fed `playback.progress`, wrapped in
+  a button that toggles playback on tap (replacing the old "tap to expand" — there is no
+  expand any more). Then `AttachmentBody` mounts unconditionally: every transcript and
+  note (the "primary" one is simply first in its render order — transcripts before
+  notes — with no separate clamped preview any more, so it and every other text render
+  identically, full text, no line clamp, tap-to-edit), every streaming transcript, every
+  extra audio clip, and any orphan caption. Then `PhotoGrid` mounts unconditionally with
+  `vm.photoGroups` (every photo, tight grid, capture order — see `PhotoGrid.tsx`). Then
+  the `PlaceCard` row (when `entry.location` is set) — leaflet-free, no network, no map
+  tiles in the feed (#81); tapping it sets `mapOpen`, which mounts the lazy `MiniMap`
+  full-screen dialog. Leaflet's chunk loads only on that explicit tap.
+- **Per-card recorder:** "Add audio" (in the "+" menu) uses its own `useRecorder()`
+  instance so entries can hold multiple clips; while recording, the footer (the
+  "Related" reveal and "+" menu) is replaced by a compact timer bar with Discard/Done.
+  If that recorder errors, the menu's audio icon becomes a "mic unavailable, tap to
+  retry" button that just calls `rec.resetError`.
 - **Lazy Leaflet:** `MiniMap` and `LocationSheet` are `lazy()` imports wrapped in
   `Suspense fallback={null}`, keeping the Leaflet JS+CSS chunk out of the initial
   bundle; `MiniMap` additionally only mounts while `mapOpen` is true (#81), so opening
-  it is the one thing that loads the chunk, not expanding the card or opening the
+  it is the one thing that loads the chunk, not showing the place card or opening the
   location editor.
 - Hidden photo input (camera capture) and a `TextSheet` for "Add note" mirror the
   capture-screen patterns.
-- **Labelled action row (expanded only, #78):** a full-bleed hairline divider separates
-  the card's content from a footer of `Button` (`ghost`/`dangerGhost`, `sm`) rows — icon
-  *and* text label this time, answering the design review's "six unlabeled icons are
-  conceptually ambiguous" complaint: "Add note", "Add photo", "Add audio" (note/photo/
-  audio render the same glyphs as the main CTA via `captureIcon` from `src/ui`), then
-  "Location" (`PinIcon`/`PlusIcon`), then, pushed right, "Edit" (`SlidersIcon` — the
-  text cursor already means *text* here) opening `EditEntrySheet` (Save →
-  `onApplyEdit(patch)`), then "Delete" (`TrashIcon`, `dangerGhost` variant).
-- **Overflow/expand affordance:** a real `<button aria-expanded>` (never a hover- or
-  gesture-only trap) below the content, labelled "Show more" (plus a `vm.extraCount`
-  "+N" hint when attachments are hidden) or "Show less", with a `ChevronDownIcon` that
-  rotates 180° on expand. It is the collapsed card's only extra chrome, and it, along
-  with tapping the collapsed primary-text preview, is the way to reach the expanded
-  state.
-- **Related memories (#83 v1), expanded only:** `useRelated(entry, allEntries,
-  expanded)` — `allEntries` is `useAppStore((s) => s.entries)`, the whole folded log,
-  not the screen's filtered subset, since relatedness can span any date. Renders
-  nothing (no heading, no section) when the hook returns zero rows — the
-  minimum-score threshold in `relatedEntries` already decided nothing genuinely
-  relates. Otherwise a quiet `RelatedRows` block (private) below the location
-  preview: an "Related" overline, then up to `RELATED_MAX_RESULTS` rows of
-  `relativeDayLabel · reasonLabel` (meta line, `type_.caption`/`tone.textFaint`) plus
-  a one-line snippet (`type_.derived`/`tone.textDerived`, #80 — this is the app's
-  inference that another memory relates, not the user's own words in this position,
-  so it gets the same quiet treatment as a photo caption or generated prose). Tapping
-  a row navigates to `/day/<date>` of the related entry
-  via `useNavigate` (react-router-dom) — no import of `dayview/` itself, so the
-  layering rule holds.
+- **The "+" action menu (#102, replaces #78's expanded labelled-action column):** a
+  full-bleed hairline divider separates the card's content from a footer row. The single
+  "+" `IconButton` (aria-expanded, aria-label "Add or edit"/"Close actions") toggles
+  `menuOpen`; its `PlusIcon` rotates 45° into an "×" rather than drawing a second glyph.
+  When open, six icon-only `IconButton`s appear to its left (`flex-wrap`, so they wrap
+  on narrow viewports): "Add note", "Add photo", "Add audio" (or the mic-unavailable
+  fallback), "Add location"/"Edit location" (`PlusIcon`/`PinIcon`), "Edit entry"
+  (`SlidersIcon` — opens `EditEntrySheet`), "Delete entry" (`TrashIcon`, `danger`
+  variant) — every action still carries the same glyph as the main CTA/edit affordances
+  via `captureIcon` (`src/ui`), and every `IconButton` requires its `aria-label` at the
+  type level, so an unlabelled action icon can't compile. Selecting any action closes
+  the menu (`setMenuOpen(false)`) before opening its sheet/input. Menu state is plain
+  `useState` — never touches the store, never logged.
+- **"Related" reveal, its own toggle (#83 v1):** a quiet text button
+  (`type_.caption`/`tone.textFaint`, `ChevronDownIcon` rotating 180°) at the footer's
+  left, independent of the "+" menu — #102 explicitly allows related memories to stay
+  behind their own reveal, since scoring them is a full-log scan (#83 req. 5's cost
+  bound). `useRelated(entry, allEntries, relatedOpen)` — `allEntries` is
+  `useAppStore((s) => s.entries)`, the whole folded log, not the screen's filtered
+  subset, since relatedness can span any date. Renders nothing (no heading, no section)
+  when the hook returns zero rows — the minimum-score threshold in `relatedEntries`
+  already decided nothing genuinely relates, so the reveal can be tapped open onto
+  nothing without that being a bug. Otherwise a quiet `RelatedRows` block (private)
+  below the footer: a "Related" overline, then up to `RELATED_MAX_RESULTS` rows of
+  `relativeDayLabel · reasonLabel` (meta line, `type_.caption`/`tone.textFaint`) plus a
+  one-line snippet (`type_.derived`/`tone.textDerived`, #80 — this is the app's
+  inference that another memory relates, not the user's own words in this position, so
+  it gets the same quiet treatment as a photo caption or generated prose). Tapping a row
+  navigates to `/day/<date>` of the related entry via `useNavigate` (react-router-dom) —
+  no import of `dayview/` itself, so the layering rule holds.
 
 ### src/capture/editPlan.ts
 
@@ -767,61 +830,91 @@ primary-text first line, else "Voice note"/"Photo", else empty).
 
 ### src/capture/AttachmentBody.tsx
 
-**Purpose:** Renders an entry's content beyond the primary clip (B7), classified along
-the authored-vs-generated axis (#80).
+**Purpose:** Renders an entry's text content and extra audio clips (#78, revised by
+#102), classified along the authored-vs-generated axis (#80). Always mounted by
+`EntryCard` now — #102's "content is always visible" inversion removed the `expanded`
+gate this component used to render behind. Photos (and their removal) moved to
+`PhotoGrid.tsx` (#102: a tight thumbnail grid replaces the old one-thumbnail-per-row
+layout), so this component owns only text/audio and has no attachment-removal
+affordance of its own.
 
-**Export:** `AttachmentBody({ attachments, onEditText, onRemoveAttachment }:
-AttachmentBodyProps)`; also exports `SpokenMark` (the quiet transcribed-glyph, reused by
-`EntryCard`'s collapsed `PrimaryTextPreview`).
+**Export:** `AttachmentBody({ attachments, onEditText }: AttachmentBodyProps)`; also
+exports `useLiveText` (the shared `useSyncExternalStore` wiring for a `LiveTextStore`),
+`StreamingText`, `AUTHORSHIP_STYLE`, and `EDIT_TITLE` — all reused by `PhotoGrid.tsx` so
+in-grid captions compose the exact same tokens/edit flow rather than re-deriving them.
 
 **Ordering/classification:** delegates grouping to the pure `groupAttachments`
 (`attachmentGroups.ts`) and per-attachment classification to the pure `authorship()`
-(`authorship.ts`). Render order: transcripts, then any still-**streaming**
-transcripts, notes, extra audio rows (clips beyond the first, which plays from the
-card header), then one horizontal row per photo — 64 px thumbnail left, its caption(s)
-or still-streaming caption right — then any orphan captions (photo since removed).
-Returns `null` if every group is empty (streaming transcripts count — a fresh
-audio-only entry shows its transcript growing).
+(`authorship.ts`). Render order: transcripts (the first one — transcript-over-note — is
+what `cardViewModel` calls `primaryText`, but it renders identically to every other
+transcript/note here; there is no separate clamped "primary" preview any more), then
+any still-**streaming** transcripts, notes, extra audio rows (clips beyond the first,
+which plays from the card header), then any orphan captions (photo since removed — the
+one caption case still handled here, since it has no photo left to sit beside in
+`PhotoGrid`). Returns `null` if every group is empty (streaming transcripts count — a
+fresh audio-only entry shows its transcript growing).
 
 **Type scale (#80):** authored notes and spoken transcripts both render at
-`type_.bodyStrong`/`tone.textPrimary` — the heaviest, darkest treatment — since both are
-the user's own words; a transcript additionally gets the quiet `SpokenMark` glyph (small
-muted mic icon, `aria-hidden`) inline before the text, noting it was transcribed rather
-than typed, without ever reading lighter than a note. Photo captions (and any future
-derived text) render in `type_.derived`/`tone.textDerived` (serif, italic, 14 px) beside
-their thumbnail rather than as a competing text block — never bolder than authored/spoken
-text. The composition table (`AUTHORSHIP_STYLE`) and the `TextSheet` edit-title table
-(`EDIT_TITLE`) are both keyed by `Authorship`, so every call site agrees with the
-classifier.
+`type_.bodyStrong`/`tone.textPrimary` — the heaviest, darkest treatment, **full text, no
+line clamp** (#102: "content is always visible") — since both are the user's own words;
+a transcript additionally gets the quiet `SpokenMark` glyph (small muted mic icon,
+`aria-hidden`) inline before the text, noting it was transcribed rather than typed,
+without ever reading lighter than a note. Orphan captions render in
+`type_.derived`/`tone.textDerived` (serif, italic, 14 px) — never bolder than
+authored/spoken text. The composition table (`AUTHORSHIP_STYLE`) and the `TextSheet`
+edit-title table (`EDIT_TITLE`) are both keyed by `Authorship`, so every call site
+(including `PhotoGrid`) agrees with the classifier.
 
 **Key behaviors:**
 
-- **Streaming machine text.** The component subscribes (one `useSyncExternalStore`
-  per store) to the transient live-text stores `liveTranscripts`/`liveCaptions`
-  (`src/store/livetext.ts`), where the enrichment runners publish partial text keyed by
-  source file while a transcription/caption request streams. For each audio/photo
-  attachment with **no persisted derived text yet**, non-empty live text renders as a
-  read-only `StreamingText` — same tokens, position, and `SpokenMark` (for transcripts)
-  as the final `NoteText`, plus a pulsing cursor tick, `aria-live="polite"`, and nothing
-  to tap (there is no attachment to edit until the amend lands) — the same authorship
-  class as its eventual final form (#80 req. 6), so nothing re-styles when the amend
-  lands. Once a derived attachment exists it always wins over live text.
+- **Streaming transcripts.** The component subscribes (`useLiveText`, one
+  `useSyncExternalStore` per store) to the transient `liveTranscripts` store
+  (`src/store/livetext.ts`), where the transcription runner publishes partial text keyed
+  by source file while a request streams. For each audio attachment with **no persisted
+  transcript yet**, non-empty live text renders as a read-only `StreamingText` — same
+  tokens, position, and `SpokenMark` as the final `NoteText`, plus a pulsing cursor tick,
+  `aria-live="polite"`, and nothing to tap (there is no attachment to edit until the
+  amend lands) — the same `'spoken'` authorship treatment as its eventual final form
+  (#80 req. 6), so nothing re-styles when the amend lands. Once a persisted transcript
+  exists it always wins over live text. Streaming *captions* are `PhotoGrid`'s concern
+  (rendered beside their photo, keyed the same way against `liveCaptions`).
 - `NoteText` loads its text asynchronously via `getBlob(file)` (renders nothing until
   loaded; guards against stale sets on unmount). Tapping opens the shared edit
-  `TextSheet`, titled "Edit note" / "Edit caption" / "Edit transcript" per `EDIT_TITLE[
-  authorship(attachment)]`; save calls `onEditText(file, text, derivedFrom)`.
+  `TextSheet`, titled "Edit note" / "Edit transcript" per `EDIT_TITLE[
+  authorship(attachment)]` (orphan captions title "Edit caption"); save calls
+  `onEditText(file, text, derivedFrom)`.
 - `AudioRow` is a playback row (via `useAudioPlayback`) with the same progress-fill
   toggle button, a `Waveform` fingerprint strip (#86, same `playback.progress`) beside
   it, plus "Recording · Ns" caption — the entry's signature reads consistently on every
   clip beyond the header's primary one.
-- `PhotoThumb` loads a blob object URL (revoked on unmount), shows a 64px thumbnail, and
-  expands to the full-screen `PhotoViewer` on tap, passing the photo's caption
-  attachment file (if any) for alt text; the viewer's "Remove photo" button closes it
-  and calls `onRemove` (→ `onRemoveAttachment`).
+
+### src/capture/PhotoGrid.tsx
+
+**Purpose:** Tight thumbnail grid for an entry's photos (#102) — replaces the old
+one-64px-thumbnail-per-row-with-caption-beside layout (formerly in `AttachmentBody`)
+with a 3-across CSS grid, so photos read as content at a glance instead of hiding
+behind expansion. Always mounted by `EntryCard`, fed `cardViewModel(...).photoGroups`
+(every photo, capture order) — nothing photo-shaped is hidden any more.
+
+**Export:** `PhotoGrid({ photoGroups, onEditText, onRemoveAttachment }: PhotoGridProps)`.
+Renders `null` for an entry with no photos.
+
+**Behavior:** each tile keeps the full previous feature set, just laid out more
+tightly — `grid-cols-3 gap-1.5`, each cell an aspect-square thumbnail button. Tapping a
+thumbnail opens the existing full-screen `PhotoViewer` (with its own "Remove photo"
+action, wired to `onRemoveAttachment`); a persisted caption renders below its tile
+(`AttachmentBody`'s exported `AUTHORSHIP_STYLE.derived`/`EDIT_TITLE.derived` tokens,
+`line-clamp-2` — the one deliberate clamp left in the card, since an unclamped caption
+could blow out a grid cell's compactness) and is tappable to edit inline via the shared
+`TextSheet`, exactly like `AttachmentBody`'s `NoteText`; a still-**streaming** caption
+(subscribed via the exported `useLiveText(liveCaptions)`, keyed by the *photo's* file —
+the caption runner's source key) renders with `AttachmentBody`'s exported
+`StreamingText` in place of a persisted caption, and is not tappable (nothing to edit
+until the amend lands).
 
 ### src/capture/PhotoViewer.tsx
 
-**Purpose:** Full-screen zoomable photo viewer (B7) opened from `PhotoThumb`.
+**Purpose:** Full-screen zoomable photo viewer (B7) opened from `PhotoGrid`'s tiles.
 
 - Edge-to-edge on a black backdrop (`fixed inset-0`), image fit-contained; mounts via
   `OverlayPortal` on `layer.overlay` and locks body scroll with `useBodyScrollLock`.
@@ -900,8 +993,13 @@ where `onSave: (location: GeoLocation) => void` and `onClear: () => void`.
   default; tap the map (`ClickToPlace` via `useMapEvents`) or drag the pin to set
   `pos`. The pin is a vector `L.divIcon` (clay dot) to avoid Leaflet's default marker
   PNGs, which break under bundlers without extra asset config.
-- "Use current location" calls `snapshotLocation(places, locationEnabled)` with a
-  "Locating…" busy state; a failed/disabled snapshot leaves `pos` unchanged.
+- "Use current location" calls `locateCurrent(places)` (`geo.ts`) with a "Locating…"
+  busy state. Unlike the passive capture-time path, this **always** asks the browser
+  for a location regardless of the Settings `locationEnabled` toggle — an explicit tap
+  is deliberate intent, not ambient stamping (#59) — and on failure sets a small danger
+  caption (`tone.danger`) distinguishing "Geolocation is not available on this device."
+  (`reason: 'unsupported'`) from "Could not get your location." (`reason: 'failed'`,
+  covering denial/timeout/error) instead of silently leaving `pos` unchanged.
 - **Save** re-runs `matchPlace(places, lat, lng)` and awaits
   `reverseGeocode(lat, lng)` (from `src/places`), then emits `{ lat, lng, accuracyM:
   initial?.accuracyM ?? 0, placeLabel?, address? }` — i.e. a manually placed pin has
@@ -967,6 +1065,13 @@ mount this only while it's true; there is no compact/preview mode anymore.
   "Done" button calling `onClose`) and a `Popup` label on the marker, plus, when
   `placeLabel` is set, a spruce accuracy `Circle` of radius `max(accuracyM, 40)` meters.
 
+**`src/capture/mapAttribution.test.ts` (#56):** a source-text guard (raw-text scan via
+`import.meta.glob(?raw)`, the `layering.test.ts` technique — there is no jsdom/
+testing-library in this repo) asserting no `MapContainer` in `src/capture/` disables
+`attributionControl` and every `<TileLayer>` carries an `attribution` prop, so OSM's
+tile-usage attribution requirement can't silently regress across `MiniMap.tsx` and
+`LocationSheet.tsx`.
+
 ### src/capture/LifecycleBadge.tsx
 
 **Purpose:** Per-entry display-lifecycle badge (#79; replaces the old SyncBadge).
@@ -983,12 +1088,68 @@ ambient processing rather than infrastructure. `'failed'` renders a small danger
 label ("Upload failed — will retry") — unchanged from the old SyncBadge's error case,
 so real failures never get quieter.
 
+### src/capture/recorderEngine.ts
+
+**Purpose:** Framework-free `getUserMedia` + `MediaRecorder` controller — every ref,
+timer, and recorder/track event handler `useRecorder.ts` needs, kept out of React so it
+can be unit-tested directly (stub `navigator.mediaDevices`/`MediaRecorder` with
+`vi.stubGlobal`, the same pattern as `notify/badge.test.ts`) without a DOM or a hook
+renderer. Negotiates the audio container at runtime — iOS Safari records `audio/mp4`,
+not webm, so the mime type is picked from `['audio/mp4', 'audio/webm;codecs=opus',
+'audio/webm']` via `MediaRecorder.isTypeSupported`, never hardcoded.
+
+**Exports:**
+
+- `createRecorderEngine(callbacks: RecorderEngineCallbacks): RecorderEngine`, where
+  `RecorderEngineCallbacks = { onStateChange, onElapsed, onErrorKind }` and
+  `RecorderEngine = { start(maxSec?, onAutoStop?), stop(), cancel(), resetError(),
+  getLevel(), destroy() }` — `destroy` releases the mic/timers/`AudioContext` and is
+  the engine's half of `useRecorder`'s unmount cleanup.
+- `buildResult(chunks: Blob[], recorderMimeType: string, startedAtMs: number, nowMs:
+  number): RecordingResult | null` — pure blob assembly (mime falls back to the first
+  chunk's type then `audio/webm`; `durationSec` is wall-clock, rounded, minimum 1;
+  empty blobs resolve `null`), shared by every stop path below so an out-of-band stop
+  is delivered identically to a clean one.
+- `interface RecordingResult { blob: Blob; mimeType: string; durationSec: number }`,
+  types `RecorderState`, `RecorderErrorKind`.
+
+**Lifecycle & edge cases:**
+
+- `start` is a no-op if a recorder already exists. On `getUserMedia`/`MediaRecorder`
+  failure it cleans up and reports `state: 'error'` with a kind — `'denied'` for
+  `NotAllowedError`/`SecurityError` `DOMException`s (user must change iOS Settings),
+  `'failed'` otherwise (worth retrying).
+- A 250ms interval reports `elapsedSec` and auto-stops at `maxSec`, delivering the clip
+  to `onAutoStop`. Because the timer, a user tap, and an out-of-band stop can all race
+  to settle the recording, `finalize()` claims the recorder by nulling its internal ref
+  first, making every other path a no-op (they resolve `null`/do nothing).
+- **Out-of-band stop handling (#49):** `start()` also attaches `recorder.onstop`,
+  `recorder.onerror`, and an `ended` listener on every stream track to one shared
+  handler, so a stop the platform initiates itself — mic permission revoked, iOS taking
+  the audio session (call, Siri), a device disconnect, or a genuine
+  `MediaRecorderErrorEvent` — is observed even though no explicit `stop()` is waiting on
+  it. The handler is guarded by recorder identity (a no-op once `finalize()` has already
+  claimed the recorder), assembles whatever chunks were captured via `buildResult` and
+  delivers them through `onAutoStop` exactly like a clean auto-stop (an interrupted clip
+  is still the user's words), and only reports `state: 'error'`/`errorKind: 'failed'`
+  when nothing was captured. Either way `cleanup()` runs, so the elapsed-timer interval
+  is always cleared and the UI can never wedge on `'recording'` forever.
+- `finalize()`'s already-`inactive` branch also settles (assembles the result, cleans
+  up, reports `idle`) instead of silently no-oping, so a lost identity race can never
+  leave stale refs/timers behind either.
+- `cancel` detaches `onstop`/`onerror`, stops the recorder, and drops the chunks (A2 —
+  discard).
+- The level meter is best-effort: an `AudioContext` + `AnalyserNode` (fftSize 512) is
+  set up in a nested try/catch; if unavailable, `getLevel()` returns 0 and recording
+  continues. `getLevel()` computes RMS over byte time-domain data.
+- `cleanup` stops all `MediaStream` tracks (releases the mic), clears the timer, and
+  closes the `AudioContext`.
+
 ### src/capture/useRecorder.ts
 
-**Purpose:** `getUserMedia` + `MediaRecorder` wrapper hook. Negotiates the audio
-container at runtime — iOS Safari records `audio/mp4`, not webm, so the mime type is
-picked from `['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm']` via
-`MediaRecorder.isTypeSupported`, never hardcoded.
+**Purpose:** Thin React bridge over `recorderEngine.ts` — owns only `state`,
+`elapsedSec`, and `errorKind` as React state, wired to one `createRecorderEngine`
+instance held in a ref for the component's lifetime.
 
 **Exports:**
 
@@ -997,28 +1158,12 @@ picked from `['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm']` via
   start(maxSec = 60, onAutoStop?): Promise<void>; stop(): Promise<RecordingResult |
   null>; cancel(): void; resetError(): void; getLevel(): number; errorKind?: 'denied' |
   'failed' }`
-- `interface RecordingResult { blob: Blob; mimeType: string; durationSec: number }`
-- Types `RecorderState`, `RecorderErrorKind`.
+- Re-exports `RecordingResult`, `RecorderState`, `RecorderErrorKind` from
+  `recorderEngine.ts`.
 
-**Lifecycle & edge cases:**
-
-- `start` is a no-op if a recorder already exists. On `getUserMedia`/`MediaRecorder`
-  failure it cleans up and sets `state: 'error'` with `errorKind` — `'denied'` for
-  `NotAllowedError`/`SecurityError` `DOMException`s (user must change iOS Settings),
-  `'failed'` otherwise (worth retrying).
-- A 250ms interval updates `elapsedSec` and auto-stops at `maxSec`, delivering the clip
-  to `onAutoStop`. Because both the timer and a user tap can race to stop, `finalize()`
-  claims the recorder by nulling `recorderRef` first, making concurrent
-  stop/auto-stop calls no-ops (they resolve `null`).
-- `stop`/`finalize` resolves after the `onstop` event with a blob assembled from
-  `dataavailable` chunks; mime falls back to the first chunk's type then `audio/webm`;
-  `durationSec` is wall-clock, rounded, minimum 1. Empty blobs resolve `null`.
-- `cancel` detaches `onstop`, stops the recorder, and drops the chunks (A2 — discard).
-- The level meter is best-effort: an `AudioContext` + `AnalyserNode` (fftSize 512) is
-  set up in a nested try/catch; if unavailable, `getLevel()` returns 0 and recording
-  continues. `getLevel()` computes RMS over byte time-domain data.
-- `cleanup` stops all `MediaStream` tracks (releases the mic), clears the timer, and
-  closes the `AudioContext`; it also runs on unmount.
+**Lifecycle & edge cases:** see `recorderEngine.ts` above for `start`/`stop`/`cancel`/
+out-of-band-stop behavior — this hook adds nothing but state plumbing. The engine is
+created once (guarded by the ref already being set) and destroyed on unmount.
 
 ### src/capture/useAudioPlayback.ts
 
@@ -1058,28 +1203,45 @@ create the immediate-hide effect.
 throws.
 
 **Exports:** `snapshotLocation(places: Place[], locationEnabled: boolean):
-Promise<GeoLocation | undefined>`; `DEFAULT_PLACE_RADIUS_M` (50); `needsPlacePrompt(
-location: GeoLocation | undefined, locationEnabled: boolean): boolean` — true when a
-captured coordinate matched no saved place and should trigger `NamePlaceSheet`.
-(String-backed radius drafts are validated by the numeric-draft helpers in
-`src/ui/numberDraft.ts`.)
+Promise<GeoLocation | undefined>`; `locateCurrent(places: Place[]):
+Promise<LocateResult>` where `LocateResult = { ok: true; location: GeoLocation } | {
+ok: false; reason: 'unsupported' | 'failed' }`; `DEFAULT_PLACE_RADIUS_M` (50);
+`needsPlacePrompt(location: GeoLocation | undefined, locationEnabled: boolean):
+boolean` — true when a captured coordinate matched no saved place and should trigger
+`NamePlaceSheet`. (String-backed radius drafts are validated by the numeric-draft
+helpers in `src/ui/numberDraft.ts`.)
 
-**Behavior:** resolves `undefined` immediately when location is disabled in settings or
-`navigator.geolocation` is missing. Otherwise wraps
-`geolocation.getCurrentPosition` with `{ timeout: 8000, maximumAge: 60_000,
-enableHighAccuracy: false }`; on success returns `{ lat, lng, accuracyM:
+**Behavior:** both `snapshotLocation` and `locateCurrent` share a `getCurrentLocation`
+helper that wraps `geolocation.getCurrentPosition` with `{ timeout: 8000, maximumAge:
+60_000, enableHighAccuracy: false }`; on success it returns `{ lat, lng, accuracyM:
 Math.round(accuracy) }` plus `placeLabel` when `matchPlace(places, lat, lng)` (from
-`src/places/match`) finds a saved place containing the point. Errors — both the error
-callback and synchronous throws — resolve `undefined`; the promise never rejects, so
-callers can `await` it unconditionally.
+`src/places/match`) finds a saved place containing the point, and resolves `undefined`
+on any failure (error callback, synchronous throw, or no `navigator.geolocation`) — the
+promise never rejects.
+
+- `snapshotLocation(places, locationEnabled)` — the **passive capture-time** path
+  (§7): resolves `undefined` immediately, without touching geolocation at all, when
+  `locationEnabled` is off. Silent by design — capture stamps a coordinate on every
+  entry without asking, so a denial or timeout should just mean no location, not an
+  error surfaced mid-recording.
+- `locateCurrent(places)` — the **explicit-request** path (#59): no `locationEnabled`
+  parameter at all — an explicit "use current location" tap always asks the browser,
+  since the toggle governs ambient stamping, not a deliberate gesture (the browser's
+  own permission prompt still gates the actual read either way, so this isn't a
+  privacy regression). Distinguishes `reason: 'unsupported'` (no geolocation API) from
+  `reason: 'failed'` (everything else) so the caller (`LocationSheet`) can show
+  different, specific feedback instead of a silent no-op.
 
 ### src/capture/geo.test.ts
 
 Vitest unit tests for `snapshotLocation`: verifies it resolves `undefined` without
 touching geolocation when disabled, when `navigator.geolocation` is absent, on
 geolocation errors, and on synchronous throws; and that successes round `accuracyM` and
-include `placeLabel` only when the coordinate falls inside a saved place's radius. Also
-covers `needsPlacePrompt` (prompts only for enabled, unlabelled locations).
+include `placeLabel` only when the coordinate falls inside a saved place's radius. For
+`locateCurrent`: it calls geolocation even when disabled (no toggle to check), and
+returns `{ ok: false, reason: 'unsupported' }` vs `{ ok: false, reason: 'failed' }` for
+a missing API vs an error/throw. Also covers `needsPlacePrompt` (prompts only for
+enabled, unlabelled locations).
 
 ### src/dayview/DayScreen.tsx
 
@@ -1177,11 +1339,11 @@ reasoning model whose small `num_predict` budget is consumed entirely by its
 `reasoning` field on this endpoint, returning empty `content`; only the native
 API honors `think: false` (same reason `vision/api.ts` uses it), so the prose
 runs on the non-reasoning `gemma4:e4b` path instead — the same host+path as
-photo captioning (`ENDPOINTS.vision`, `src/config.ts`, issue #69). No
+photo captioning (`VISION_CHAT_URL`, `src/enrich/config.ts`, issue #62). No
 streaming, no tools, no history — one request, one completion.
 
 **Export:** `fetchDaySummary(prompt: DaySummaryPrompt): Promise<string | undefined>`
-— posts to `ENDPOINTS.vision` with `model: 'gemma4:e4b'`, `think: false`,
+— posts to `VISION_CHAT_URL` with `model: 'gemma4:e4b'`, `think: false`,
 `stream: false`, and a 120-token `num_predict` budget; returns the trimmed
 `message.content` from the native response shape, or `undefined` on any
 failure (offline, non-2xx, malformed body, empty completion) — never throws, so
@@ -1401,10 +1563,16 @@ re-throw, matching the appStore `guard` convention.
   recomposition with `entry.deviceTz`), and both land in `patch.capturedAt`.
 - **Recorder races are resolved by claiming:** `finalize()` nulls `recorderRef` before
   stopping, so a user tap racing the auto-stop timer (or the background-commit handler)
-  yields exactly one committed clip. The gesture accelerator (#77) rides the same
-  invariant rather than re-solving it: every hold-class command in `RecordPanel` is
-  gated on `recorder.state === 'recording'` at the moment of pointerup, so a release
-  racing auto-stop/background-commit (which already flipped the recorder out of
+  yields exactly one committed clip. The same claim guards the out-of-band stop path
+  (#49, `recorderEngine.ts`): a track `ended`/recorder `error`/spontaneous `stop` the
+  platform fires on its own (mic revoked, iOS taking the audio session, a device
+  disconnect) is a no-op once an explicit `stop()` has already claimed the recorder, and
+  vice versa — exactly one of the two ever settles a given recording, and the losing
+  side never leaves the UI reporting `'recording'` forever. The gesture accelerator
+  (#77) rides the same invariant rather than re-solving it: every hold-class command in
+  `RecordPanel` is gated on `recorder.state === 'recording'` at the moment of pointerup,
+  so a release racing auto-stop/background-commit (which already flipped the recorder
+  out of
   `'recording'`) is a no-op, never a second commit.
 - **The gesture accelerator is additive, never load-bearing (#77):** `holdGesture.ts`'s
   commands only ever call the same handlers a plain button already calls (`onTap`,

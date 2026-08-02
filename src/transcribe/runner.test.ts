@@ -101,7 +101,7 @@ describe('drainTranscriptions', () => {
     expect(transcribeAudio).toHaveBeenCalledTimes(1)
   })
 
-  it('skips an empty transcript permanently via a meta marker', async () => {
+  it('skips an empty transcript permanently via a meta marker with a reason', async () => {
     const s = await setup()
     transcribeAudio.mockResolvedValue('')
     const cap = await appendAudioCapture(s)
@@ -109,23 +109,49 @@ describe('drainTranscriptions', () => {
 
     expect(await s.drainTranscriptions('timelog')).toBe(0)
     const db = await s.getDb()
-    expect(await db.get('meta', `transcribe:skip:${file}`)).toBe(true)
+    expect(await db.get('meta', `transcribe:skip:${file}`)).toMatchObject({ reason: 'empty-result' })
+    expect(await s.listSkippedTranscriptions()).toEqual([
+      { file, reason: 'empty-result', at: expect.any(String) },
+    ])
 
     expect(await s.drainTranscriptions('timelog')).toBe(0)
     expect(transcribeAudio).toHaveBeenCalledTimes(1)
   })
 
-  it('skips audio whose blob is missing without calling the API', async () => {
+  it('honors a legacy bare-`true` skip marker written by an older version', async () => {
     const s = await setup()
     const cap = await appendAudioCapture(s)
     const file = cap.attachments[0].file
     const db = await s.getDb()
+    await db.put('meta', true, `transcribe:skip:${file}`)
+
+    expect(await s.drainTranscriptions('timelog')).toBe(0)
+    expect(transcribeAudio).not.toHaveBeenCalled()
+  })
+
+  it('defers (does not skip) audio whose blob is missing, retrying once one appears', async () => {
+    // #55: a source kept in Drive but pruned locally after upload
+    // (keepAudioLocally=false) is indistinguishable from one never
+    // downloaded — both must be retried once a blob is local, not
+    // permanently abandoned.
+    const s = await setup()
+    transcribeAudio.mockResolvedValue('hello world')
+    const cap = await appendAudioCapture(s)
+    const file = cap.attachments[0].file
+    const db = await s.getDb()
+    const blob = await db.get('blobs', file)
     await db.delete('blobs', file)
 
     expect(await s.drainTranscriptions('timelog')).toBe(0)
     expect(transcribeAudio).not.toHaveBeenCalled()
-    expect(await db.get('meta', `transcribe:skip:${file}`)).toBe(true)
+    expect(await db.get('meta', `transcribe:skip:${file}`)).toBeUndefined()
     expect(amendsOf(await s.listEvents('timelog'))).toEqual([])
+
+    // The blob reappears (e.g. re-fetched) — the very next drain picks it up
+    // with no special-casing, since it was never marked skipped.
+    await db.put('blobs', blob!)
+    expect(await s.drainTranscriptions('timelog')).toBe(1)
+    expect(transcribeAudio).toHaveBeenCalledTimes(1)
   })
 
   it('backs off after a transcription failure', async () => {

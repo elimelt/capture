@@ -69,14 +69,46 @@ describe('drainSync (multi-stream loop)', () => {
     expect(result).toEqual({ outcome: 'reconnect', uploaded: 0, pulled: 0, perStream: [] })
   })
 
-  it('returns retry-later when a drain is already in flight', async () => {
+  it('returns busy (not retry-later) when a drain is already in flight in this tab', async () => {
     getValidAccessToken.mockResolvedValue('tok')
     const store = await freshStore()
     store.setState({ syncing: true })
     const result = await store.getState().drainSync()
     expect(pullStream).not.toHaveBeenCalled()
     expect(drainStream).not.toHaveBeenCalled()
-    expect(result).toEqual({ outcome: 'retry-later', uploaded: 0, pulled: 0, perStream: [] })
+    // Issue #64: this is the re-entrancy guard, distinct from a real Drive
+    // outage — Settings must not tell the user "Drive is busy" for a
+    // same-tab double-tap.
+    expect(result).toEqual({ outcome: 'busy', uploaded: 0, pulled: 0, perStream: [] })
+  })
+
+  it('returns busy when a concurrent call already holds the cross-tab sync lock', async () => {
+    // Issue #50: the bare `syncing` flag has a TOCTOU gap — there's an
+    // `await` (getValidAccessToken) between checking it and setting it, so
+    // two calls can both pass the flag check before either flips it. The
+    // `navigator.locks` lock has no such gap: it's held from the moment the
+    // first call is granted it, before its token lookup even starts.
+    let releaseToken: () => void = () => {}
+    const blocked = new Promise<void>((resolve) => {
+      releaseToken = resolve
+    })
+    getValidAccessToken.mockImplementation(async () => {
+      await blocked
+      return 'tok'
+    })
+    const store = await freshStore()
+    const first = store.getState().drainSync()
+    // Give the lock callback a turn to run and register as the holder, while
+    // the token lookup above is still pending.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(store.getState().syncing).toBe(false) // the TOCTOU window: not set yet
+
+    const second = await store.getState().drainSync()
+    expect(second).toEqual({ outcome: 'busy', uploaded: 0, pulled: 0, perStream: [] })
+
+    releaseToken()
+    const firstResult = await first
+    expect(firstResult.outcome).not.toBe('busy')
   })
 
   it('pulls then drains every registered stream, in registry order', async () => {
@@ -84,8 +116,9 @@ describe('drainSync (multi-stream loop)', () => {
     const store = await freshStore()
     await store.getState().drainSync()
 
-    expect(pullStream.mock.calls).toEqual(STREAMS.map((s) => ['tok', s]))
-    expect(drainStream.mock.calls).toEqual(STREAMS.map((s) => ['tok', s]))
+    // Third arg is the store's progress-emitting callback (src/store/syncProgress).
+    expect(pullStream.mock.calls).toEqual(STREAMS.map((s) => ['tok', s, expect.any(Function)]))
+    expect(drainStream.mock.calls).toEqual(STREAMS.map((s) => ['tok', s, expect.any(Function)]))
     // Per stream, its pull always precedes its push.
     STREAMS.forEach((_, i) => {
       expect(pullStream.mock.invocationCallOrder[i]).toBeLessThan(
@@ -125,7 +158,7 @@ describe('drainSync (multi-stream loop)', () => {
 
     // The first stream's pull died with an auth error: nothing else is tried.
     expect(pullStream).toHaveBeenCalledTimes(1)
-    expect(pullStream).toHaveBeenCalledWith('tok', STREAMS[0])
+    expect(pullStream).toHaveBeenCalledWith('tok', STREAMS[0], expect.any(Function))
     expect(drainStream).not.toHaveBeenCalled()
     expect(store.getState().driveConnection).toBe('expired')
     expect(result.outcome).toBe('reconnect')
@@ -155,6 +188,50 @@ describe('drainSync (multi-stream loop)', () => {
       { stream: 'assistant-chats', outcome: 'reconnect', uploaded: 0, pulled: 0 },
       { stream: 'timelog', outcome: 'reconnect', uploaded: 0, pulled: 0 },
     ])
+  })
+
+  it('a quota outcome mid-loop aborts the streams after it without touching driveConnection', async () => {
+    // Issue #88: a full Drive must never present as an auth problem — the
+    // token is fine, so the reconnect pill (driveConnection) must stay put.
+    getValidAccessToken.mockResolvedValue('tok')
+    connectionState.mockResolvedValue('connected')
+    drainStream.mockImplementation(async (_t: string, stream: string) =>
+      stream === 'assistant-chats'
+        ? { outcome: 'quota', uploaded: 0, error: 'Drive 403: storageQuotaExceeded' }
+        : { outcome: 'drained', uploaded: 1 },
+    )
+    const store = await freshStore()
+    const result = await store.getState().drainSync()
+
+    expect(pullStream).toHaveBeenCalledTimes(2)
+    expect(drainStream).toHaveBeenCalledTimes(2)
+    expect(pullStream).not.toHaveBeenCalledWith('tok', 'timelog', expect.any(Function))
+    expect(store.getState().driveConnection).toBe('disconnected') // untouched
+    expect(store.getState().driveQuotaExceeded).toBe(true)
+    expect(result.outcome).toBe('quota')
+    expect(result.perStream).toEqual([
+      { stream: 'settings', outcome: 'drained', uploaded: 1, pulled: 0 },
+      {
+        stream: 'assistant-chats',
+        outcome: 'quota',
+        uploaded: 0,
+        pulled: 0,
+        error: 'Drive 403: storageQuotaExceeded',
+      },
+      { stream: 'timelog', outcome: 'quota', uploaded: 0, pulled: 0 },
+    ])
+  })
+
+  it('clears a stale driveQuotaExceeded once a later cycle runs clean', async () => {
+    getValidAccessToken.mockResolvedValue('tok')
+    drainStream.mockResolvedValueOnce({ outcome: 'quota', uploaded: 0, error: 'full' })
+    const store = await freshStore()
+    await store.getState().drainSync()
+    expect(store.getState().driveQuotaExceeded).toBe(true)
+
+    drainStream.mockResolvedValue({ outcome: 'drained', uploaded: 1 })
+    await store.getState().drainSync()
+    expect(store.getState().driveQuotaExceeded).toBe(false)
   })
 
   it('retry-later on one stream does not block the others', async () => {
@@ -271,6 +348,89 @@ describe('drainSync (multi-stream loop)', () => {
     for (const stream of STREAMS) {
       expect(await lastSyncAtOf(stream)).toBeUndefined()
     }
+  })
+})
+
+describe('syncProgress (live detail during drainSync)', () => {
+  it('is null before and after a cycle, including the no-token/re-entrant early returns', async () => {
+    const store = await freshStore()
+    expect(store.getState().syncProgress).toBeNull()
+    await store.getState().drainSync() // no token -> reconnect, early return
+    expect(store.getState().syncProgress).toBeNull()
+
+    getValidAccessToken.mockResolvedValue('tok')
+    await store.getState().drainSync()
+    expect(store.getState().syncProgress).toBeNull()
+  })
+
+  it('is live while a cycle is in flight and reflects emitted events', async () => {
+    getValidAccessToken.mockResolvedValue('tok')
+    let releasePull: (() => void) | undefined
+    pullStream.mockImplementation(
+      async (
+        _t: string,
+        stream: string,
+        onProgress: (e: { kind: string; stream: string; delta: number }) => void,
+      ) => {
+        if (stream === STREAMS[0]) {
+          onProgress({ kind: 'pull-progress', stream, delta: 4 })
+          await new Promise<void>((resolve) => (releasePull = resolve))
+        }
+        return { outcome: 'idle', pulled: stream === STREAMS[0] ? 4 : 0 }
+      },
+    )
+    const store = await freshStore()
+    const cyclePromise = store.getState().drainSync()
+
+    // Yield a couple of microtask turns so the loop reaches the first pull.
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(store.getState().syncing).toBe(true)
+    const mid = store.getState().syncProgress
+    expect(mid).toMatchObject({
+      phase: 'pulling',
+      stream: STREAMS[0],
+      streamsTotal: STREAMS.length,
+      pulled: 4,
+    })
+
+    releasePull?.()
+    await cyclePromise
+    expect(store.getState().syncing).toBe(false)
+    expect(store.getState().syncProgress).toBeNull()
+  })
+
+  it('reaches uploading with a determinate total once drainStream reports upload-start', async () => {
+    getValidAccessToken.mockResolvedValue('tok')
+    let releaseDrain: (() => void) | undefined
+    drainStream.mockImplementation(
+      async (
+        _t: string,
+        stream: string,
+        onProgress: (e: { kind: string; stream: string; itemsTotal?: number }) => void,
+      ) => {
+        if (stream === STREAMS[0]) {
+          onProgress({ kind: 'upload-start', stream, itemsTotal: 7 })
+          await new Promise<void>((resolve) => (releaseDrain = resolve))
+        }
+        return { outcome: 'drained', uploaded: stream === STREAMS[0] ? 7 : 0 }
+      },
+    )
+    const store = await freshStore()
+    const cyclePromise = store.getState().drainSync()
+
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(store.getState().syncProgress).toMatchObject({
+      phase: 'uploading',
+      stream: STREAMS[0],
+      itemsTotal: 7,
+      itemsDone: 0,
+    })
+
+    releaseDrain?.()
+    await cyclePromise
+    expect(store.getState().syncProgress).toBeNull()
   })
 })
 

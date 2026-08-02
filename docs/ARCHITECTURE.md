@@ -43,14 +43,14 @@ Directories under `src/` map onto layers with a strict one-way dependency direct
 | Streams | `streams/` | Registry of capture profiles (v1 ships only `timelog`). Imports only contract types. |
 | Store | `store/` | IndexedDB repositories (events, places, settings) and the single Zustand `appStore`. |
 | Drive | `drive/` | GIS auth, Drive client, tree bootstrap, upload queue. Imports contract + store repos. |
-| Pipelines & enrichment | `transcribe/`, `vision/`, `places/` | Post-capture enrichment writing back via ordinary `amend` events. |
+| Pipelines & enrichment | `transcribe/`, `vision/`, `enrich/`, `places/` | Post-capture enrichment writing back via ordinary `amend` events; `enrich/` is the shared drain engine + failure taxonomy both media pipelines bind onto. |
 | Notifications | `notify/` | Capability detection, app-icon badging, best-effort local notifications; Web Push plumbing awaiting a server (there is no backend to send push today). |
 | Calendar read-back | `gcal/` | Read-only Google Calendar client + target-calendar selection for the timelog Day view. Timelog-specific (not a generic layer); imports contract, drive, store, streams. |
-| Screens & shell | `capture/`, `dayview/`, `settings/`, `assistant/`, `ui/`, `App.tsx`, `main.tsx` | Routing, design system, and the four screens. |
+| Screens & shell | `capture/`, `dayview/`, `context/`, `settings/`, `assistant/`, `ui/`, `App.tsx`, `main.tsx` | Routing, design system, and the app screens. |
 
 The layering rule (SPEC §10) declares the generic layers — `streams/`, `capture/`,
-`contract/`, `store/`, `places/`, `drive/`, `transcribe/`, `vision/`, `notify/`,
-`ui/` —
+`contract/`, `store/`, `places/`, `drive/`, `transcribe/`, `vision/`, `enrich/`,
+`notify/`, `ui/` —
 **stream-agnostic**: they must not import from the timelog-specific or app-level
 directories `gcal/`, `dayview/`, `settings/`, or `assistant/`. This is enforced
 mechanically by [`src/layering.test.ts`](../src/layering.test.ts), which loads every
@@ -117,8 +117,13 @@ pipelines (`transcribe`, `vision`) share a plan/api/runner pattern: a pure `plan
 over the raw event history decides what still needs work (the `derivedFrom` field on
 attachments is the machine/user boundary — once derived, a source is permanently
 "done", so user edits are never regenerated over); a single `api.ts` function calls
-the external service; a `runner.ts` appends the result as an ordinary `amend`, which
-the normal queue syncs — zero pipeline-specific sync code. `places` does synchronous
+the external service and throws a classified `EnrichmentError` on failure
+(`enrich/error.ts`); a `runner.ts` binds the plan/api/live-text-store onto
+`enrich/runner.ts`'s shared drain engine, which appends the result as an ordinary
+`amend` (the normal queue syncs it — zero pipeline-specific sync code), backs off
+transient failures, skip-marks permanent ones, defers a missing source blob instead of
+abandoning it, and trips a per-drain circuit breaker against a stalled host. `places`
+does synchronous
 point-in-radius matching at capture time and throttled, cached Nominatim reverse
 geocoding that never throws. The chat assistant is an opt-in, lazy-loaded,
 client-side agent loop over the local log: read tools plus two narrow write tools
@@ -132,7 +137,7 @@ Module docs:
 
 Boot is a three-stage handoff (HTML splash → service-worker registration and
 persistent-storage request in `main.tsx` → store `init()` in `App.tsx`) so first
-paint is real content. Four screens (Capture, Day view, Chat, Settings) hang off one
+paint is real content. The Capture, Day view, Context, Chat, and Settings screens hang off one
 flat route table and a bottom tab bar; drill-downs are modal sheets, not routes.
 The Day view overlays read-only Google Calendar events from a user-chosen target
 calendar via `src/gcal` (single Google token, `calendar.readonly` scope; the app

@@ -26,6 +26,7 @@ no-ops when offline or disabled).
   cycle pulls events other devices committed before pushing local ones, and the
   deterministic fold converges every replica to identical state
 - Day view of folded entries, with undo-able delete (a delayed `revoke`)
+- Context export screen with date-range selection and offline Markdown/plaintext clipboard copy
 - Read-only Google Calendar overlay on the Day view: pick a target calendar in
   Settings and see its events alongside your entries, deep-linking into Google
   Calendar (`calendar.readonly` scope; the app never writes calendar events)
@@ -39,7 +40,8 @@ no-ops when offline or disabled).
   log — read tools plus narrow create/update/delete entry tools that append
   ordinary events (delete is a soft-delete revoke) through the store's write
   path; nothing stored server-side
-- Installable PWA with auto-updating service worker and precached app shell
+- Installable PWA with a precached app shell and a service worker that prompts
+  to reload when an update is ready, rather than silently swapping mid-session
 
 ## Tech stack
 
@@ -78,18 +80,22 @@ or API keys. A fork needs to change:
 
 - `src/config.ts` — `GOOGLE_CLIENT_ID` (the Google OAuth browser-client ID; a
   public identifier, safe to ship in the bundle) and the `ENDPOINTS` block
-  (the transcription, vision-captioning, and OpenAI-compatible assistant
-  hosts — one place to change all three, consumed by `src/transcribe/api.ts`,
-  `src/vision/api.ts`, and `src/assistant/config.ts` respectively; issue #69).
-  You will need your own Google Cloud OAuth client with the deployed
-  origin(s) added under **Authorized JavaScript origins** (e.g.
-  `https://time.elimelt.com`) and the `drive.file` and `calendar.readonly`
-  scopes — the app has no runtime origin constant to change; GIS validates
-  against what's configured on the OAuth client itself.
+  (currently just the OpenAI-compatible assistant host, consumed by
+  `src/assistant/config.ts`; issue #69). You will need your own Google Cloud
+  OAuth client with the deployed origin(s) added under **Authorized
+  JavaScript origins** (e.g. `https://time.elimelt.com`) and the `drive.file`
+  and `calendar.readonly` scopes — the app has no runtime origin constant to
+  change; GIS validates against what's configured on the OAuth client
+  itself.
+- `src/enrich/config.ts` — the transcription and vision-LLM captioning
+  endpoints + models (`TRANSCRIBE_BASE_URL`/`TRANSCRIBE_MODEL`,
+  `VISION_CHAT_URL`/`VISION_MODEL`; defaults `https://transcribe.elimelt.com`
+  and `https://llm.elimelt.com/api/chat`) — the one file both pipelines'
+  `api.ts` read from (issue #62).
 - `index.html` — the Content-Security-Policy whitelists exactly the
-  `ENDPOINTS` hosts above (plus Google, OSM, and Nominatim); update it to
-  match any changes (pinned by `src/config.test.ts`, which fails if an
-  `ENDPOINTS` host is missing from `connect-src`).
+  `ENDPOINTS`/`enrich/config.ts` hosts above (plus Google, OSM, and
+  Nominatim); update it to match any changes (pinned by `src/config.test.ts`,
+  which fails if a host from either module is missing from `connect-src`).
 - `vite.config.ts` — `base` path and PWA manifest, if deploying somewhere other
   than a domain root.
 

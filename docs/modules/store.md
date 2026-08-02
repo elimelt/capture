@@ -15,9 +15,11 @@ It has two halves:
   settings in memory, delegates every write to the repositories, and wires Drive
   auth state and the manual sync action (`src/drive`) into state the components render.
 
-One small module sits outside both halves: `livetext.ts`, a transient in-memory
+Two small modules sit outside both halves: `livetext.ts`, a transient in-memory
 pub/sub store (nothing touches IndexedDB) that carries streaming transcript/caption
-partials from the enrichment runners to the entry cards.
+partials from the enrichment runners to the entry cards; and `syncProgress.ts`, a pure
+reducer + formatters (no React, no store, no IndexedDB) that turn the progress events
+`drainSync` and the drive engine emit into a live `SyncProgress` snapshot for the UI.
 
 State flows one way: a UI action calls a store action → the action writes through a repo
 (one IndexedDB transaction) → the action re-reads (`refresh`/`loadPlaces`/`loadSettings`)
@@ -28,7 +30,10 @@ enqueue a `sync` row, and `drainSync` — whose sole caller is the "Sync now" bu
 Settings — runs one pull-then-push cycle **per registered stream**
 (`allSyncStreams()` from `src/streams/registry`, covering system streams like
 `settings`/`assistant-chats` as well as capture streams): `src/drive/pull` imports
-remote events first, then `src/drive/queue` drains pending rows.
+remote events first, then `src/drive/queue` drains pending rows. Because a cycle can
+touch many attachments/records/batched segments across several streams, `drainSync`
+keeps a live `syncProgress: SyncProgress | null` (never persisted) up to date via
+`reduceSyncProgress` for the Settings screen and the nav's global sync affordance.
 
 Per SPEC §10's layering rule, `store/` is stream-agnostic: it imports only from
 `src/contract`, `src/streams`, and `src/drive`, never from `gcal/`, `dayview/`, or
@@ -66,8 +71,9 @@ Key exports:
   crashed drains; absent on rows written by older versions (no migration needed —
   the drainer falls back to find-before-upload for those).
 - `interface Place { id; name; lat; lng; radiusM; address? }`.
-- `interface GeocacheRow { key; address; cachedAt }` — reverse-geocode cache row keyed by
-  a rounded `"lat,lng"` cell (SPEC §7).
+- `interface GeocacheRow { key; address?; cachedAt }` — reverse-geocode cache row keyed
+  by a rounded `"lat,lng"` cell (SPEC §7); `address` is omitted for a cached "no
+  address found" (negative) result, which `places/geocode.ts` expires sooner than a hit.
 - `interface StoredChatRow { id; createdAt; updatedAt; messages: unknown[] }` — a
   **legacy** persisted assistant conversation; live chats are event-sourced in the
   `assistant-chats` stream (see `migrateChatsV1.ts` and `assistant/chatSync.ts`), and
@@ -249,12 +255,42 @@ Key exports:
   (including `meta`, so seq counters restart at 1; `overlayEvents` — the
   calendar-overlay log — and `waveforms` — the cached fingerprints, #86 — go with
   everything else).
+- `wipeCaches(): Promise<void>` (issue #65) — deletes every SW-managed Cache
+  Storage bucket (`await Promise.all((await caches.keys()).map(caches.delete))`).
+  `wipeAll` only ever touched IndexedDB; the `nominatim` and `osm-tiles` runtime
+  caches (`vite.config.ts`) durably hold reverse-geocoded addresses and map
+  tiles — a reconstructible location history — for 90 and 30 days respectively,
+  independent of the `geocache` IndexedDB store `wipeAll` does clear. Deleting
+  every cache (not just those two) is simplest and harmless: the SW re-precaches
+  the app shell/fonts on next activation. A no-op where `caches` is undefined
+  (non-browser test environments).
 
 Invariants and edge cases: seq counters are per-stream and monotonic per device
 (`importEvents` keeps them ahead of everything pulled); `capture` events
 always carry an `attachments` array (possibly empty), while `amend` events only get one
 when attachments were supplied; blobs are stored under the contract filename so uploads
 and replay reference the same key; nothing here ever updates or deletes an event row.
+
+### src/store/blobGc.ts
+
+Blob garbage collection (issue #53): reclaims attachment blobs the fold has hidden
+(a `revoke` target, or a file dropped by `AmendPatch.removeAttachments`) once it is
+safe to — the only two blob-deletion paths before this module existed were
+`wipeAll()` and `drive/queue.ts#pruneAudio`'s post-upload `keepAudioLocally`
+pruning, so a revoked or edited-away attachment's blob otherwise lived in the
+`blobs` store forever.
+
+- `planBlobGc(events: readonly LogEvent[], syncStatuses: ReadonlyMap<string,
+  SyncStatusRow>): string[]` — the pure core. A filename is deletable iff (a) it is
+  absent from every entry `fold(events)` still returns (fold-hidden), and (b) the
+  event that attached it has `syncStatuses` status `'uploaded'` — a still-`queued`/
+  `error` row (including a missing row) is never deleted, so nothing is reclaimed
+  before Drive has its own copy. Attachment-kind-agnostic: audio, photo, and text
+  blobs are all covered by the same sweep, complementing (not replacing)
+  `pruneAudio`, which trims *visible* entries' audio per `keepAudioLocally`.
+- `reclaimStreamBlobs(stream): Promise<string[]>` — reads `listEvents`/
+  `getSyncStatuses` for one stream, computes `planBlobGc`, and `deleteBlob`s each
+  result; returns the filenames actually removed. No network.
 
 ### src/store/places.ts
 
@@ -397,8 +433,15 @@ The single Zustand store (`useAppStore = create<AppState>()(...)`) the UI reads.
 completed; null = never synced), `globalSyncSummary: GlobalSyncSummary` (aggregate
 across all registered streams — see below), `places: Place[]`, `appSettings`,
 `streamSettings`, `lastError: string | null` (toast channel), `driveConnection:
-DriveConnection` (`src/drive/token`; drives the reconnect pill, SPEC §8.2), `syncing`
-(sync cycle in flight), the storage-space snapshot — `localSpace:
+DriveConnection` (`src/drive/token`; drives the reconnect pill, SPEC §8.2),
+`driveQuotaExceeded: boolean` (true when the most recent cycle stopped on a
+`'quota'` outcome — Drive full, SPEC §8.4.5; distinct from `driveConnection`
+since the token is fine and the reconnect pill must never show for this,
+issue #88 — reset at the start of every cycle so it self-clears once a later
+cycle doesn't hit quota again), `syncing`
+(sync cycle in flight), `syncProgress: SyncProgress | null` (live detail for the cycle
+in flight — see `syncProgress.ts` below; null whenever `syncing` is false, and never
+persisted), and the storage-space snapshot — `localSpace:
 LocalSpaceEstimate | null` (null = unsupported or not yet loaded) and `appSpace:
 AppSpace | null` (both from `space.ts`, set by `refreshSpace`) — and
 `lastSyncResult: PersistedSyncResult | null` (the last full sync-cycle attempt,
@@ -410,7 +453,13 @@ Also exports:
 
 - `interface StreamSyncResult { stream; outcome: DrainOutcome; uploaded; pulled:
   number; error? }` — one stream's slice of a sync cycle.
-- `interface SyncResult { outcome: DrainOutcome; uploaded; pulled: number; error?;
+- `type SyncOutcome = DrainOutcome | 'busy'` — the aggregate cycle result's outcome
+  space. `'busy'` is cycle-level only (no stream ever reports it itself): it means
+  the re-entrancy guard rejected the call outright before any stream ran, distinct
+  from `'retry-later'` (a real Drive-side 429/5xx backoff *after* streams ran) —
+  issue #64, so Settings can tell "you double-tapped" from "Drive is having an
+  outage".
+- `interface SyncResult { outcome: SyncOutcome; uploaded; pulled: number; error?;
   perStream: StreamSyncResult[] }` — the aggregate result of one cycle over every
   registered stream (worst-of outcome, summed counts), consumed by the Settings
   "Sync now" label.
@@ -426,9 +475,10 @@ Actions:
 - Loaders — `refresh(streamId?)` (re-lists entries, sync statuses, and `lastSyncAt`
   for the current stream, recomputes the cross-stream `globalSyncSummary`, and
   switches `currentStreamId` when given), `loadPlaces()`, `loadSettings()`,
-  `refreshConnection()`, `refreshSpace()` (re-measures `localSpace` + `appSpace`;
-  local-only, called by the Settings Data section on entry and by `wipe`), and
-  `init()` which runs the first four in parallel — a local-only
+  `refreshConnection()`, `refreshSpace()` (runs `blobGc.ts#reclaimStreamBlobs` over
+  every `allSyncStreams()` stream, then re-measures `localSpace` + `appSpace`;
+  local-only — no network — called by the Settings Data section on entry and by
+  `wipe`), and `init()` which runs the first four in parallel — a local-only
   status computation (entries, sync rows, `lastSyncAt`, stored-token expiry) that never
   syncs — and sets `ready: true` in a `finally` so even a failed boot lifts the splash.
 - Log writes — `capture(input): Promise<CaptureEvent>`, `revoke(targets)`,
@@ -439,43 +489,125 @@ Actions:
   refresh connection; does **not** sync), `disconnectDrive()` (revokes the stored
   token), and `drainSync(): Promise<SyncResult>` — one full sync cycle over
   **every registered stream** (SPEC §8.4/§8.5), manual-only: the sole caller is
-  the "Sync now" button in Settings. No-op (`'retry-later'`) if already `syncing`;
-  without a valid token it only refreshes connection state (so the reconnect pill
-  can appear) and returns `'reconnect'`; with one it loops over
-  `allSyncStreams()` and, per stream, runs **pull then push** —
-  `pullStream(token, stream)` from `src/drive/pull` first (so local appends land
-  after everything other devices committed), then `drainStream(token, stream)`
-  from `src/drive/queue`. Failure isolation: any `'reconnect'` flips the pill and
-  aborts the remaining streams (marked `'reconnect'` in `perStream` — the token
-  is dead for all of them), while `'retry-later'`/`'error'` on one stream never
-  blocks the rest. Each stream's outcomes merge worst-of (`idle < drained <
-  retry-later < reconnect < error`) and the per-stream outcomes merge worst-of
-  into the aggregate; an aggregate `'error'` sets `lastError`; a stream's own
-  clean cycle (`idle`/`drained`) persists *its* `lastSyncAt` via
-  `setLastSyncAt(stream, …)`. Afterwards state is refreshed (`refresh()` +
-  `loadSettings()`, since pulled system-stream events can change settings) and
-  `syncing` is cleared in a `finally`. Every real attempt (not the no-token or
-  already-syncing short-circuits) also stamps and persists the whole cycle via
-  `setLastSyncResult` (private `persistSyncResult` helper) — including the
-  `catch` branch — so `lastSyncResult` and the `meta` store agree with what
-  Settings' Diagnostics section shows even across a relaunch (issue #67).
+  the "Sync now" button in Settings.
+  - **Re-entrancy (issue #50).** A cheap `syncing` check short-circuits the
+    common case, but the actual guard is a `navigator.locks.request('capture:sync',
+    { ifAvailable: true }, …)` lock wrapping the whole cycle (token lookup
+    through the final `refresh()`), serializing every tab/window on the origin
+    with no gap between "is it free" and "claim it" the way the bare flag had
+    (an `await` used to sit between checking `syncing` and setting it). A call
+    that finds the lock held — from another tab, or a same-tab re-entry that
+    slipped past the flag check — resolves immediately with `'busy'` rather
+    than queuing behind the holder or running alongside it. Where
+    `navigator.locks` is unavailable, the flag alone is the (best-effort,
+    same-tab-only) fallback.
+  - Without a valid token the cycle only refreshes connection state (so the
+    reconnect pill can appear) and returns `'reconnect'`; with one it loops over
+    `allSyncStreams()` and, per stream, runs **pull then push** —
+    `pullStream(token, stream)` from `src/drive/pull` first (so local appends land
+    after everything other devices committed), then `drainStream(token, stream)`
+    from `src/drive/queue`. Failure isolation: any `'reconnect'` or `'quota'`
+    aborts the remaining streams (marked with that same outcome in
+    `perStream` — the token is dead, or Drive is full, for all of them alike),
+    while `'retry-later'`/`'error'` on one stream never blocks the rest. Only
+    `'reconnect'` flips `driveConnection`; `'quota'` sets `driveQuotaExceeded`
+    instead (see above) — a full Drive must never present as an auth problem
+    (issue #88). Each stream's outcomes merge worst-of (`idle < drained <
+    retry-later < quota < reconnect < error`) and the per-stream outcomes merge
+    worst-of into the aggregate; an aggregate `'error'` sets `lastError`; a
+    stream's own clean cycle (`idle`/`drained`) persists *its* `lastSyncAt` via
+    `setLastSyncAt(stream, …)`. Afterwards state is refreshed (`refresh()` +
+    `loadSettings()`, since pulled system-stream events can change settings) and
+    `syncing` is cleared in a `finally`. Throughout the loop, a local
+    `emitProgress` helper feeds `SyncProgressEvent`s (`cycle-start` once,
+    `stream-start`/`stream-done` around each stream's pull+push pair, passed
+    straight through to `pullStream`/`drainStream` as their `onProgress`
+    callback for the granular `pull-progress`/`upload-start`/`upload-progress`
+    events) through `reduceSyncProgress` (`syncProgress.ts`) into `syncProgress`;
+    the `finally` clears it back to null alongside `syncing`.
+  - Every real attempt (not the no-token or already-syncing/lock-busy
+    short-circuits) also stamps and persists the whole cycle via
+    `setLastSyncResult` (private `persistSyncResult` helper) — including the
+    `catch` branch — so `lastSyncResult` and the `meta` store agree with what
+    Settings' Diagnostics section shows even across a relaunch (issue #67).
 - Places/settings/data — `addPlace`, `removePlace`, `updateSettings`,
-  `updateStreamSettings`, `wipe()` (`wipeAll()` then reload, including
-  `refreshSpace()` so the Settings storage line never shows the pre-wipe number),
-  `clearError()`.
+  `updateStreamSettings`, `wipe()`, `clearError()`. `wipe()` (issue #65) is a full
+  privacy reset, in order: best-effort revoke the Google grant (`disconnect(token?.accessToken)`
+  — same as `disconnectDrive`, run first so a mid-wipe failure still leaves the
+  token cleared), `wipeAll()` (the IndexedDB log/blobs/settings/etc.),
+  `wipeCaches()` (every SW Cache Storage bucket — `wipeAll` never touched Cache
+  Storage, which is where the `nominatim`/`osm-tiles` runtime caches durably
+  hold a reconstructible location history; see `vite.config.ts`), then sets
+  `driveConnection: 'disconnected'` and reloads state including `refreshSpace()`
+  so the Settings storage line never shows the pre-wipe number.
 
 All write actions are wrapped in a local `guard(label, fn)` helper: on failure it sets
 `lastError` to `"<label>: <message>"` **and re-throws** so awaiting callers still see the
 error. `drainSync` is deliberately not guarded; it reports failures via `lastError` and
 in its returned `SyncResult` without throwing.
 
+### src/store/syncProgress.ts
+
+Pure sync-progress model (owner directive: "syncing has GOT to have a progress
+indicator" — a manual "Sync now" can upload many attachments/records/batched
+segments across multiple streams and pull remote changes, with no feedback
+until it finishes). No React, no store, no IndexedDB — a reducer plus
+formatters over a typed event stream, so it is unit-tested directly (no
+jsdom).
+
+Key exports:
+
+- `type SyncProgressEvent` — the boundaries the sync machinery reports:
+  `{ kind: 'cycle-start', streamsTotal }`, `{ kind: 'stream-start', stream }`,
+  `{ kind: 'pull-progress', stream, delta }` (one imported partition/page, not
+  per event), `{ kind: 'upload-start', stream, itemsTotal }` (the pending
+  count for that stream's push), `{ kind: 'upload-progress', stream, delta }`
+  (one committed batch — a lone record or a whole segment, never per file
+  inside it), `{ kind: 'stream-done', stream }`, `{ kind: 'cycle-done' }`.
+  `appStore.drainSync` emits `cycle-start`/`stream-start`/`stream-done` itself
+  (it already owns the per-stream loop); `pullStream` (`src/drive/pull`) emits
+  `pull-progress`; `drainStream` (`src/drive/queue`) emits `upload-start`/
+  `upload-progress` — both via an optional `onProgress` callback parameter
+  (default a no-op, so every existing direct caller/test is unaffected).
+- `interface SyncProgress { phase: SyncPhase; stream: string | null;
+  streamsDone; streamsTotal; itemsDone; itemsTotal: number | null; pulled;
+  uploaded }` — `SyncPhase = 'idle' | 'pulling' | 'uploading' | 'done'`.
+  `itemsTotal` is null while unknown (pull phases are always indeterminate —
+  no cheap upfront count; upload phases become determinate the instant
+  `upload-start` reports one). `pulled`/`uploaded` are cycle-wide running
+  totals, not per-stream.
+- `emptySyncProgress(): SyncProgress` — the pre-cycle/fallback state (`phase:
+  'idle'`, everything zeroed).
+- `reduceSyncProgress(prev: SyncProgress | null, event): SyncProgress` — the
+  pure reducer; `prev: null` is treated as `emptySyncProgress()` (defensive,
+  not a contract — `drainSync` always opens with `cycle-start` first).
+- `syncProgressFraction(p): number | null` — `[0, 1]` for a determinate
+  `ProgressBar` (`src/ui`) fill, or null while indeterminate (`idle`/`pulling`,
+  or `uploading` before `itemsTotal` is known); always `1` once `done`.
+- `formatSyncProgress(p): string` — human label, e.g. `"Uploading 3 of 12 ·
+  Timelog"` or `"Checking Settings for changes (2 of 3)"` or `"Synced — 5
+  uploaded · 2 pulled"`.
+- `prettyStreamName(id): string` — `"assistant-chats"` → `"Assistant Chats"`;
+  a pure string transform (no registry lookup) so this module stays
+  dependency-free.
+
+### src/store/syncProgress.test.ts
+
+Exercises the reducer end to end (every event kind, a null `prev` falling
+back to the empty state without throwing, a full multi-stream cycle played
+through in order) plus `syncProgressFraction` (null while idle/pulling/
+uploading-with-unknown-total, determinate once `upload-start` lands, clamped
+to 1, `1` once done) and `formatSyncProgress` (one case per phase) and
+`prettyStreamName`.
+
 ### src/store/appStore.test.ts
 
 Covers the store's write→refresh loop against real (fake-indexeddb) repos:
-capture/amend/revoke updating folded entries, settings persistence, wipe, the
-`guard` behavior of setting `lastError` while rejecting, and space accounting
-(`refreshSpace` snapshots, null-estimate degradation, and the wipe → re-measure
-regression).
+capture/amend/revoke updating folded entries, settings persistence, wipe
+(including that it disconnects Drive and clears every Cache Storage bucket via
+a `globalThis.caches` test double, #65), the `guard` behavior of setting
+`lastError` while rejecting, and space accounting (`refreshSpace` snapshots,
+null-estimate degradation, and the wipe → re-measure regression).
 
 ### src/store/space.test.ts
 
@@ -489,16 +621,28 @@ after `wipeAll`).
 ### src/store/appStore.drive.test.ts
 
 Mocks `src/drive/{auth,queue,pull,token}` to test only the store's Drive wiring:
-`drainSync`'s no-token and re-entrant branches, the multi-stream loop (every
-registered stream pulled-then-pushed in registry order, counts summed, per-stream
-results reported), failure isolation (a pull or drain `'reconnect'` aborts the
-remaining streams — their mocks are never invoked — and marks them `'reconnect'`;
-`'retry-later'`/`'error'` on one stream never short-circuits the rest),
-worst-of aggregation, per-stream `lastSyncAt` stamping (only streams whose own
-cycle was clean; idle streams stamped too; nothing stamped on an initial
-reconnect), the `globalSyncSummary` rollup (summed pending/errors, oldest
-`lastSyncAt`, `null` while any stream never synced), plus the connect (no
-post-connect sync) and disconnect flows.
+`drainSync`'s no-token and re-entrant branches (the same-tab `syncing` flag
+returns `'busy'`, and — separately — a concurrent call that finds the
+cross-tab `navigator.locks` lock already held returns `'busy'` even while the
+flag itself hasn't been set yet, closing the pre-fix TOCTOU window), the
+multi-stream loop (every registered stream pulled-then-pushed in registry
+order, counts summed, per-stream results reported), failure isolation (a pull
+or drain `'reconnect'` aborts the remaining streams — their mocks are never
+invoked — and marks them `'reconnect'`; a drain `'quota'` aborts the same way
+but marks them `'quota'` and sets `driveQuotaExceeded` **without** touching
+`driveConnection`; `'retry-later'`/`'error'` on one stream never
+short-circuits the rest), worst-of aggregation, per-stream `lastSyncAt`
+stamping (only streams whose own cycle was clean; idle streams stamped too;
+nothing stamped on an initial reconnect), `driveQuotaExceeded` clearing itself
+on a later clean cycle, the `globalSyncSummary` rollup (summed pending/errors,
+oldest `lastSyncAt`, `null` while any stream never synced), plus the connect
+(no post-connect sync) and disconnect flows. A `syncProgress` describe block
+covers the live-detail wiring: null before/after a cycle (including the
+no-token/re-entrant early returns), and — by having the `pullStream`/
+`drainStream` mocks call their `onProgress` callback and stall on a deferred
+promise — the store's `syncProgress` reflecting `pull-progress` mid-flight
+(`phase: 'pulling'`) and `upload-start` mid-flight (`phase: 'uploading'`,
+determinate `itemsTotal`), then clearing back to null once the cycle resolves.
 
 ### src/store/events.test.ts
 
@@ -509,6 +653,17 @@ the migration to v5 (id-keyed `events`/`sync` stores replacing `[stream, seq]`-k
 ones), the `summarizeSyncStatuses` rollup (pending/error counts, highest-seq
 `lastError`, omitted when the errored row has no message), and
 `getLastSyncAt`/`setLastSyncAt` round-trips per stream.
+
+### src/store/blobGc.test.ts
+
+Covers `planBlobGc`'s pure core (a live attachment is never touched even once
+uploaded; a revoked entry's attachment is reclaimed once its capture event is
+uploaded, never before; a `removeAttachments`-superseded file is reclaimed the
+same way once its owning amend is uploaded) and `reclaimStreamBlobs` end to end
+against fake-indexeddb (a revoked-and-uploaded entry's blob is deleted while a
+live sibling's is untouched; an uploaded-but-not-yet-synced revoke leaves the
+blob in place; a note edit's superseded text attachment is reclaimed, its
+replacement is not).
 
 ### src/store/events.sync.test.ts
 
@@ -592,14 +747,49 @@ and wrong-typed legacy fields ignored.
   `phase` field mirrors the attachments-first/record-last commit protocol (SPEC §5.2).
 - **Pull before push, per stream.** `drainSync` loops over `allSyncStreams()` and
   always runs `pullStream` before `drainStream` for each; pulled events arrive
-  `uploaded`/`done` so the drainer never re-pushes them. A `'reconnect'` anywhere
-  aborts the remaining streams; `'retry-later'`/`'error'` stays stream-local.
+  `uploaded`/`done` so the drainer never re-pushes them. A `'reconnect'` or
+  `'quota'` anywhere aborts the remaining streams; `'retry-later'`/`'error'`
+  stays stream-local.
 - **Sync is manual-only.** `drainSync`'s sole caller is the "Sync now" button in
   Settings — no foreground/online/capture triggers — and each stream's `lastSyncAt`
   is stamped only when that stream's own pull+push cycle completes cleanly
   (`idle`/`drained`).
+- **At most one cycle at a time, enforced by a real lock, not just a flag
+  (issue #50).** `drainSync` wraps the whole cycle in a `navigator.locks` lock
+  (`ifAvailable: true`) spanning every tab/window on the origin; a call that
+  can't acquire it returns `'busy'` immediately rather than running
+  concurrently. This closes a real defect: the old guard was the in-memory
+  `syncing` flag alone, checked and set with an `await` in between (a TOCTOU
+  window), and per-tab besides, so two overlapping drains could mint two
+  different pre-generated Drive file ids for the same contract filename and
+  both upload — permanent duplicate files, since the app never deletes from
+  Drive. `assignFileIds`/`mergeFileIds` (`src/drive/queue.ts`,
+  `src/store/events.ts`) add a second, cheaper layer of defense at the single
+  sync-row level for whenever the lock is unavailable or bypassed.
+- **`'busy'` and `'quota'` are not `'retry-later'` (issue #64/#88).** `'busy'`
+  (the re-entrancy guard) and `'quota'` (Drive full, 403 `storageQuotaExceeded`)
+  used to both either share `'retry-later'`'s label or, for quota, misclassify
+  as `'reconnect'` and loop the reconnect pill forever (reconnecting can't fix
+  a full Drive). All three are now distinguishable outcomes with their own
+  Settings copy, and `'quota'` sets `driveQuotaExceeded` instead of touching
+  `driveConnection`.
+- **`syncProgress` is live-only, never persisted.** It exists purely so a long
+  manual sync (many attachments/records/batched segments across multiple
+  streams) has visible feedback; `drainSync` builds it up via
+  `reduceSyncProgress` (`syncProgress.ts`) and clears it back to null in its
+  `finally`, alongside `syncing`. Errors are never routed through it — a
+  `'reconnect'`/`'retry-later'`/`'error'` outcome still surfaces the normal way
+  (`lastError`, the reconnect pill, `globalSyncSummary`); adding a second,
+  quieter error channel here would undo the lifecycle discipline that
+  `lastError`'s "sets and re-throws" `guard` behavior establishes.
 - **Blobs are keyed by contract filename**, computed at append time — the same name is
   used locally and in Drive, which is what makes re-uploads idempotent.
+- **Blob GC only deletes what is both fold-hidden and durably uploaded.**
+  `blobGc.ts#planBlobGc` never reclaims a blob whose owning event's sync row isn't
+  `'uploaded'` — including a missing row — so a blob can't be deleted before Drive
+  has its own copy, and GC never races an in-flight or not-yet-attempted upload.
+  It complements, not replaces, `drive/queue.ts#pruneAudio`'s `keepAudioLocally`
+  pruning of *visible* entries' audio.
 - **`db.ts` caches the connection**; tests (and anything deleting the database) must
   call `resetDbCache()` or they will reuse a closed/stale handle. (Rejected opens,
   `blocking`, and `terminated` clear the cache themselves — see the db.ts

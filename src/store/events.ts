@@ -350,6 +350,45 @@ export async function putSyncStatus(row: SyncStatusRow): Promise<void> {
   await db.put('sync', row)
 }
 
+/**
+ * Atomically lay down freshly-minted Drive file ids on a sync row (issue
+ * #50): reads the row fresh *inside* the transaction and merges rather than
+ * blind-overwrites, so a concurrent drain (another tab, or a same-tab
+ * re-entry that slipped past the in-memory `syncing` guard) that already
+ * persisted an id for one of these names wins that name — this call's freshly
+ * minted id for it is simply discarded (Drive ids are free; nothing is lost
+ * by minting one that goes unused). Only names truly still missing get this
+ * call's ids written. Returns the row's resulting `fileIds`, which the caller
+ * must use for its uploads — it may include ids this call did not mint, if a
+ * racing drain won them first. This is a defense-in-depth measure: the
+ * primary fix for concurrent drains is the cross-tab lock in
+ * `appStore.drainSync` (`navigator.locks`), which should make this race
+ * unreachable in practice; this closes it anyway for the case that lock is
+ * unavailable or two callers otherwise slip past it.
+ */
+export async function mergeFileIds(
+  id: string,
+  minted: Record<string, string>,
+): Promise<Record<string, string>> {
+  const db = await getDb()
+  const tx = db.transaction('sync', 'readwrite')
+  const store = tx.objectStore('sync')
+  const row = (await store.get(id)) as SyncStatusRow | undefined
+  if (!row) {
+    await tx.done
+    return minted
+  }
+  const existing = row.fileIds ?? {}
+  const merged = { ...minted, ...existing } // existing (already-persisted) ids win over freshly-minted ones
+  const gainedAny = Object.keys(minted).some((name) => existing[name] === undefined)
+  if (gainedAny) {
+    row.fileIds = merged
+    await store.put(row)
+  }
+  await tx.done
+  return merged
+}
+
 /** Drop a local attachment blob (keepAudioLocally=false pruning — §8.4). */
 export async function deleteBlob(file: string): Promise<void> {
   const db = await getDb()
@@ -374,4 +413,22 @@ export async function wipeAll(): Promise<void> {
     tx.objectStore('waveforms').clear(),
   ])
   await tx.done
+}
+
+/**
+ * Drop every SW-managed Cache Storage bucket (issue #65). The IndexedDB
+ * `geocache` store is only a second line of defence — the real durable
+ * copies of reverse-geocoded addresses and map tiles live in the
+ * `nominatim` / `osm-tiles` runtime caches (`vite.config.ts`), which
+ * `wipeAll` above never touches. "Wipe local data" must clear all of it, not
+ * just the app's own database, or a privacy wipe silently leaves a
+ * reconstructible location history behind. Deleting every cache (not just
+ * those two) is simplest and harmless: the SW re-precaches the app shell and
+ * fonts on next activation. A no-op where the Cache Storage API is
+ * unavailable (e.g. non-browser test environments).
+ */
+export async function wipeCaches(): Promise<void> {
+  if (typeof caches === 'undefined') return
+  const keys = await caches.keys()
+  await Promise.all(keys.map((key) => caches.delete(key)))
 }

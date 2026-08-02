@@ -1,12 +1,10 @@
-import { Suspense, lazy, useEffect, useRef, useState } from 'react'
+import { Suspense, lazy, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { AmendPatch, Entry, GeoLocation } from '../contract/types'
 import { localDateOf, localTimeOf, toLocalIso } from '../contract/time'
 import { useAppStore } from '../store/appStore'
 import type { SyncStatusRow } from '../store/db'
-import { getBlob } from '../store/events'
 import {
-  Button,
   Card,
   ChevronDownIcon,
   IconButton,
@@ -22,14 +20,14 @@ import {
 } from '../ui'
 import { EditEntrySheet } from './EditEntrySheet'
 import { TextSheet } from './TextSheet'
-import { AttachmentBody, SpokenMark } from './AttachmentBody'
+import { AttachmentBody } from './AttachmentBody'
 import { LifecycleBadge } from './LifecycleBadge'
 import { entryLifecycle, hasPendingEnrichment } from './lifecycle'
 import { groupAttachments } from './attachmentGroups'
 import { cardViewModel } from './cardView'
+import { PhotoGrid } from './PhotoGrid'
 import { PlaceCard } from './PlaceCard'
 import { locationName } from './placeCardModel'
-import type { Authorship } from './authorship'
 import { reasonLabel, relativeDayLabel } from './related'
 import { useAudioPlayback } from './useAudioPlayback'
 import { useRecorder, type RecordingResult } from './useRecorder'
@@ -87,9 +85,14 @@ export function EntryCard({
   onSetLocation,
   onApplyEdit,
 }: EntryCardProps) {
-  // View-local only (#78): never persisted, never an event — the log carries
-  // user data, not UI state. Collapses again on re-render of a fresh card.
-  const [expanded, setExpanded] = useState(false)
+  // View-local only, never persisted, never an event — the log carries user
+  // data, not UI state (#78, revised by #102). `menuOpen` is the single "+"
+  // affordance's expand state (actions are what collapse now); `relatedOpen`
+  // is the one piece of *content* still allowed to stay behind a reveal
+  // (#102: "related memories can stay behind expansion"), kept separate from
+  // the action menu so opening one never implies the other.
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [relatedOpen, setRelatedOpen] = useState(false)
   const [noteOpen, setNoteOpen] = useState(false)
   const [locationOpen, setLocationOpen] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
@@ -107,9 +110,11 @@ export function EntryCard({
   const navigate = useNavigate()
   // Candidates span the whole log, not just what this screen filtered to —
   // relatedness can span any date (#83: "six months ago"). The hook itself
-  // gates all blob/tokenization work behind `expanded`.
+  // gates all blob/tokenization work behind `relatedOpen` (#83 req. 5's cost
+  // bound, previously tied to card expansion — now tied to this dedicated
+  // reveal since card content is otherwise always visible, #102).
   const allEntries = useAppStore((s) => s.entries)
-  const related = useRelated(entry, allEntries, expanded)
+  const related = useRelated(entry, allEntries, relatedOpen)
 
   async function handleAudioTap() {
     if (rec.state === 'recording') {
@@ -122,8 +127,7 @@ export function EntryCard({
 
   return (
     <Card className={motion.riseIn}>
-      {/* Header: time + place grouped left; sync/duration/play pushed right.
-          This is the collapsed card's "time" and "context". */}
+      {/* Header: time + place grouped left; sync/duration/play pushed right. */}
       <div className="flex items-center gap-2">
         <div className="flex min-w-0 flex-1 items-baseline gap-2">
           {/* Tapping the time opens the native iOS wheel picker (B8); the
@@ -173,15 +177,15 @@ export function EntryCard({
           </span>
         )}
         {/* Signature fingerprint (#86), "beside the play control": rendered
-            here whenever the collapsed primary-content slot below isn't
-            *also* showing this same clip's fingerprint — i.e. whenever the
-            card has primaryText (e.g. a transcribed clip) or is expanded
-            (the collapsed-only primary-content slot has unmounted). Audio-
-            only + collapsed is the one case that skips this, since the
-            fingerprint already renders as the primary content below —
-            never drawn twice for the same clip, never absent while the
-            audio is visible (req. 5). */}
-        {audio && (vm.primaryText || expanded) && (
+            here whenever the content below isn't *also* showing this same
+            clip's fingerprint — i.e. whenever the entry has text content
+            (`vm.primaryText`), since a text entry's content area shows text,
+            not audio. An audio-only entry (no `vm.primaryText`) renders its
+            fingerprint full-width in the content area instead (below) — the
+            two are mutually exclusive, so the fingerprint is never drawn
+            twice for the same clip, and never absent while the audio is
+            visible (#86 req. 5), regardless of the "+" menu's state. */}
+        {audio && vm.primaryText && (
           <Waveform file={audio.file} progress={playback.progress} className="w-14 shrink-0" />
         )}
         {audio && (
@@ -203,47 +207,33 @@ export function EntryCard({
         )}
       </div>
 
-      {/* Collapsed content: the entry's primary text representation, or —
-          for an audio-only entry — its waveform fingerprint (#86) standing
-          in as the primary content, doubling as the play-progress
-          indicator; tapping either expands the card. */}
-      {!expanded && vm.primaryText && (
-        <PrimaryTextPreview
-          file={vm.primaryText.file}
-          authorship={vm.primaryText.authorship}
-          onTap={() => setExpanded(true)}
-        />
-      )}
-      {!expanded && !vm.primaryText && audio && (
+      {/* Content — always visible (#102's core inversion: content is never
+          what collapses, only actions/chrome do). An audio-only entry (no
+          text at all) leads with its waveform fingerprint full-width, tap to
+          toggle playback — the one case the header's compact fingerprint
+          above skips, so this is never a second copy of the same clip. */}
+      {!vm.primaryText && audio && (
         <button
           type="button"
-          onClick={() => setExpanded(true)}
-          aria-label="Show more"
+          onClick={() => void playback.toggle()}
+          aria-label={playback.playing ? 'Stop playback' : 'Play recording'}
           className="mt-2 block w-full"
         >
           <Waveform file={audio.file} progress={playback.progress} height={28} />
         </button>
       )}
-
-      {/* Expanded content: full attachment body + location preview, per #78. */}
-      {expanded && (
-        <>
-          <AttachmentBody
-            attachments={entry.attachments}
-            onEditText={onEditText}
-            onRemoveAttachment={onRemoveAttachment}
-          />
-          {entry.location && (
-            <PlaceCard location={entry.location} onExpand={() => setMapOpen(true)} />
-          )}
-          {/* Related memories (#83 v1): a minimum-score threshold already
-              gated `related` server-side (relatedEntries) — an empty array
-              means nothing genuinely relates, so no section renders at all. */}
-          {related.length > 0 && (
-            <RelatedRows rows={related} onOpen={(date) => navigate(`/day/${date}`)} />
-          )}
-        </>
-      )}
+      {/* Every note/transcript (the primary one and any others), every extra
+          audio clip, and any orphan caption — unconditional, nothing here is
+          "extra" any more. */}
+      <AttachmentBody attachments={entry.attachments} onEditText={onEditText} />
+      {/* Every photo, tight grid, capture order (#102) — replaces the old
+          one-row-per-photo layout that only showed on expansion. */}
+      <PhotoGrid
+        photoGroups={vm.photoGroups}
+        onEditText={onEditText}
+        onRemoveAttachment={onRemoveAttachment}
+      />
+      {entry.location && <PlaceCard location={entry.location} onExpand={() => setMapOpen(true)} />}
 
       {rec.state === 'recording' ? (
         <div
@@ -275,63 +265,116 @@ export function EntryCard({
           </button>
         </div>
       ) : (
-        <>
-          {/* Labelled actions — only reachable from the expanded state
-              (#78): the design review's "six unlabeled icons are
-              conceptually ambiguous" complaint. Every action still carries
-              the same glyph as the main CTA/edit affordances, now beside a
-              text label. */}
-          {expanded && (
-            <div className={cx('-mx-4 mt-3 flex flex-wrap items-center gap-1 border-t px-2 pt-2', tone.border)}>
-              <Button variant="ghost" size="sm" onClick={() => setNoteOpen(true)}>
-                <NoteIcon size={14} /> Add note
-              </Button>
-              <Button variant="ghost" size="sm" onClick={() => photoInputRef.current?.click()}>
-                <PhotoIcon size={14} /> Add photo
-              </Button>
-              {rec.state === 'error' ? (
-                <Button variant="ghost" size="sm" onClick={rec.resetError}>
-                  mic unavailable
-                </Button>
-              ) : (
-                <Button variant="ghost" size="sm" onClick={() => void handleAudioTap()}>
-                  <AudioIcon size={14} /> Add audio
-                </Button>
-              )}
-              <Button variant="ghost" size="sm" onClick={() => setLocationOpen(true)}>
-                {entry.location ? <PinIcon size={14} /> : <PlusIcon size={14} />} Location
-              </Button>
-              <Button variant="ghost" size="sm" className="ml-auto" onClick={() => setEditOpen(true)}>
-                <SlidersIcon size={14} /> Edit
-              </Button>
-              <Button variant="dangerGhost" size="sm" onClick={onDelete}>
-                <TrashIcon size={14} /> Delete
-              </Button>
-            </div>
-          )}
-
-          {/* The one overflow/expand affordance the collapsed card keeps —
-              a real button with aria-expanded (#78 req. 7), never a
-              hover/gesture-only trap. Shows a "+N" hint from the pure
-              view-model when collapsed content hides attachments. */}
+        <div className={cx('-mx-4 mt-3 flex flex-wrap items-center gap-1 border-t px-2 pt-2', tone.border)}>
+          {/* Related memories (#83 v1) stay behind their own quiet reveal
+              (#102 explicitly allows this) — the one piece of content this
+              card doesn't show unconditionally, since computing it is a
+              full-log scan (#83 req. 5's cost bound). */}
           <button
             type="button"
-            aria-expanded={expanded}
-            aria-label={expanded ? 'Show less' : 'Show more'}
-            onClick={() => setExpanded((e) => !e)}
+            aria-expanded={relatedOpen}
+            onClick={() => setRelatedOpen((o) => !o)}
             className={cx(
-              'mt-2 flex items-center gap-1 rounded-md px-1 py-0.5',
+              'flex items-center gap-1 rounded-md px-1 py-0.5',
               type_.caption,
               tone.textFaint,
               tone.pressWash,
             )}
           >
-            <span className={cx('inline-flex transition-transform', expanded && 'rotate-180')}>
+            <span className={cx('inline-flex transition-transform', relatedOpen && 'rotate-180')}>
               <ChevronDownIcon size={12} />
             </span>
-            {expanded ? 'Show less' : vm.extraCount > 0 ? `Show more (+${vm.extraCount})` : 'Show more'}
+            Related
           </button>
-        </>
+
+          {/* The single "+" affordance (#102): replaces the old labelled
+              action column. Every action is still reachable and labelled
+              (aria-label) — icon-only now, tighter, but never removed. */}
+          <div className="ml-auto flex flex-wrap items-center justify-end gap-1">
+            {menuOpen && (
+              <>
+                <IconButton
+                  aria-label="Add note"
+                  onClick={() => {
+                    setMenuOpen(false)
+                    setNoteOpen(true)
+                  }}
+                >
+                  <NoteIcon size={16} />
+                </IconButton>
+                <IconButton
+                  aria-label="Add photo"
+                  onClick={() => {
+                    setMenuOpen(false)
+                    photoInputRef.current?.click()
+                  }}
+                >
+                  <PhotoIcon size={16} />
+                </IconButton>
+                {rec.state === 'error' ? (
+                  <IconButton aria-label="Microphone unavailable, tap to retry" onClick={rec.resetError}>
+                    <AudioIcon size={16} />
+                  </IconButton>
+                ) : (
+                  <IconButton
+                    aria-label="Add audio"
+                    onClick={() => {
+                      setMenuOpen(false)
+                      void handleAudioTap()
+                    }}
+                  >
+                    <AudioIcon size={16} />
+                  </IconButton>
+                )}
+                <IconButton
+                  aria-label={entry.location ? 'Edit location' : 'Add location'}
+                  onClick={() => {
+                    setMenuOpen(false)
+                    setLocationOpen(true)
+                  }}
+                >
+                  {entry.location ? <PinIcon size={16} /> : <PlusIcon size={16} />}
+                </IconButton>
+                <IconButton
+                  aria-label="Edit entry"
+                  onClick={() => {
+                    setMenuOpen(false)
+                    setEditOpen(true)
+                  }}
+                >
+                  <SlidersIcon size={16} />
+                </IconButton>
+                <IconButton
+                  variant="danger"
+                  aria-label="Delete entry"
+                  onClick={() => {
+                    setMenuOpen(false)
+                    onDelete()
+                  }}
+                >
+                  <TrashIcon size={16} />
+                </IconButton>
+              </>
+            )}
+            <IconButton
+              aria-expanded={menuOpen}
+              aria-label={menuOpen ? 'Close actions' : 'Add or edit'}
+              onClick={() => setMenuOpen((o) => !o)}
+            >
+              <span className={cx('inline-flex transition-transform', menuOpen && 'rotate-45')}>
+                <PlusIcon size={18} />
+              </span>
+            </IconButton>
+          </div>
+        </div>
+      )}
+
+      {/* Related memories (#83 v1): a minimum-score threshold already gated
+          `related` server-side (relatedEntries) — an empty array means
+          nothing genuinely relates, so no section renders even once
+          `relatedOpen` reveals it. */}
+      {related.length > 0 && (
+        <RelatedRows rows={related} onOpen={(date) => navigate(`/day/${date}`)} />
       )}
 
       <input
@@ -428,54 +471,5 @@ function RelatedRows({
         )
       })}
     </div>
-  )
-}
-
-/**
- * The collapsed card's primary content: the entry's primary text (per
- * `cardViewModel`), clamped to two lines, tapping through to the expanded
- * state rather than the inline editor `AttachmentBody`'s `NoteText` opens —
- * editing lives behind expansion (#78 req. 3). Loads its text the same way
- * `NoteText` does (async `getBlob`, stale-guarded), so it renders nothing
- * until the blob resolves.
- */
-function PrimaryTextPreview({
-  file,
-  authorship,
-  onTap,
-}: {
-  file: string
-  /** Authored (typed note) or spoken (transcript) — both render at the same
-   *  heaviest/darkest weight (#80): the collapsed preview is the entry's own
-   *  voice either way. Spoken text additionally gets the quiet
-   *  `SpokenMark` glyph noting it was transcribed. Never `'derived'` here —
-   *  `cardViewModel` never picks a caption as primary text. */
-  authorship: Authorship
-  onTap: () => void
-}) {
-  const [text, setText] = useState<string | null>(null)
-  useEffect(() => {
-    let stale = false
-    void getBlob(file).then(async (blob) => {
-      if (blob && !stale) setText(await blob.text())
-    })
-    return () => {
-      stale = true
-    }
-  }, [file])
-  if (text === null) return null
-  return (
-    <button type="button" onClick={onTap} className={cx('mt-2 block w-full text-left', motion.fadeIn)}>
-      <span
-        className={cx(
-          'line-clamp-2 block whitespace-pre-wrap break-words',
-          type_.bodyStrong,
-          tone.textPrimary,
-        )}
-      >
-        {authorship === 'spoken' && <SpokenMark />}
-        {text}
-      </span>
-    </button>
   )
 }

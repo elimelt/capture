@@ -11,8 +11,9 @@ import { useFreshIndexedDb } from '../testing/freshDb'
 useFreshIndexedDb()
 
 // Shared fake (issue #70) — see testing/fakeDrive.ts. This suite exercises
-// upload order, the 409-on-pregenerated-id contract, and both failure knobs
-// (`failNext` for a transient/global failure, `failName` for one
+// upload order, the 409-on-pregenerated-id contract, and the failure knobs
+// (`failNext` for a transient/global failure — including a Drive `reason`
+// code for quota/rate-limit classification — and `failName` for one
 // deterministically-poison row).
 vi.mock('./client', () => driveClientMock())
 
@@ -207,6 +208,47 @@ describe('drainStream', () => {
     expect((await getSyncStatuses('timelog')).get(event.id)?.status).toBe('uploaded')
   })
 
+  it('keeps the row queued on a quota-exceeded 403 (issue #88) — distinct from reconnect', async () => {
+    const event = await captureWithAudio()
+    await import('./bootstrap').then((m) => m.ensureTree('tok', ['timelog']))
+    drive.failNext(403, 'storageQuotaExceeded')
+    const { drainStream } = await import('./queue')
+
+    const res = await drainStream('tok', 'timelog')
+    expect(res.outcome).toBe('quota')
+    expect(res.error).toBeTruthy()
+    const { getSyncStatuses } = await import('../store/events')
+    const row = [...(await getSyncStatuses('timelog')).values()][0]
+    // Same "keep queued, don't ask to reconnect" treatment as retry-later —
+    // the token is fine, only Drive's storage is full.
+    expect(row.status).toBe('queued')
+    expect(row.error).toBeTruthy()
+
+    // Freeing space and retrying immediately (no backoff gate) succeeds.
+    drive.failNext(null)
+    const retry = await drainStream('tok', 'timelog')
+    expect(retry.outcome).toBe('drained')
+    expect((await getSyncStatuses('timelog')).get(event.id)?.status).toBe('uploaded')
+  })
+
+  it('a plain 403 with no reason still asks to reconnect (not quota)', async () => {
+    await captureWithAudio()
+    await import('./bootstrap').then((m) => m.ensureTree('tok', ['timelog']))
+    drive.failNext(403)
+    const { drainStream } = await import('./queue')
+    const res = await drainStream('tok', 'timelog')
+    expect(res.outcome).toBe('reconnect')
+  })
+
+  it('a rate-limited 403 reason is retried like a 429, not treated as reconnect', async () => {
+    await captureWithAudio()
+    await import('./bootstrap').then((m) => m.ensureTree('tok', ['timelog']))
+    drive.failNext(403, 'userRateLimitExceeded')
+    const { drainStream } = await import('./queue')
+    const res = await drainStream('tok', 'timelog')
+    expect(res.outcome).toBe('retry-later')
+  })
+
   it('drains a legacy row stuck behind a persisted nextRetryAt (stuck-queue regression)', async () => {
     // Rows written by older app versions can carry a nextRetryAt up to an
     // hour in the future. The old drainer skipped them *and* reported the
@@ -247,6 +289,65 @@ describe('drainStream', () => {
   it('is idle when nothing is queued', async () => {
     const { drainStream } = await import('./queue')
     expect(await drainStream('tok', 'timelog')).toEqual({ outcome: 'idle', uploaded: 0 })
+  })
+
+  it('defaults onProgress to a no-op — existing callers are unaffected', async () => {
+    await captureWithAudio()
+    const { drainStream } = await import('./queue')
+    // No third argument: must not throw.
+    await expect(drainStream('tok', 'timelog')).resolves.toMatchObject({ outcome: 'drained' })
+  })
+
+  it('reports an upload-start total then one upload-progress per commit unit, never per file', async () => {
+    await captureWithAudio()
+    await captureWithAudio() // 2 same-partition rows -> one segment batch (SPEC §5.7)
+    const { drainStream } = await import('./queue')
+    const events: unknown[] = []
+    const res = await drainStream('tok', 'timelog', (e) => events.push(e))
+    expect(res).toMatchObject({ outcome: 'drained', uploaded: 2 })
+    expect(events).toEqual([
+      { kind: 'upload-start', stream: 'timelog', itemsTotal: 2 },
+      { kind: 'upload-progress', stream: 'timelog', delta: 2 },
+    ])
+  })
+
+  it('reports an idle stream (nothing queued) with zero progress events', async () => {
+    const { drainStream } = await import('./queue')
+    const events: unknown[] = []
+    await drainStream('tok', 'timelog', (e) => events.push(e))
+    expect(events).toEqual([])
+  })
+
+  it('reports one upload-progress per batch on a mixed run (record then segment)', async () => {
+    await captureWithAudio() // lone event -> per-event record path
+    await import('./bootstrap').then((m) => m.ensureTree('tok', ['timelog']))
+    const { drainStream } = await import('./queue')
+    const firstRunEvents: unknown[] = []
+    await drainStream('tok', 'timelog', (e) => firstRunEvents.push(e))
+    expect(firstRunEvents).toEqual([
+      { kind: 'upload-start', stream: 'timelog', itemsTotal: 1 },
+      { kind: 'upload-progress', stream: 'timelog', delta: 1 },
+    ])
+
+    await captureWithAudio()
+    await captureWithAudio() // 2 more same-partition rows -> one segment batch
+    const secondRunEvents: unknown[] = []
+    await drainStream('tok', 'timelog', (e) => secondRunEvents.push(e))
+    expect(secondRunEvents).toEqual([
+      { kind: 'upload-start', stream: 'timelog', itemsTotal: 2 },
+      { kind: 'upload-progress', stream: 'timelog', delta: 2 },
+    ])
+  })
+
+  it('does not report upload-progress for a batch that fails', async () => {
+    await captureWithAudio()
+    await import('./bootstrap').then((m) => m.ensureTree('tok', ['timelog']))
+    drive.failNext(500)
+    const { drainStream } = await import('./queue')
+    const events: unknown[] = []
+    const res = await drainStream('tok', 'timelog', (e) => events.push(e))
+    expect(res.outcome).toBe('retry-later')
+    expect(events).toEqual([{ kind: 'upload-start', stream: 'timelog', itemsTotal: 1 }])
   })
 
   it('batches ≥2 pending events into one sealed segment upload (SPEC §5.7)', async () => {
@@ -630,6 +731,30 @@ describe('drainStream', () => {
     const third = await drainStream('tok', 'timelog')
     expect(third).toEqual({ outcome: 'error', uploaded: 1, error: expect.stringContaining('boom-name') })
     expect((await getSyncStatuses('timelog')).get(e3.id)?.status).toBe('uploaded')
+  })
+
+  it('reports no upload-progress for a parked batch, but still reports the healthy batch after it', async () => {
+    // Progress × parking (#87 × sync-progress indicator): a parked batch
+    // commits nothing, so it must not count toward upload-progress — the
+    // reducer would otherwise report more "done" than actually landed. The
+    // drain continuing past it, though, means the healthy batch behind it
+    // still reports normally in the same call.
+    const e1 = await captureWithAudio()
+    await import('./bootstrap').then((m) => m.ensureTree('tok', ['timelog']))
+    drive.failName(e1.attachments[0].file, 400)
+    const { drainStream } = await import('./queue')
+    for (let i = 1; i <= 5; i++) await drainStream('tok', 'timelog')
+
+    await captureWithAudio() // e2: a fresh, healthy row queued behind the parked e1
+    const events: unknown[] = []
+    const res = await drainStream('tok', 'timelog', (e) => events.push(e))
+    expect(res).toMatchObject({ outcome: 'error', uploaded: 1 })
+    // itemsTotal counts both rows (the parked one is neither "done" nor
+    // dropped from the total), but only e2's batch reports upload-progress.
+    expect(events).toEqual([
+      { kind: 'upload-start', stream: 'timelog', itemsTotal: 2 },
+      { kind: 'upload-progress', stream: 'timelog', delta: 1 },
+    ])
   })
 
   it('never batches a parked row with a healthy neighbor (#87)', async () => {

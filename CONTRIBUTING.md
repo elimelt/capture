@@ -29,6 +29,7 @@ npm run preview      # serve the production build locally
 | `src/drive/` | GIS auth, Drive client, tree bootstrap, upload queue, pull engine. |
 | `src/gcal/` | Read-only Google Calendar client + target-calendar config (timelog read-back; feeds the Day view). |
 | `src/transcribe/`, `src/vision/`, `src/places/` | Post-capture enrichment pipelines. |
+| `src/enrich/` | Shared drain engine (backoff, failure taxonomy, circuit breaker, skip markers) the transcribe/vision runners bind onto. |
 | `src/notify/` | Notification capability detection, app-icon badging, best-effort local notifications, Web Push plumbing (no server to send push today). |
 | `src/capture/`, `src/dayview/`, `src/settings/`, `src/assistant/` | The four screens. |
 | `src/ui/` | Design system: tokens + primitives. The only place visual identity lives. |
@@ -39,7 +40,7 @@ Subsystem and module docs live in `docs/subsystems/` and `docs/modules/`.
 ## Architecture rules (must follow)
 
 **Layering.** The generic layers — `streams/`, `capture/`, `contract/`, `store/`,
-`places/`, `drive/`, `transcribe/`, `vision/`, `notify/`, `ui/` — are stream-agnostic and must
+`places/`, `drive/`, `transcribe/`, `vision/`, `enrich/`, `notify/`, `ui/` — are stream-agnostic and must
 not import from the timelog-specific or app-level directories `gcal/`, `dayview/`,
 `settings/`, or `assistant/`. This is enforced by `src/layering.test.ts`, which
 scans every source file in the generic layers and fails on forbidden imports. If
@@ -141,11 +142,18 @@ iOS invariants (safe areas, 44 pt tap targets, keyboard insets).
 `src/transcribe/` and `src/vision/`: a pure `plan.ts` over the raw event history
 decides what still needs work (use `derivedFrom` on attachments as the
 machine/user boundary so user edits are never regenerated over); a single
-`api.ts` function calls the external service; a `runner.ts` appends results as
-ordinary `amend` events — the normal queue syncs them, so no pipeline-specific
-sync code. Return immediately when `!navigator.onLine`, back off on transient
-failures, skip-mark permanent ones, and never surface errors to the UI. Hook the
-drain into `App.tsx`'s existing triggers.
+`api.ts` function calls the external service and throws `EnrichmentError`
+(`src/enrich/error.ts`) for classified failures; a `runner.ts` binds these
+(plus the live-text store) onto `createEnrichmentRunner`
+(`src/enrich/runner.ts`), which appends results as ordinary `amend` events —
+the normal queue syncs them, so no pipeline-specific sync code. The shared
+runner already returns immediately when `!navigator.onLine`, backs off on
+transient failures, skip-marks permanent ones (with a reason), defers rather
+than skips a missing source blob, trips a per-drain circuit breaker on a
+down/unreachable host, re-plans after the API call to drop a result a sync
+pull made redundant, and never surfaces errors to the UI — do not
+reimplement any of that in a new `runner.ts`. Hook the drain into
+`App.tsx`'s existing triggers.
 
 **A new event field.** The event schema is a versioned contract
 (`capture.event.v1`) shared with external Drive-reading skills — proceed with

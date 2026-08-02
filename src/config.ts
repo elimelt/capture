@@ -12,18 +12,18 @@ export const GOOGLE_CLIENT_ID =
   '1055328792781-3qp3rdol6ebq8idump3610qhebma30f8.apps.googleusercontent.com'
 
 /**
- * External API endpoints (issue #69), one place to diff against when moving
- * a host: the OpenAI-compatible assistant endpoint, the native (Ollama-style)
- * vision-captioning endpoint (same host as `assistant`, different surface —
- * only the native API honors `think: false`), and the transcription
- * endpoint. Consumed by `assistant/config.ts`, `vision/api.ts`, and
- * `transcribe/api.ts`; every host here must also be whitelisted in
- * `index.html`'s CSP `connect-src` (pinned by `config.test.ts`).
+ * External API endpoints (issue #69): the OpenAI-compatible assistant
+ * endpoint, consumed by `assistant/config.ts`. The transcription and
+ * vision-captioning endpoints are a separate, already-established
+ * fork/self-host seam in `src/enrich/config.ts` (issue #62,
+ * `TRANSCRIBE_BASE_URL`/`VISION_CHAT_URL`) — kept there rather than
+ * duplicated here, since that module also owns the paired model constants
+ * and both pipelines' `api.ts` already read from it. Every host across both
+ * modules must also be whitelisted in `index.html`'s CSP `connect-src`
+ * (pinned by `config.test.ts`).
  */
 export const ENDPOINTS = {
   assistant: 'https://llm.elimelt.com/v1',
-  vision: 'https://llm.elimelt.com/api/chat',
-  transcribe: 'https://transcribe.elimelt.com',
 } as const
 
 /**

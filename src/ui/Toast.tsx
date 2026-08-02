@@ -5,6 +5,13 @@ interface ToastProps {
   children: ReactNode
   actionLabel?: string
   onAction?: () => void
+  /**
+   * Clearance above the tab bar, in rem. Default clears it with a small
+   * gutter; callers that may render alongside another Toast (e.g. an
+   * update-available prompt next to the error toast) bump this so the two
+   * stack instead of overlapping.
+   */
+  bottomRem?: number
 }
 
 /**
@@ -13,7 +20,7 @@ interface ToastProps {
  * messages (e.g. a sync error) were otherwise silently cut off for the
  * entire 6 s the toast is on screen (issue #67).
  */
-export function Toast({ children, actionLabel, onAction }: ToastProps) {
+export function Toast({ children, actionLabel, onAction, bottomRem = 5.5 }: ToastProps) {
   const [expanded, setExpanded] = useState(false)
   return (
     <div
@@ -26,7 +33,7 @@ export function Toast({ children, actionLabel, onAction }: ToastProps) {
         type_.ui,
         motion.toastIn,
       )}
-      style={{ bottom: 'calc(env(safe-area-inset-bottom) + 5.5rem)' }}
+      style={{ bottom: `calc(env(safe-area-inset-bottom) + ${bottomRem}rem)` }}
       role="status"
     >
       <button

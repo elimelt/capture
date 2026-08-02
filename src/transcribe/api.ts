@@ -9,11 +9,10 @@
  * live UI; the resolved value is the full transcript, byte-identical to
  * what the non-streaming endpoint would have returned (see stream.ts).
  */
-import { ENDPOINTS } from '../config'
+import { TRANSCRIBE_BASE_URL as BASE_URL, TRANSCRIBE_MODEL as MODEL } from '../enrich/config'
+import { EnrichmentError, isRetryableStatus } from '../enrich/error'
 import { assembleTranscript, feedSse } from './stream'
 
-const BASE_URL = ENDPOINTS.transcribe
-const MODEL = 'Systran/faster-whisper-base.en'
 const TIMEOUT_MS = 60_000
 
 /** Server sniffs content, but a sensible filename extension helps. */
@@ -47,7 +46,11 @@ export async function transcribeAudio(
     body: form,
     signal: AbortSignal.timeout(TIMEOUT_MS),
   })
-  if (!res.ok) throw new Error(`transcription failed: HTTP ${res.status}`)
+  if (!res.ok) {
+    throw new EnrichmentError(`transcription failed: HTTP ${res.status}`, {
+      retryable: isRetryableStatus(res.status),
+    })
+  }
 
   const contentType = res.headers.get('content-type') ?? ''
   if (!contentType.includes('text/event-stream') || !res.body) {
@@ -75,6 +78,8 @@ export async function transcribeAudio(
   // The server terminates every event with a blank line, so leftover text
   // means the stream was cut mid-segment: fail (transient) rather than
   // resolve with a silently truncated transcript.
-  if (buffer.trim() !== '') throw new Error('transcription failed: truncated stream')
+  if (buffer.trim() !== '') {
+    throw new EnrichmentError('transcription failed: truncated stream', { retryable: true })
+  }
   return assembleTranscript(segments)
 }

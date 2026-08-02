@@ -7,6 +7,7 @@ import { useAppStore } from '../store/appStore'
 import { EmptyState, ScreenHeader, Toast, cx, motion } from '../ui'
 import { useRecorder, type RecordingResult } from './useRecorder'
 import { needsPlacePrompt, snapshotLocation } from './geo'
+import { downscalePhoto } from './photo'
 import { usePendingDelete } from './usePendingDelete'
 import { EntryList } from './EntryList'
 import { RecordPanel } from './RecordPanel'
@@ -43,6 +44,13 @@ export default function CaptureScreen() {
   const [textOpen, setTextOpen] = useState(false)
   const [toast, setToast] = useState<ToastState | null>(null)
   const [pendingPlace, setPendingPlace] = useState<PendingPlace | null>(null)
+  // Best-effort "near …" hint for the naming sheet (#59): capture-time
+  // snapshots never carry `address` (geocoding happens lazily), so this is
+  // populated asynchronously after the prompt opens. Guarded by
+  // `pendingPlaceEntryIdRef` so a slow lookup can't paint a stale address
+  // onto a newer prompt if the user dismisses one and triggers another first.
+  const [pendingPlaceAddress, setPendingPlaceAddress] = useState<string | undefined>(undefined)
+  const pendingPlaceEntryIdRef = useRef<string | null>(null)
   // Gesture accelerator's drag-to-satellite outcome (#77): which just-committed
   // entry, if any, is waiting for its photo/note add-on. View-local only —
   // resolved into an `amend` on save, never its own event.
@@ -68,6 +76,11 @@ export default function CaptureScreen() {
     const { location } = event
     if (location && needsPlacePrompt(location, appSettings.locationEnabled)) {
       setPendingPlace({ entryId: event.id, location })
+      setPendingPlaceAddress(undefined)
+      pendingPlaceEntryIdRef.current = event.id
+      void reverseGeocode(location.lat, location.lng).then((address) => {
+        if (pendingPlaceEntryIdRef.current === event.id) setPendingPlaceAddress(address)
+      })
     }
   }
 
@@ -76,8 +89,11 @@ export default function CaptureScreen() {
     if (!pending) return
     const { entryId, location } = pending
     setPendingPlace(null)
-    // Best-effort "near …"; never blocks. Reuse any address already on the loc.
-    const address = location.address ?? (await reverseGeocode(location.lat, location.lng))
+    // Best-effort "near …"; never blocks. Reuse whatever's already resolved
+    // (the loc's own address, or the sheet's in-flight/resolved hint) before
+    // falling back to a fresh lookup — reverseGeocode is cached either way.
+    const address =
+      location.address ?? pendingPlaceAddress ?? (await reverseGeocode(location.lat, location.lng))
     await addPlace({
       id: crypto.randomUUID(),
       name,
@@ -194,10 +210,11 @@ export default function CaptureScreen() {
 
   async function submitPhoto(file: File) {
     const location = await snapshotLocation(places, appSettings.locationEnabled)
+    const photo = await downscalePhoto(file)
     const event = await capture({
       capturedAt: toLocalIso(new Date()),
       location,
-      attachments: [{ kind: 'photo', blob: file, mimeType: file.type || 'image/jpeg' }],
+      attachments: [{ kind: 'photo', blob: photo.blob, mimeType: photo.mimeType }],
     })
     showToast({ kind: 'captured', entryId: event.id })
     maybePromptPlace(event)
@@ -284,10 +301,13 @@ export default function CaptureScreen() {
           const target = addOnTarget
           setAddOnTarget(null)
           if (file && target?.kind === 'photo') {
-            void amend({
-              targets: [target.entryId],
-              attachments: [{ kind: 'photo', blob: file, mimeType: file.type || 'image/jpeg' }],
-            })
+            void (async () => {
+              const photo = await downscalePhoto(file)
+              await amend({
+                targets: [target.entryId],
+                attachments: [{ kind: 'photo', blob: photo.blob, mimeType: photo.mimeType }],
+              })
+            })()
           }
           e.target.value = ''
         }}
@@ -338,7 +358,7 @@ export default function CaptureScreen() {
 
       {pendingPlace && (
         <NamePlaceSheet
-          address={pendingPlace.location.address}
+          address={pendingPlace.location.address ?? pendingPlaceAddress}
           onSave={(name, radiusM) => void saveNamedPlace(name, radiusM)}
           onClose={() => setPendingPlace(null)}
         />
