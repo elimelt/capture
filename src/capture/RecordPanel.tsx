@@ -213,6 +213,19 @@ export function RecordPanel({
     )
   }
 
+  if (recorder.state === 'starting') {
+    return (
+      <div className={cx('flex flex-col items-center gap-3 py-10 text-center', motion.fadeIn)}>
+        <p className={cx(type_.body, 'font-medium', tone.textPrimary)}>
+          Starting microphone…
+        </p>
+        <p className={cx(type_.sub, tone.textMuted, 'max-w-64')}>
+          Allow microphone access to begin recording.
+        </p>
+      </div>
+    )
+  }
+
   // The full recording panel (LevelMeter + Discard/Done) only replaces the
   // mic/satellite layout once the gesture has released back to idle — while
   // an active hold/drag is in flight, the mic/satellite layout stays
