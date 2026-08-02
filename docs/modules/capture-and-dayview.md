@@ -1022,12 +1022,68 @@ ambient processing rather than infrastructure. `'failed'` renders a small danger
 label ("Upload failed — will retry") — unchanged from the old SyncBadge's error case,
 so real failures never get quieter.
 
+### src/capture/recorderEngine.ts
+
+**Purpose:** Framework-free `getUserMedia` + `MediaRecorder` controller — every ref,
+timer, and recorder/track event handler `useRecorder.ts` needs, kept out of React so it
+can be unit-tested directly (stub `navigator.mediaDevices`/`MediaRecorder` with
+`vi.stubGlobal`, the same pattern as `notify/badge.test.ts`) without a DOM or a hook
+renderer. Negotiates the audio container at runtime — iOS Safari records `audio/mp4`,
+not webm, so the mime type is picked from `['audio/mp4', 'audio/webm;codecs=opus',
+'audio/webm']` via `MediaRecorder.isTypeSupported`, never hardcoded.
+
+**Exports:**
+
+- `createRecorderEngine(callbacks: RecorderEngineCallbacks): RecorderEngine`, where
+  `RecorderEngineCallbacks = { onStateChange, onElapsed, onErrorKind }` and
+  `RecorderEngine = { start(maxSec?, onAutoStop?), stop(), cancel(), resetError(),
+  getLevel(), destroy() }` — `destroy` releases the mic/timers/`AudioContext` and is
+  the engine's half of `useRecorder`'s unmount cleanup.
+- `buildResult(chunks: Blob[], recorderMimeType: string, startedAtMs: number, nowMs:
+  number): RecordingResult | null` — pure blob assembly (mime falls back to the first
+  chunk's type then `audio/webm`; `durationSec` is wall-clock, rounded, minimum 1;
+  empty blobs resolve `null`), shared by every stop path below so an out-of-band stop
+  is delivered identically to a clean one.
+- `interface RecordingResult { blob: Blob; mimeType: string; durationSec: number }`,
+  types `RecorderState`, `RecorderErrorKind`.
+
+**Lifecycle & edge cases:**
+
+- `start` is a no-op if a recorder already exists. On `getUserMedia`/`MediaRecorder`
+  failure it cleans up and reports `state: 'error'` with a kind — `'denied'` for
+  `NotAllowedError`/`SecurityError` `DOMException`s (user must change iOS Settings),
+  `'failed'` otherwise (worth retrying).
+- A 250ms interval reports `elapsedSec` and auto-stops at `maxSec`, delivering the clip
+  to `onAutoStop`. Because the timer, a user tap, and an out-of-band stop can all race
+  to settle the recording, `finalize()` claims the recorder by nulling its internal ref
+  first, making every other path a no-op (they resolve `null`/do nothing).
+- **Out-of-band stop handling (#49):** `start()` also attaches `recorder.onstop`,
+  `recorder.onerror`, and an `ended` listener on every stream track to one shared
+  handler, so a stop the platform initiates itself — mic permission revoked, iOS taking
+  the audio session (call, Siri), a device disconnect, or a genuine
+  `MediaRecorderErrorEvent` — is observed even though no explicit `stop()` is waiting on
+  it. The handler is guarded by recorder identity (a no-op once `finalize()` has already
+  claimed the recorder), assembles whatever chunks were captured via `buildResult` and
+  delivers them through `onAutoStop` exactly like a clean auto-stop (an interrupted clip
+  is still the user's words), and only reports `state: 'error'`/`errorKind: 'failed'`
+  when nothing was captured. Either way `cleanup()` runs, so the elapsed-timer interval
+  is always cleared and the UI can never wedge on `'recording'` forever.
+- `finalize()`'s already-`inactive` branch also settles (assembles the result, cleans
+  up, reports `idle`) instead of silently no-oping, so a lost identity race can never
+  leave stale refs/timers behind either.
+- `cancel` detaches `onstop`/`onerror`, stops the recorder, and drops the chunks (A2 —
+  discard).
+- The level meter is best-effort: an `AudioContext` + `AnalyserNode` (fftSize 512) is
+  set up in a nested try/catch; if unavailable, `getLevel()` returns 0 and recording
+  continues. `getLevel()` computes RMS over byte time-domain data.
+- `cleanup` stops all `MediaStream` tracks (releases the mic), clears the timer, and
+  closes the `AudioContext`.
+
 ### src/capture/useRecorder.ts
 
-**Purpose:** `getUserMedia` + `MediaRecorder` wrapper hook. Negotiates the audio
-container at runtime — iOS Safari records `audio/mp4`, not webm, so the mime type is
-picked from `['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm']` via
-`MediaRecorder.isTypeSupported`, never hardcoded.
+**Purpose:** Thin React bridge over `recorderEngine.ts` — owns only `state`,
+`elapsedSec`, and `errorKind` as React state, wired to one `createRecorderEngine`
+instance held in a ref for the component's lifetime.
 
 **Exports:**
 
@@ -1036,28 +1092,12 @@ picked from `['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm']` via
   start(maxSec = 60, onAutoStop?): Promise<void>; stop(): Promise<RecordingResult |
   null>; cancel(): void; resetError(): void; getLevel(): number; errorKind?: 'denied' |
   'failed' }`
-- `interface RecordingResult { blob: Blob; mimeType: string; durationSec: number }`
-- Types `RecorderState`, `RecorderErrorKind`.
+- Re-exports `RecordingResult`, `RecorderState`, `RecorderErrorKind` from
+  `recorderEngine.ts`.
 
-**Lifecycle & edge cases:**
-
-- `start` is a no-op if a recorder already exists. On `getUserMedia`/`MediaRecorder`
-  failure it cleans up and sets `state: 'error'` with `errorKind` — `'denied'` for
-  `NotAllowedError`/`SecurityError` `DOMException`s (user must change iOS Settings),
-  `'failed'` otherwise (worth retrying).
-- A 250ms interval updates `elapsedSec` and auto-stops at `maxSec`, delivering the clip
-  to `onAutoStop`. Because both the timer and a user tap can race to stop, `finalize()`
-  claims the recorder by nulling `recorderRef` first, making concurrent
-  stop/auto-stop calls no-ops (they resolve `null`).
-- `stop`/`finalize` resolves after the `onstop` event with a blob assembled from
-  `dataavailable` chunks; mime falls back to the first chunk's type then `audio/webm`;
-  `durationSec` is wall-clock, rounded, minimum 1. Empty blobs resolve `null`.
-- `cancel` detaches `onstop`, stops the recorder, and drops the chunks (A2 — discard).
-- The level meter is best-effort: an `AudioContext` + `AnalyserNode` (fftSize 512) is
-  set up in a nested try/catch; if unavailable, `getLevel()` returns 0 and recording
-  continues. `getLevel()` computes RMS over byte time-domain data.
-- `cleanup` stops all `MediaStream` tracks (releases the mic), clears the timer, and
-  closes the `AudioContext`; it also runs on unmount.
+**Lifecycle & edge cases:** see `recorderEngine.ts` above for `start`/`stop`/`cancel`/
+out-of-band-stop behavior — this hook adds nothing but state plumbing. The engine is
+created once (guarded by the ref already being set) and destroyed on unmount.
 
 ### src/capture/useAudioPlayback.ts
 
@@ -1434,10 +1474,16 @@ re-throw, matching the appStore `guard` convention.
   recomposition with `entry.deviceTz`), and both land in `patch.capturedAt`.
 - **Recorder races are resolved by claiming:** `finalize()` nulls `recorderRef` before
   stopping, so a user tap racing the auto-stop timer (or the background-commit handler)
-  yields exactly one committed clip. The gesture accelerator (#77) rides the same
-  invariant rather than re-solving it: every hold-class command in `RecordPanel` is
-  gated on `recorder.state === 'recording'` at the moment of pointerup, so a release
-  racing auto-stop/background-commit (which already flipped the recorder out of
+  yields exactly one committed clip. The same claim guards the out-of-band stop path
+  (#49, `recorderEngine.ts`): a track `ended`/recorder `error`/spontaneous `stop` the
+  platform fires on its own (mic revoked, iOS taking the audio session, a device
+  disconnect) is a no-op once an explicit `stop()` has already claimed the recorder, and
+  vice versa — exactly one of the two ever settles a given recording, and the losing
+  side never leaves the UI reporting `'recording'` forever. The gesture accelerator
+  (#77) rides the same invariant rather than re-solving it: every hold-class command in
+  `RecordPanel` is gated on `recorder.state === 'recording'` at the moment of pointerup,
+  so a release racing auto-stop/background-commit (which already flipped the recorder
+  out of
   `'recording'`) is a no-op, never a second commit.
 - **The gesture accelerator is additive, never load-bearing (#77):** `holdGesture.ts`'s
   commands only ever call the same handlers a plain button already calls (`onTap`,
