@@ -20,6 +20,7 @@ flowchart LR
         APP <--> IDB
     end
     APP -- "upload queue (drive.file scope)" --> DRIVE["Google Drive<br/>timebox/ folder tree"]
+    APP -- "read-only events (calendar.readonly)" --> GCAL["Google Calendar<br/>target calendar"]
     SKILL["External skill<br/>(chat assistant reading Drive)"] --> DRIVE
     APP -- "audio blobs" --> WHISPER["transcribe.elimelt.com<br/>(Whisper)"]
     APP -- "downscaled JPEGs" --> VISION["llm.elimelt.com<br/>(vision LLM)"]
@@ -43,6 +44,7 @@ Directories under `src/` map onto layers with a strict one-way dependency direct
 | Store | `store/` | IndexedDB repositories (events, places, settings) and the single Zustand `appStore`. |
 | Drive | `drive/` | GIS auth, Drive client, tree bootstrap, upload queue. Imports contract + store repos. |
 | Pipelines & enrichment | `transcribe/`, `vision/`, `places/` | Post-capture enrichment writing back via ordinary `amend` events. |
+| Calendar read-back | `gcal/` | Read-only Google Calendar client + target-calendar selection for the timelog Day view. Timelog-specific (not a generic layer); imports contract, drive, store, streams. |
 | Screens & shell | `capture/`, `dayview/`, `settings/`, `assistant/`, `ui/`, `App.tsx`, `main.tsx` | Routing, design system, and the four screens. |
 
 The layering rule (SPEC §10) declares the generic layers — `streams/`, `capture/`,
@@ -52,8 +54,7 @@ directories `gcal/`, `dayview/`, `settings/`, or `assistant/`. This is enforced
 mechanically by [`src/layering.test.ts`](../src/layering.test.ts), which loads every
 source file in the generic layers via `import.meta.glob(?raw)`, extracts static
 import specifiers, resolves relative paths to their top-level `src/` directory, and
-fails the test suite on any hit in a forbidden directory. (`gcal/` does not exist yet;
-the guard covers it preemptively.) The payoff is that the generic capture client is
+fails the test suite on any hit in a forbidden directory. The payoff is that the generic capture client is
 separable by construction — a second stream or a fork without the timelog UI touches
 none of the generic modules.
 
@@ -93,8 +94,9 @@ Why, and what follows from it:
 engine. A UI action becomes an atomic IndexedDB append; the upload queue drains
 pending rows in seq order to the `timebox/` tree in Drive (bootstrap is idempotent
 and self-healing). Reads never consult Drive — the entry list is always a fresh fold
-over the local log. Auth is gesture-driven GIS tokens (~1 hour, `drive.file` scope
-only, no refresh tokens, no backend); expiry surfaces as a passive reconnect pill and
+over the local log. Auth is gesture-driven GIS tokens (~1 hour, `drive.file` +
+read-only Calendar scopes in one consent, no refresh tokens, no backend); expiry
+surfaces as a passive reconnect pill and
 never blocks capture. Failures are classified (auth → reconnect, retryable →
 exponential backoff, else → error toast). Module docs:
 [contract-and-streams](modules/contract-and-streams.md),
@@ -122,7 +124,9 @@ Boot is a three-stage handoff (HTML splash → service-worker registration and
 persistent-storage request in `main.tsx` → store `init()` in `App.tsx`) so first
 paint is real content. Four screens (Capture, Day view, Chat, Settings) hang off one
 flat route table and a bottom tab bar; drill-downs are modal sheets, not routes.
-`App.tsx` owns app-level lifecycle: draining the upload queue on
+The Day view overlays read-only Google Calendar events from a user-chosen target
+calendar via `src/gcal` (single Google token, `calendar.readonly` scope; the app
+never writes events). `App.tsx` owns app-level lifecycle: draining the upload queue on
 `visibilitychange`/`online` and re-running enrichment whenever entries change. The
 design system lives entirely in `src/ui` (tokens + primitives; screens never hardcode
 palette or shape classes), and a set of iOS-specific invariants (keyboard insets,
@@ -130,7 +134,7 @@ body scroll lock, safe areas, 44 pt tap targets, pending-delete undo) are
 load-bearing. Module docs:
 [app-shell-ui-and-tooling](modules/app-shell-ui-and-tooling.md),
 [capture-and-dayview](modules/capture-and-dayview.md),
-[assistant](modules/assistant.md).
+[gcal](modules/gcal.md), [assistant](modules/assistant.md).
 
 ## Cross-cutting concerns
 

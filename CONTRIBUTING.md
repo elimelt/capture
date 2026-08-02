@@ -27,6 +27,7 @@ npm run preview      # serve the production build locally
 | `src/streams/` | Registry of capture profiles (v1 ships only `timelog`). |
 | `src/store/` | IndexedDB repositories (events, places, settings) and the single Zustand `appStore`. |
 | `src/drive/` | GIS auth, Drive client, tree bootstrap, upload queue. |
+| `src/gcal/` | Read-only Google Calendar client + target-calendar config (timelog read-back; feeds the Day view). |
 | `src/transcribe/`, `src/vision/`, `src/places/` | Post-capture enrichment pipelines. |
 | `src/capture/`, `src/dayview/`, `src/settings/`, `src/assistant/` | The four screens. |
 | `src/ui/` | Design system: tokens + primitives. The only place visual identity lives. |

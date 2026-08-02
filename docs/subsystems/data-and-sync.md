@@ -118,11 +118,15 @@ run the same fold.
 
 **Token flow (SPEC §8.2).** There is no backend, so there are no refresh tokens.
 `src/drive/auth.ts` wraps the GIS token client: `connect()` — which **must run from
-a user gesture** — requests a ~1-hour access token scoped to `drive.file` only, and
+a user gesture** — requests a ~1-hour access token with the combined `GOOGLE_SCOPES`
+set from `src/config.ts` (`drive.file` + `calendar.readonly` in one consent), and
 persists it via `token.ts` to the IndexedDB `meta` store, so a relaunch within the
 hour reuses it (app `init()` fires a no-gesture `drainSync` for exactly this case).
-Tokens are treated as expired **60 seconds early** so a drain never starts with a
-token that dies mid-flight.
+The same stored token authorizes the read-only Calendar client in `src/gcal`
+([module doc](../modules/gcal.md)), which also mirrors the user's target-calendar
+pick into the stream's `config.json` on Drive via a skill-edit-preserving
+read-modify-write. Tokens are treated as expired **60 seconds early** so a drain
+never starts with a token that dies mid-flight.
 
 **Expiry and reconnect.** When the token is missing or stale, `drainSync` does not
 attempt renewal (it can't — no gesture); it just refreshes `driveConnection` so the

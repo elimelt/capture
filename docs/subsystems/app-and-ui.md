@@ -6,6 +6,7 @@ PWA. This is the cross-cutting view; for file-level detail see the module docs:
 - [App shell, UI design system, and tooling](../modules/app-shell-ui-and-tooling.md)
   (`index.html`, `src/main.tsx`, `src/App.tsx`, `src/ui`, `src/settings`, `vite.config.ts`)
 - [Capture and Day view](../modules/capture-and-dayview.md) (`src/capture`, `src/dayview`)
+- [gcal](../modules/gcal.md) (`src/gcal` — the read-only Google Calendar layer behind the Day view)
 - [Assistant](../modules/assistant.md) (`src/assistant` — the lazy Chat screen)
 
 ## Boot sequence
@@ -39,9 +40,9 @@ Four screens, one route table in `App.tsx`, one fixed bottom tab bar:
 | Route | Screen | Notes |
 | --- | --- | --- |
 | `/` | Capture (`src/capture/CaptureScreen`) | Screen 1; voice-first capture + today's entries |
-| `/day`, `/day/:date` | Day view (`src/dayview/DayScreen`) | Screen 2; per-day timeline, prev/next-day nav via the route param |
+| `/day`, `/day/:date` | Day view (`src/dayview/DayScreen`) | Screen 2; per-day timeline + read-only calendar events, prev/next-day nav via the route param |
 | `/chat` | Chat (`src/assistant/ChatScreen`) | Opt-in; `lazy()`-loaded; guarded — redirects to `/` unless `assistantEnabled` |
-| `/settings` | Settings (`src/settings/SettingsScreen`) | Screen 3; Drive, capture, location/places, assistant, data |
+| `/settings` | Settings (`src/settings/SettingsScreen`) | Screen 3; Google (Drive + target-calendar picker), capture, location/places, assistant, data |
 
 Unknown paths redirect to `/`. The Chat tab is filtered out of the tab bar unless the
 assistant is enabled, and its chunk (AI SDK + markdown) is never downloaded by users
@@ -56,6 +57,14 @@ no-backend token model relies on — and runs background transcription/captionin
 whenever `entries` change, calling `refresh()` when work completed so the effect
 re-runs until nothing is pending. New long-running background work should hook these
 same triggers rather than invent its own scheduler.
+
+The Day view additionally overlays **read-only Google Calendar events**: its
+`useDayEvents` hook resolves the stored Google token and the target calendar chosen
+in Settings, fetches that day's events through `src/gcal`
+([module doc](../modules/gcal.md)), and renders them as rows deep-linking into
+Google Calendar. Missing token, missing calendar pick, or a failed fetch are quiet
+one-line notes, never blocking error states — local entries carry the day on their
+own, and the app never writes calendar events.
 
 ## Design system
 

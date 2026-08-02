@@ -22,11 +22,13 @@ Drive; `SyncBadge` reflects the per-seq upload status from `src/store/db.ts`.
 
 ### `src/dayview`
 
-Screen 2 (SPEC §4.2), currently a single file: a per-day timeline of local entries with
-previous/next-day navigation via the `/day/:date?` route. It reuses `EntryList` and
-`usePendingDelete` from `src/capture`, so day-view entries get the exact same editing and
-undoable-delete behavior as the capture screen. Calendar/results integration is noted in
-the file header as arriving in a later milestone (M4).
+Screen 2 (SPEC §4.2): a per-day timeline of local entries with previous/next-day
+navigation via the `/day/:date?` route, plus a read-only overlay of the target
+calendar's events (M4). It reuses `EntryList` and `usePendingDelete` from
+`src/capture`, so day-view entries get the exact same editing and undoable-delete
+behavior as the capture screen. The calendar overlay (`useDayEvents.ts`,
+`CalendarEvents.tsx`) is backed by `src/gcal` and documented with it in
+[gcal.md](gcal.md).
 
 ## File-by-file
 
@@ -372,6 +374,10 @@ include `placeLabel` only when the coordinate falls inside a saved place's radiu
   removal) work identically here.
 - **Delete:** wires `usePendingDelete(revoke)` — `EntryList.onDelete` is `del.request`,
   with the same 5s Undo toast as the capture screen.
+- **Calendar overlay:** `useDayEvents(date)` fetches the target calendar's events via
+  `src/gcal`, and `<CalendarEvents state={…}>` renders them above the entry list;
+  missing token/calendar or fetch failures show as quiet one-line notes (see
+  [gcal.md](gcal.md)).
 
 ## Key invariants & gotchas
 

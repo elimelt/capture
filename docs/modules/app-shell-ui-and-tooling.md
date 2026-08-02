@@ -44,7 +44,7 @@ Entry point. Calls `registerSW()` from `virtual:pwa-register` (auto-update servi
 
 ### src/config.ts
 
-Two build-time constants: `GOOGLE_CLIENT_ID` (a public OAuth browser-client identifier — safe to ship in the bundle per SPEC §9.2) and `APP_ORIGIN` (`https://time.elimelt.com`). No secrets live here.
+Build-time constants: `GOOGLE_CLIENT_ID` (a public OAuth browser-client identifier — safe to ship in the bundle per SPEC §9.2), `APP_ORIGIN` (`https://time.elimelt.com`), and the OAuth scopes — `DRIVE_SCOPE`, `CALENDAR_READONLY_SCOPE`, and the combined `GOOGLE_SCOPES` requested in one consent. The scopes live in this neutral module (not in `drive/` or `gcal/`) so generic layers can compose them without breaking the SPEC §10 layering rule. No secrets live here.
 
 ### src/ui/index.ts
 
@@ -101,7 +101,7 @@ Form primitives sharing a `FIELD` base (control radius, strong border, surface b
 
 Default-exports `SettingsScreen`; all state flows through `useAppStore`. Sections:
 
-- **Google** (private `GoogleSection`): shows connection status from `driveConnection` (`connected` / `expired` / `disconnected`, mapped through `CONNECTION_LABEL`), refreshing it on mount. Connected → "Sync now" (`drainSync`, disabled while `syncing`) and "Disconnect"; otherwise a Connect/Reconnect primary button.
+- **Google** (private `GoogleSection`): shows connection status from `driveConnection` (`connected` / `expired` / `disconnected`, mapped through `CONNECTION_LABEL`), refreshing it on mount. Connected → "Sync now" (`drainSync`, disabled while `syncing`), "Disconnect", and the target-calendar picker (private `CalendarPicker`, backed by `src/gcal` — see [gcal.md](gcal.md)); otherwise a Connect/Reconnect primary button.
 - **Capture**: numeric max-clip-length field (clamped 10–120 s on change) and a "Keep audio locally" toggle, both writing `streamSettings` via `updateStreamSettings`.
 - **Location**: `locationEnabled` toggle plus places management — lists saved places (name, radius, optional "near {address}" line, per-row `dangerGhost` Remove). "Add current location as place" calls `navigator.geolocation.getCurrentPosition` (8 s timeout, 60 s `maximumAge`, low accuracy) into `pendingPlace`; the inline form collects name and radius, and `savePendingPlace` best-effort `reverseGeocode`s an address (never blocks the save) before `addPlace` with a `crypto.randomUUID()` id.
 - **Assistant**: `assistantEnabled` toggle; when on, shows the model label (`modelLabel(appSettings.assistantModel)` from `assistant/config`) and a note that chat runs against `llm.elimelt.com` via read-only tools.

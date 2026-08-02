@@ -19,8 +19,11 @@ no-ops when offline or disabled).
 - One-tap voice capture with timestamp and location snapshot; works fully offline
 - Append-only event log (`capture` / `amend` / `revoke`) with idempotent,
   crash-safe sync to a `timebox/` folder tree in the user's Google Drive
-  (`drive.file` scope only, no refresh tokens, no backend)
+  (file-scoped `drive.file` access, no refresh tokens, no backend)
 - Day view of folded entries, with undo-able delete (a delayed `revoke`)
+- Read-only Google Calendar overlay on the Day view: pick a target calendar in
+  Settings and see its events alongside your entries, deep-linking into Google
+  Calendar (`calendar.readonly` scope; the app never writes calendar events)
 - Post-capture enrichment: Whisper transcription of audio, vision-LLM
   captioning of photos — appended as ordinary `amend` events, never
   overwriting user edits
@@ -68,7 +71,8 @@ or API keys. A fork needs to change:
 - `src/config.ts` — `GOOGLE_CLIENT_ID` (the Google OAuth browser-client ID; a
   public identifier, safe to ship in the bundle) and `APP_ORIGIN` (the deployed
   origin, e.g. `https://time.elimelt.com`). You will need your own Google Cloud
-  OAuth client authorized for your origin, with the `drive.file` scope.
+  OAuth client authorized for your origin, with the `drive.file` and
+  `calendar.readonly` scopes.
 - `src/transcribe/api.ts` — the Whisper transcription endpoint
   (`https://transcribe.elimelt.com`).
 - `src/vision/api.ts` — the vision-LLM captioning endpoint
