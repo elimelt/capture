@@ -173,10 +173,16 @@ intentional behavior change from the single-stream era: "Sync now" covers
 everything, which is required for system streams (never `currentStreamId`) and a
 strict improvement for any future second capture stream.
 
-The loop is pure orchestration in `appStore.drainSync` — every engine primitive
-it calls (`pullStream`, `drainStream`, and inside them `ensureTree`, the
-per-stream changes cursor, id allocation) was already stream-parameterized, so
-nothing in `src/drive/` changed. Rules:
+The loop is pure orchestration — `runSyncCycle` in **`src/drive/syncCycle.ts`**
+(issue #63; module doc: [drive.md](../modules/drive.md)), called by
+`appStore.drainSync` with `pullStream`/`drainStream`/`setLastSyncAt` as
+injected deps. It was originally inline in `drainSync` itself; it moved into
+`drive/` because it is Drive-protocol orchestration, not UI state, and both
+engine primitives it calls (`pullStream`, `drainStream`, and inside them
+`ensureTree`, the per-stream changes cursor, id allocation — all already
+stream-parameterized) already lived there. `drainSync` now owns only token
+acquisition, the re-entrancy guard, the outermost `cycle-start`/`cycle-done`
+progress boundary, and mirroring the result into store state. Rules:
 
 - **Per stream: pull, then push**, exactly as before; each stream gets a
   `StreamSyncResult { stream, outcome, uploaded, pulled, error? }` in the
@@ -214,10 +220,12 @@ SyncProgress | null` (`appStore.ts`) up to date throughout, built by a pure
 reducer, `reduceSyncProgress` (`src/store/syncProgress.ts`, module doc:
 [store.md](../modules/store.md)), from a typed `SyncProgressEvent` stream:
 
-- `drainSync` itself emits `cycle-start` once (with the stream count) and
-  wraps each stream's pull-then-push pair in `stream-start`/`stream-done` — it
-  already owns that loop, so `src/drive/pull`/`src/drive/queue` don't need to
-  know their position across streams.
+- `drainSync` itself emits `cycle-start` once (with the stream count), around
+  its call into `runSyncCycle`.
+- `runSyncCycle` (`src/drive/syncCycle.ts`) wraps each stream's pull-then-push
+  pair in `stream-start`/`stream-done` — it owns that loop, so
+  `src/drive/pull`/`src/drive/queue` don't need to know their position across
+  streams.
 - `pullStream` emits `pull-progress` once per imported partition (the
   cold-start walk or a changes-feed dirty partition) — a page of events, never
   per event.

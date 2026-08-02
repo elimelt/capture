@@ -115,10 +115,16 @@ export interface TimeboxDB extends DBSchema {
     key: string
     value: { file: string; blob: Blob }
   }
-  /** Upload state per event, keyed by event `id` (same identity as events). */
+  /**
+   * Upload state per event, keyed by event `id` (same identity as events).
+   * The `by-stream` index (v12, issue #63) lets per-stream reads
+   * (`getSyncStatuses`, `listPendingSync`) use `getAllFromIndex` instead of
+   * `getAll` + a JS filter over every stream's rows.
+   */
   sync: {
     key: string
     value: SyncStatusRow
+    indexes: { 'by-stream': string }
   }
   places: {
     key: string
@@ -192,7 +198,7 @@ function forget(promise: Promise<TimeboxDatabase>): void {
 
 export function getDb(): Promise<TimeboxDatabase> {
   if (dbPromise) return dbPromise
-  const promise: Promise<TimeboxDatabase> = openDB<TimeboxDB>('timebox', 11, {
+  const promise: Promise<TimeboxDatabase> = openDB<TimeboxDB>('timebox', 12, {
     async upgrade(db, oldVersion, _newVersion, tx) {
       if (oldVersion < 1) {
         const events = db.createObjectStore('events', { keyPath: ['stream', 'seq'] })
@@ -266,6 +272,14 @@ export function getDb(): Promise<TimeboxDatabase> {
         // filename like `blobs`. Purely derived/rebuildable — additive and
         // self-contained, mirroring the v8 pattern.
         db.createObjectStore('waveforms', { keyPath: 'file' })
+      }
+      if (oldVersion < 12) {
+        // v12: add a `by-stream` index to `sync` (issue #63) so per-stream
+        // reads (getSyncStatuses, listPendingSync) no longer getAll() the
+        // whole table and filter in JS — additive, existing rows already
+        // carry `stream`, so no data migration is needed, just the index.
+        const sync = tx.objectStore('sync')
+        if (!sync.indexNames.contains('by-stream')) sync.createIndex('by-stream', 'stream')
       }
       // v9: settings become an event-sourced system stream; legacy meta
       // settings are seeded into `settings`-stream events. Deliberately NOT

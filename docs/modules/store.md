@@ -94,7 +94,7 @@ Object stores (schema `TimeboxDB`):
 |---|---|---|
 | `events` | event `id` (+ `by-stream` index) | `LogEvent` (from `src/contract/types`) |
 | `blobs` | contract filename | `{ file, blob }` |
-| `sync` | event `id` | `SyncStatusRow` |
+| `sync` | event `id` (+ `by-stream` index, v12) | `SyncStatusRow` |
 | `places` | `id` | `Place` |
 | `geocache` | rounded `"lat,lng"` | `GeocacheRow` |
 | `meta` | string (out-of-line), minted by `metaKeys.ts` | `unknown` — per-stream seq counters, sync stamps, Drive caches, migration markers, legacy settings |
@@ -106,6 +106,17 @@ Object stores (schema `TimeboxDB`):
 devices appending offline can mint the same per-stream `seq`, so `seq` is only a
 non-unique ordering hint and must not be part of a key. Sequenced access goes through
 the `by-stream` index plus an explicit sort.
+
+`sync`'s `by-stream` index (v12, issue #63) lets `getSyncStatuses(stream)` and
+`listPendingSync(stream)` use `getAllFromIndex` — a bounded scan of just that
+stream's rows — instead of `getAll()` over the whole table filtered in JS.
+Before this, `appStore.summarizeGlobalSync()` (called from every `refresh()`,
+which runs after every capture/amend/revoke and on every `visibilitychange`)
+compounded the problem further by calling `getSyncStatuses` once per
+registered stream, so one `refresh()` did `1 + N` full scans of `sync`
+(N = `allSyncStreams().length`). It now reads `sync` once via
+`listAllSyncStatuses()` and buckets rows by stream in memory — one indexed
+`getAll` per `refresh()`, not `N`.
 
 Migrations: v1 creates the core stores; v2 backfills `attempts: 0` and a `phase` on
 existing `sync` rows (`'done'` if uploaded, else `'attachments-pending'` — safe because
@@ -120,7 +131,10 @@ seeds legacy flat settings into `settings`-stream events via `migrateSettingsV1(
 v10 turns legacy `chats` rows into `assistant-chats` stream events via
 `migrateChatsV1(tx)`; v11 adds `waveforms` (the cached per-clip waveform fingerprint,
 #86), self-contained, additive, and guarded by a `contains('waveforms')` check —
-mirroring the v8 pattern. The v9 and v10 migrations are called on **every** upgrade
+mirroring the v8 pattern; v12 adds the `by-stream` index to the existing `sync`
+store (issue #63) — additive, no data migration needed since existing rows
+already carry `stream`, guarded by an `indexNames.contains('by-stream')` check.
+The v9 and v10 migrations are called on **every** upgrade
 rather than under an `oldVersion` check, because parallel workstreams claimed their
 own version numbers and landed in arbitrary order, so a device may already sit at a
 higher version without a given migration having run; each call is state-guarded by a
@@ -260,9 +274,15 @@ Key exports:
   `Waveform.tsx` (#86) decodes each clip's audio at most once ever. Purely derived data:
   never synced, never an event.
 - `getSyncStatuses(stream): Promise<Map<string, SyncStatusRow>>` — status by event id.
+  Reads `sync`'s `by-stream` index (v12, issue #63) — a bounded scan of this stream's
+  rows, not the whole table.
 - `listPendingSync(stream): Promise<SyncStatusRow[]>` — rows with `status !== 'uploaded'`
   sorted by seq ascending (id as tiebreak); the order `src/drive/queue` must upload in
-  so the Drive log commits monotonically (SPEC §5.2, §8.4).
+  so the Drive log commits monotonically (SPEC §5.2, §8.4). Same `by-stream` index as
+  `getSyncStatuses`.
+- `listAllSyncStatuses(): Promise<SyncStatusRow[]>` — every `sync` row, unbucketed;
+  for callers that need every stream's rows and would otherwise call
+  `getSyncStatuses` once per stream (`appStore.summarizeGlobalSync`, issue #63).
 - `interface SyncSummary { pending; errors; lastError? }` /
   `summarizeSyncStatuses(rows: Iterable<SyncStatusRow>): SyncSummary` — pure rollup for
   the Settings status line: `pending` counts rows with `status !== 'uploaded'` (errored
@@ -495,7 +515,10 @@ loaded once in `init()` and refreshed after every `drainSync()`; null before thi
 install has ever run a cycle — issue #67, rendered by Settings' `Diagnostics`
 section, see [app-shell-ui-and-tooling.md](app-shell-ui-and-tooling.md)).
 
-Also exports:
+Also exports (re-exported from `../drive/syncCycle` — see
+[drive.md](drive.md) — so existing consumers like
+`settings/SettingsScreen.tsx` don't need to know the sync engine itself
+moved out of the store, issue #63):
 
 - `interface StreamSyncResult { stream; outcome: DrainOutcome; uploaded; pulled:
   number; error? }` — one stream's slice of a sync cycle.
@@ -513,8 +536,13 @@ Also exports:
   string | null }` — pending/error counts summed over **all** registered streams'
   sync rows plus the **oldest** per-stream `lastSyncAt` (the conservative
   "everything synced as of" moment; `null` while any stream has never completed a
-  clean cycle). Computed by a private `summarizeGlobalSync()` inside `refresh()`;
-  rendered by Settings' `SyncStatusLine`.
+  clean cycle). Computed by a private `summarizeGlobalSync()` inside `refresh()`
+  — one `listAllSyncStatuses()` read bucketed by stream in memory, not one
+  `getSyncStatuses` call per registered stream (issue #63; see
+  `src/store/events.ts` above); rendered by Settings' `SyncStatusLine`.
+  `GlobalSyncSummary` itself (unlike the sync-cycle types above) stays defined
+  here — it is a UI-store rollup over local sync rows, not sync-protocol
+  orchestration, so it has no reason to live in `drive/`.
 
 Actions:
 
@@ -548,29 +576,39 @@ Actions:
     `navigator.locks` is unavailable, the flag alone is the (best-effort,
     same-tab-only) fallback.
   - Without a valid token the cycle only refreshes connection state (so the
-    reconnect pill can appear) and returns `'reconnect'`; with one it loops over
-    `allSyncStreams()` and, per stream, runs **pull then push** —
-    `pullStream(token, stream)` from `src/drive/pull` first (so local appends land
-    after everything other devices committed), then `drainStream(token, stream)`
-    from `src/drive/queue`. Failure isolation: any `'reconnect'` or `'quota'`
-    aborts the remaining streams (marked with that same outcome in
-    `perStream` — the token is dead, or Drive is full, for all of them alike),
-    while `'retry-later'`/`'error'` on one stream never blocks the rest. Only
-    `'reconnect'` flips `driveConnection`; `'quota'` sets `driveQuotaExceeded`
-    instead (see above) — a full Drive must never present as an auth problem
-    (issue #88). Each stream's outcomes merge worst-of (`idle < drained <
-    retry-later < quota < reconnect < error`) and the per-stream outcomes merge
-    worst-of into the aggregate; an aggregate `'error'` sets `lastError`; a
-    stream's own clean cycle (`idle`/`drained`) persists *its* `lastSyncAt` via
-    `setLastSyncAt(stream, …)`. Afterwards state is refreshed (`refresh()` +
-    `loadSettings()`, since pulled system-stream events can change settings) and
-    `syncing` is cleared in a `finally`. Throughout the loop, a local
-    `emitProgress` helper feeds `SyncProgressEvent`s (`cycle-start` once,
-    `stream-start`/`stream-done` around each stream's pull+push pair, passed
-    straight through to `pullStream`/`drainStream` as their `onProgress`
-    callback for the granular `pull-progress`/`upload-start`/`upload-progress`
-    events) through `reduceSyncProgress` (`syncProgress.ts`) into `syncProgress`;
-    the `finally` clears it back to null alongside `syncing`.
+    reconnect pill can appear) and returns `'reconnect'` — this short-circuit
+    stays in `drainSync` since it never reaches the cycle loop. With a token,
+    the pull-then-push loop itself — pull before push per stream so local
+    appends land after everything other devices committed, failure isolation
+    (`'reconnect'`/`'quota'` aborts the remaining streams, marked with that
+    same outcome; `'retry-later'`/`'error'` on one stream never blocks the
+    rest), worst-of outcome merging (`idle < drained < retry-later < quota <
+    reconnect < error`), and per-stream `setLastSyncAt` stamping — is
+    `runSyncCycle(token, allSyncStreams(), { pull, drain, setLastSyncAt, now,
+    onProgress })` from **`src/drive/syncCycle.ts`** (issue #63: this is
+    Drive-protocol orchestration, not UI state, and both its halves —
+    `pullStream`/`drainStream` — already live in `drive/`, so it moved there
+    too, unit-tested directly in `drive/syncCycle.test.ts` without touching
+    zustand). `drainSync` supplies `pullStream`/`drainStream` as the `pull`/
+    `drain` deps and `setLastSyncAt` from `store/events.ts`, and mirrors the
+    returned `{ result, reconnect, quotaExceeded }` into state: `reconnect`
+    flips `driveConnection`; `quotaExceeded` sets `driveQuotaExceeded` (see
+    above) — kept as separate booleans rather than derived from
+    `result.outcome`, because that field is the *worst-of* outcome across
+    every stream and a pre-abort stream error can outrank the reconnect/quota
+    that actually caused the abort. An aggregate `result.outcome === 'error'`
+    sets `lastError`. Afterwards state is refreshed (`refresh()` +
+    `loadSettings()`, since pulled system-stream events can change settings)
+    and `syncing` is cleared in a `finally`. Throughout the loop, a local
+    `emitProgress` helper (still owned by `drainSync`, not `runSyncCycle`)
+    feeds `SyncProgressEvent`s (`cycle-start` once outside the cycle call,
+    `stream-start`/`stream-done` around each stream's pull+push pair emitted
+    *inside* `runSyncCycle`, passed straight through to `pullStream`/
+    `drainStream` as their `onProgress` callback for the granular
+    `pull-progress`/`upload-start`/`upload-progress` events, `cycle-done`
+    again outside in the `finally` so it still fires on a thrown error)
+    through `reduceSyncProgress` (`syncProgress.ts`) into `syncProgress`; the
+    `finally` clears it back to null alongside `syncing`.
   - Every real attempt (not the no-token or already-syncing/lock-busy
     short-circuits) also stamps and persists the whole cycle via
     `setLastSyncResult` (private `persistSyncResult` helper) — including the
@@ -610,11 +648,14 @@ Key exports:
   count for that stream's push), `{ kind: 'upload-progress', stream, delta }`
   (one committed batch — a lone record or a whole segment, never per file
   inside it), `{ kind: 'stream-done', stream }`, `{ kind: 'cycle-done' }`.
-  `appStore.drainSync` emits `cycle-start`/`stream-start`/`stream-done` itself
-  (it already owns the per-stream loop); `pullStream` (`src/drive/pull`) emits
-  `pull-progress`; `drainStream` (`src/drive/queue`) emits `upload-start`/
-  `upload-progress` — both via an optional `onProgress` callback parameter
-  (default a no-op, so every existing direct caller/test is unaffected).
+  `appStore.drainSync` emits `cycle-start`/`cycle-done` itself around the call
+  to `runSyncCycle` (so `cycle-done` still fires from its `finally` even if
+  the cycle throws); `runSyncCycle` (`src/drive/syncCycle.ts`, issue #63)
+  emits `stream-start`/`stream-done` around each stream's pull+push pair, since
+  it now owns that loop; `pullStream` (`src/drive/pull`) emits `pull-progress`;
+  `drainStream` (`src/drive/queue`) emits `upload-start`/`upload-progress` —
+  all three via an optional `onProgress` callback parameter (default a no-op,
+  so every existing direct caller/test is unaffected).
 - `interface SyncProgress { phase: SyncPhase; stream: string | null;
   streamsDone; streamsTotal; itemsDone; itemsTotal: number | null; pulled;
   uploaded }` — `SyncPhase = 'idle' | 'pulling' | 'uploading' | 'done'`.
@@ -791,11 +832,12 @@ and wrong-typed legacy fields ignored.
 - **Upload order matters.** `listPendingSync` returns rows sorted by seq; the drive
   drainer must keep that order so the Drive log commits monotonically, and the
   `phase` field mirrors the attachments-first/record-last commit protocol (SPEC §5.2).
-- **Pull before push, per stream.** `drainSync` loops over `allSyncStreams()` and
-  always runs `pullStream` before `drainStream` for each; pulled events arrive
-  `uploaded`/`done` so the drainer never re-pushes them. A `'reconnect'` or
-  `'quota'` anywhere aborts the remaining streams; `'retry-later'`/`'error'`
-  stays stream-local.
+- **Pull before push, per stream.** `runSyncCycle` (`src/drive/syncCycle.ts`,
+  issue #63 — `drainSync` supplies the token and deps, but the loop itself
+  lives there now) iterates `allSyncStreams()` and always runs `pullStream`
+  before `drainStream` for each; pulled events arrive `uploaded`/`done` so
+  the drainer never re-pushes them. A `'reconnect'` or `'quota'` anywhere
+  aborts the remaining streams; `'retry-later'`/`'error'` stays stream-local.
 - **Sync is manual-only.** `drainSync`'s sole caller is the "Sync now" button in
   Settings — no foreground/online/capture triggers — and each stream's `lastSyncAt`
   is stamped only when that stream's own pull+push cycle completes cleanly
