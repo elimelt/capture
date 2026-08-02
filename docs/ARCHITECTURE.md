@@ -105,8 +105,8 @@ self-healing) — the local log is a replica of the Drive log. Reads never consu
 Drive — the entry list is always a fresh fold over the local log. Auth is
 gesture-driven GIS tokens (~1 hour, `drive.file` + read-only Calendar scopes in one
 consent, no refresh tokens, no backend); expiry surfaces as a passive reconnect pill and
-never blocks capture. Failures are classified (auth → reconnect, retryable →
-exponential backoff, else → error toast). Module docs:
+never blocks capture. Failures are classified (auth → reconnect, retryable → row
+stays queued and the next manual sync retries it, else → error toast). Module docs:
 [contract-and-streams](modules/contract-and-streams.md),
 [store](modules/store.md), [drive](modules/drive.md).
 

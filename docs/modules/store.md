@@ -56,8 +56,10 @@ Key exports:
   atomic append protocol (SPEC §5.2: attachments first, event record last).
 - `interface SyncStatusRow { id; stream; seq; status; phase; attempts; nextRetryAt?; error?; fileIds? }`
   — upload state for one event; `id` is the event's id (the identity and the row's key),
-  `seq` is kept for drain order and display, `nextRetryAt` is ISO local time, absent =
-  eligible now. `fileIds` maps contract filenames to pre-generated Drive file ids,
+  `seq` is kept for drain order and display, `nextRetryAt` is a legacy backoff stamp no
+  longer written or consulted (sync is manual-only: every drain attempts every queued
+  row; rows from older versions may still carry it). `fileIds` maps contract filenames
+  to pre-generated Drive file ids,
   persisted by the drainer before each first upload attempt so retries reuse the same
   id (SPEC §8.4); absent on rows written by older versions (no migration needed —
   the drainer falls back to find-before-upload for those).
