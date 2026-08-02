@@ -41,6 +41,23 @@ export default defineConfig({
               cacheableResponse: { statuses: [0, 200] },
             },
           },
+          // Map tiles (SPEC: minimise OSM usage). Cache-first with a large,
+          // long-lived store so a given area is fetched once and then served
+          // from disk — the map keeps working offline and OSM sees minimal
+          // traffic. purgeOnQuotaError lets tiles yield if storage runs low.
+          {
+            urlPattern: /^https:\/\/[abc]\.tile\.openstreetmap\.org\//,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'osm-tiles',
+              expiration: {
+                maxEntries: 1000,
+                maxAgeSeconds: 60 * 60 * 24 * 30,
+                purgeOnQuotaError: true,
+              },
+              cacheableResponse: { statuses: [0, 200] },
+            },
+          },
         ],
       },
       manifest: {

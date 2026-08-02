@@ -75,6 +75,12 @@
   }
 }
 
+/* Tailwind Preflight sets `img { max-width: 100% }`, which distorts Leaflet's
+   absolutely-positioned tiles/markers. Opt map imagery back out. */
+.leaflet-container img {
+  max-width: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   ::before,
