@@ -56,6 +56,28 @@ The non-event contract files (`streams.json`, `config.json`, `checkpoint.json`,
 `checkpoint.json` are **skill-owned**: the app writes them only as create-if-absent
 stubs (see §5 on why) and never overwrites a skill's edits.
 
+### 1.1 The calendar-overlay log (second, skill-free append-only log)
+
+Alongside the capture streams there is one more append-only log: **calendar
+overlays** (stream `calendar-overlay`, schema `capture.calendar-overlay.v1` — SPEC
+§3.6/§5.6), the Day view's local annotations over read-only Google Calendar events.
+It follows the same log discipline — three verbs (`overlay`/`amend`/`revoke`),
+byte-stable serialization, a deterministic fold ordered by seq → loggedAt → id, seq
+allocated from the same `meta` `nextSeq:<stream>` counter mechanism — but it is
+**not part of the skill contract**: no skill ever reads it, it has no
+config/checkpoint/results protocol, and its events never leave the app's own
+rendering path (and never touch Google Calendar — SPEC §1.2). Because it is
+calendar-domain state, everything about it lives in `src/gcal/overlay/` (see
+[gcal.md](../modules/gcal.md)); `src/store` only hosts the opaque `overlayEvents`
+object store it persists into. Note the contrast with the *system streams* of §2a:
+those reuse the `capture.event.v1` envelope and the `events`/`sync` stores, so
+registering them in `allSyncStreams()` was enough to sync them — the overlay log
+has its own schema and its own object store, so it is **not** in `allSyncStreams()`
+and nothing about it participates in the pull/push cycle described below. The log
+is **local-only for now**: appends write no `sync` rows, and wiring it into the
+multi-stream sync engine (overlay-aware upload/pull over `overlayEvents` and
+`capture.calendar-overlay.v1` records) is deferred follow-up work.
+
 ## 2. Write path: UI action → IndexedDB → upload queue → Drive
 
 A capture (or amend/revoke) flows through four stages, each owned by one module:

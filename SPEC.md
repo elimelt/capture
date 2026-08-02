@@ -55,7 +55,9 @@ subscription is the compute.
 ### 1.2 Non-Goals (v1)
 
 - No transcription, parsing, or AI in the app. Attachments are captured, not understood.
-- No calendar writes from the app, ever.
+- No calendar writes from the app, ever. This explicitly covers calendar overlays
+  (§3.6): they are local annotations layered over calendar events inside the app and
+  are never pushed to Google — the calendar scope stays `calendar.readonly`.
 - No real-time processing (batch by design).
 - No in-app UI for creating custom streams (v1 hardcodes `timelog`; the architecture
   supports more).
@@ -301,6 +303,54 @@ Day view built from two read-only sources:
 
 The app never writes calendar events and never edits them. "Fixing" a block = editing the
 event in Google Calendar / asking the assistant, which the app then re-reads.
+
+### 3.6 Calendar overlays (pseudo-entries)
+
+Calendar events on the Day view are read-only (§3.5) — but the user may still want to
+retitle a block for their own records, attach a note, correct its time, or hide it,
+without those edits ever touching Google Calendar (§1.2). **Calendar overlays** provide
+this: local annotations layered over calendar events, kept in their own append-only log
+(stream `calendar-overlay`, schema `capture.calendar-overlay.v1` — §5.6) with the same
+three-verb shape as capture streams: `overlay` creates, `amend` patches, `revoke`
+discards. A **pseudo-entry** is the merged, derived view the Day view renders: one
+calendar event plus its optional overlay.
+
+- **Copy-on-write materialization.** A plain calendar event has no overlay; the first
+  edit (or hide) *materializes* one — an `overlay` event that freezes a field-level
+  `baseSnapshot` of the live event (summary, start/end, allDay, plus the Calendar API
+  `updated` stamp as a change-detection fast path) and carries the user's first patch.
+  An unedited event never materializes anything (the edit planner's no-op guard), so
+  the log only ever contains events the user actually touched.
+- **Instance-level identity.** An overlay targets `{calendarId, eventId}`; events are
+  fetched with `singleEvents=true`, so recurring occurrences arrive pre-expanded with
+  their own ids, and each instance is annotated independently (`recurringEventId` is
+  carried for display only, never matching).
+- **Merge rule (auto-merge for free).** Per field, the user's patch value wins if
+  present; otherwise the **live** calendar value wins — never the frozen snapshot. So
+  fields the user didn't touch keep tracking upstream Google Calendar edits with no
+  merge machinery.
+- **Dirty policy.** The snapshot exists to *classify*, not to render: a field is dirty
+  when the patch touches it AND the live event moved away from the snapshot on it
+  (title and time are tracked). Any dirty field ⇒ `conflict`; a base change only on
+  untouched fields ⇒ `auto-merged`; otherwise `clean`. Conflicts are informational
+  badges — the user's edit still wins the render, and nothing ever blocks.
+- **Hidden vs revoke.** `hidden` is a patch field: it hides the pseudo-entry from the
+  Day view while keeping the overlay (and is undone by `hidden: false`). `revoke`
+  discards the overlay itself — the event reverts to a plain, unannotated calendar
+  event. Both are ordinary appends; the log stays immutable.
+- **Orphans.** An overlay whose calendar event no longer appears in a (successful)
+  fetch renders as an orphaned pseudo-entry from its frozen snapshot, on the day its
+  effective start falls, so user notes never silently vanish when an event is deleted
+  upstream. Orphan detection runs only against `ready` fetch results — a loading or
+  failed fetch must not misclassify everything as orphaned.
+
+Every field the user sees is editable via the patch (`title`, `note`, `startAt`/`endAt`,
+`hidden`), and every field has an append-only `clearX` removal mirroring
+`clearLocation` (§3.3); a value wins over its clear within one amend. The Day view UI
+for pseudo-entries and the sync wiring for this log are follow-up work: the log is
+**local-only** for now — unlike the system streams of §3.1, it does not reuse the
+`capture.event.v1` envelope or stores, so the multi-stream sync engine (§8.4/§8.5)
+needs overlay-aware wiring before it can carry it (§5.6).
 
 ---
 
@@ -548,6 +598,42 @@ v2 concern (a `checkpoints/` folder, one file per consumer name).
 - Adding a stream = new subfolder + `config.json` + skill prompt. No changes to event
   schema, upload engine, or log/checkpoint mechanics are permitted for a new stream —
   that is the extensibility invariant.
+
+### 5.6 Calendar overlay log (app-only; not part of the skill contract)
+
+The calendar-overlay log (§3.6) is a second append-only log alongside the capture
+streams, with schema `capture.calendar-overlay.v1` and the same wire conventions as
+§5.2 (fixed key order, 2-space indent, trailing newline, optional fields omitted).
+When it syncs, it will live under its own subfolder with the standard log layout:
+
+```
+timebox/
+  calendar-overlay/                 app-only overlay log (§3.6)
+    log/
+      2026-08-02/                   partition: local date of loggedAt
+        000007_2026-08-02T09-04-11-0400_a1b2c3.json
+```
+
+It differs from capture streams in every skill-facing respect, deliberately:
+
+- **No `config.json`, no `checkpoint.json`, no `results/`.** There is no consumer
+  protocol because there is no consumer: **no skill ever reads this log** — it is
+  app-only derived-annotation state, meaningless outside the app's own Day view.
+  Skills must ignore the `calendar-overlay/` subfolder entirely.
+- It is not a capture stream: it has no `streams.json` entry, no attachments, no
+  capture UI, and its record schema is `capture.calendar-overlay.v1`, not
+  `capture.event.v1` (the event schema stays domain-free — §5.2).
+- The `log/` immutability rule of §5.5 applies unchanged: append-only, no renames,
+  edits, or deletes, ever.
+- Overlays annotate; they never write back. Nothing in this log is ever pushed to
+  Google Calendar (§1.2).
+
+**Current status:** the log is **local-only** (IndexedDB `overlayEvents` store, §10).
+The Drive layout above is reserved and the byte format is already pinned by
+golden-file tests. Upload/pull wiring is deferred: unlike the system streams of §3.1
+— which reuse the `capture.event.v1` envelope and stores, so registering them in the
+sync loop sufficed — this log has its own schema and object store, and the engine
+(§8.4/§8.5) needs overlay-aware wiring before it can carry it.
 
 ---
 

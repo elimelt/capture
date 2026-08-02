@@ -43,6 +43,29 @@ describe('parseEvent', () => {
     expect(ev).not.toBeNull()
     expect('htmlLink' in (ev as object)).toBe(false)
   })
+
+  it('threads updated and recurringEventId through when present (§3.6 overlays)', () => {
+    const ev = parseEvent({
+      id: 'e4_20260802T130000Z',
+      summary: 'Standup',
+      updated: '2026-08-01T12:00:00.000Z',
+      recurringEventId: 'e4',
+      start: { dateTime: '2026-08-02T09:00:00-04:00' },
+      end: { dateTime: '2026-08-02T09:15:00-04:00' },
+    })
+    expect(ev?.updated).toBe('2026-08-01T12:00:00.000Z')
+    expect(ev?.recurringEventId).toBe('e4')
+  })
+
+  it('omits updated and recurringEventId when absent', () => {
+    const ev = parseEvent({
+      id: 'e5',
+      start: { dateTime: '2026-08-02T12:00:00Z' },
+      end: { dateTime: '2026-08-02T13:00:00Z' },
+    })
+    expect('updated' in (ev as object)).toBe(false)
+    expect('recurringEventId' in (ev as object)).toBe(false)
+  })
 })
 
 describe('parseEvents + sortEvents', () => {
