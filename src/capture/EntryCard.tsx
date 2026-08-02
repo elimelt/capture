@@ -1,6 +1,8 @@
 import { Suspense, lazy, useEffect, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import type { AmendPatch, Entry, GeoLocation } from '../contract/types'
-import { localTimeOf } from '../contract/time'
+import { localDateOf, localTimeOf, toLocalIso } from '../contract/time'
+import { useAppStore } from '../store/appStore'
 import type { SyncStatusRow } from '../store/db'
 import { getBlob } from '../store/events'
 import {
@@ -25,8 +27,10 @@ import { LifecycleBadge } from './LifecycleBadge'
 import { entryLifecycle, hasPendingEnrichment } from './lifecycle'
 import { groupAttachments } from './attachmentGroups'
 import { cardViewModel } from './cardView'
+import { reasonLabel, relativeDayLabel } from './related'
 import { useAudioPlayback } from './useAudioPlayback'
 import { useRecorder, type RecordingResult } from './useRecorder'
+import { useRelated, type RelatedRow } from './useRelated'
 
 // Leaflet-backed; lazy so its chunk (JS + CSS) stays out of the initial
 // bundle and only loads for cards that show or edit a location.
@@ -92,6 +96,12 @@ export function EntryCard({
   const rec = useRecorder()
   const vm = cardViewModel(entry, groupAttachments(entry.attachments))
   const lifecycle = entryLifecycle(sync, hasPendingEnrichment(entry))
+  const navigate = useNavigate()
+  // Candidates span the whole log, not just what this screen filtered to —
+  // relatedness can span any date (#83: "six months ago"). The hook itself
+  // gates all blob/tokenization work behind `expanded`.
+  const allEntries = useAppStore((s) => s.entries)
+  const related = useRelated(entry, allEntries, expanded)
 
   async function handleAudioTap() {
     if (rec.state === 'recording') {
@@ -199,6 +209,12 @@ export function EntryCard({
                 <MiniMap location={entry.location} />
               </Suspense>
             </div>
+          )}
+          {/* Related memories (#83 v1): a minimum-score threshold already
+              gated `related` server-side (relatedEntries) — an empty array
+              means nothing genuinely relates, so no section renders at all. */}
+          {related.length > 0 && (
+            <RelatedRows rows={related} onOpen={(date) => navigate(`/day/${date}`)} />
           )}
         </>
       )}
@@ -331,6 +347,54 @@ export function EntryCard({
         </Suspense>
       )}
     </Card>
+  )
+}
+
+/**
+ * Up to `RELATED_MAX_RESULTS` quiet related-memory rows (#83 v1): relative
+ * day label + "why" + a first-line snippet, tapping through to the related
+ * entry's day. Styled at the same weight as `AttachmentBody`'s caption
+ * treatment (`type_.bodySmall`/`tone.textMuted` for the snippet,
+ * `type_.caption`/`tone.textFaint` for the meta line) — this is inferred
+ * relatedness, not the user's own words, matching #80's "machine inference
+ * is lighter than authored text" direction (landing separately; this reuses
+ * the same muted/small tokens already used for captions rather than
+ * inventing a parallel token ahead of that issue).
+ */
+function RelatedRows({
+  rows,
+  onOpen,
+}: {
+  rows: RelatedRow[]
+  onOpen: (date: string) => void
+}) {
+  const today = localDateOf(toLocalIso(new Date()))
+  return (
+    <div className={cx('-mx-4 mt-3 flex flex-col gap-1 border-t px-4 pt-2', tone.border)}>
+      <span className={cx(type_.overline, tone.textFaint)}>Related</span>
+      {rows.map((row) => {
+        const why = reasonLabel(row.reasons, {
+          placeLabel: row.entry.location?.placeLabel,
+          sharedTerms: row.sharedTerms,
+        })
+        const meta = [relativeDayLabel(row.entry.capturedAt, today), why].filter(Boolean).join(' · ')
+        return (
+          <button
+            key={row.entryId}
+            type="button"
+            onClick={() => onOpen(localDateOf(row.entry.capturedAt))}
+            className={cx('block w-full text-left', tone.pressWash, 'rounded-md -mx-1 px-1 py-0.5')}
+          >
+            <span className={cx('block', type_.caption, tone.textFaint)}>{meta}</span>
+            {row.snippet && (
+              <span className={cx('line-clamp-1 block', type_.bodySmall, tone.textMuted)}>
+                {row.snippet}
+              </span>
+            )}
+          </button>
+        )
+      })}
+    </div>
   )
 }
 

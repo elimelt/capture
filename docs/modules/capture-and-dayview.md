@@ -31,7 +31,11 @@ the entry's primary text (clamped to two lines) or its primary clip's play butto
 one overflow affordance — no unlabeled action icons. Tapping the card content or the
 overflow button **expands** the card (view-local `useState`, never persisted, never an
 event) to reveal the full attachment body, a location preview, and the same edit
-affordances as labelled buttons (icon + text) instead of a bare icon row.
+affordances as labelled buttons (icon + text) instead of a bare icon row. The expanded
+card also surfaces up to two **related memories** (#83 v1) via a pure, local, explainable
+scorer (`related.ts`/`useRelated.ts`) — shared place, lexical overlap, and a recency
+factor; no embeddings, no LLM calls, gated by a minimum-score threshold so nothing shows
+unless it genuinely relates.
 
 ### `src/dayview`
 
@@ -358,6 +362,20 @@ The card computes its own `EntryLifecycle` from `sync` + `hasPendingEnrichment(e
   rotates 180° on expand. It is the collapsed card's only extra chrome, and it, along
   with tapping the collapsed primary-text preview, is the way to reach the expanded
   state.
+- **Related memories (#83 v1), expanded only:** `useRelated(entry, allEntries,
+  expanded)` — `allEntries` is `useAppStore((s) => s.entries)`, the whole folded log,
+  not the screen's filtered subset, since relatedness can span any date. Renders
+  nothing (no heading, no section) when the hook returns zero rows — the
+  minimum-score threshold in `relatedEntries` already decided nothing genuinely
+  relates. Otherwise a quiet `RelatedRows` block (private) below the location
+  preview: an "Related" overline, then up to `RELATED_MAX_RESULTS` rows of
+  `relativeDayLabel · reasonLabel` (meta line, `type_.caption`/`tone.textFaint`) plus
+  a one-line snippet (`type_.bodySmall`/`tone.textMuted` — the same muted/small
+  treatment `AttachmentBody` already uses for captions, standing in for #80's
+  not-yet-landed "derived text" class since this is inferred relatedness, not the
+  user's own words). Tapping a row navigates to `/day/<date>` of the related entry
+  via `useNavigate` (react-router-dom) — no import of `dayview/` itself, so the
+  layering rule holds.
 
 ### src/capture/editPlan.ts
 
@@ -418,6 +436,100 @@ Vitest unit tests for `groupAttachments`: empty input, transcript/note/caption
 classification, photo↔caption pairing (only its own captions, attachment order
 preserved), captionless photos, orphan captions when the photo was removed, and audio
 clip ordering.
+
+### src/capture/related.ts
+
+**Purpose:** Pure local relatedness scorer (#83) — ranks candidate entries against
+a target entry using only signals computable from data already on the device: no
+I/O, no `Date.now()`/`Math.random()`, no embeddings, no LLM calls. Unit-tested
+directly (`related.test.ts`).
+
+**Exports:**
+
+- `tokenizeEntryText(texts: string[]): Set<string>` — case-folds, strips
+  punctuation (`/[^a-z0-9]+/` splitter), and drops stopwords and tokens under
+  3 characters.
+- `relatedEntries(target, candidates, opts?): RelatedResult[]` where
+  `RelatedResult = { entryId; score; reasons: ('place' | 'words')[];
+  sharedTerms?: string[] }`. Always excludes the target itself and any
+  `revoked` candidate; gates on `opts.minScore` (default `RELATED_MIN_SCORE`
+  = 0.3) and caps at `opts.maxResults` (default `RELATED_MAX_RESULTS` = 2).
+  Deterministic ordering: score descending, ties broken by smaller day-gap
+  then by entry id.
+- `RELATED_MIN_SCORE`, `RELATED_MAX_RESULTS` — the display-gating constants.
+- `firstLine(text, maxLen = 80): string` and `relativeDayLabel(iso, today):
+  string` (pure day-label formatter — "Today"/"Yesterday"/"N days/weeks/months
+  ago"/"N years ago[ today]" for a same-civil-day anniversary; `today` is
+  supplied by the caller, never computed internally) and `reasonLabel(reasons,
+  { placeLabel?, sharedTerms? }): string` (e.g. "Also at Office", `You've
+  mentioned "ci flow" before`, or both joined with " · ") — the human-readable
+  glue the related rows render.
+
+**Scoring model:** two independently-weighted signals combine, then a
+recency factor damps the sum:
+
+- **Place** (`PLACE_SCORE` = 0.6): both entries have the same non-empty
+  `placeLabel`.
+- **Words** (`WORDS_MAX` = 0.5, scaled by the overlap coefficient
+  `|shared| / min(|A|, |B|)` of the two entries' tokenized text):
+  `WORDS_MAX` is kept below `PLACE_SCORE` so an exact place match always
+  outranks a lexical-only match, however strong the overlap (pinned
+  invariant).
+- **Recency damping:** a day-gap between the two entries' own `capturedAt`
+  fields (never wall-clock "now" — the module takes no `now` argument and
+  stays pure without one) feeds a gentle decay (`RECENCY_HALFLIFE_DAYS` =
+  90, floor `RECENCY_FLOOR` = 0.6) so a six-month-old strong match still
+  clears the threshold, per the design review's explicit "six months ago"
+  ask, while a much older or weaker match fades further.
+
+**Future seam (documented, not built):** an entity/topic enrichment runner
+(#51/#62's plan/api/runner pattern) could append per-entry derived
+`text/json` attachments (`derivedFrom` the source audio/photo) whose terms
+feed `tokenizeEntryText`/`relatedEntries` unchanged — the scorer doesn't care
+whether a token came from a transcript or a future derived-topic attachment.
+
+### src/capture/related.test.ts
+
+Vitest unit tests (27 cases, no jsdom): tokenizer case-folding/punctuation/
+stopword/short-token behavior; shared-place scores above lexical-only;
+disjoint entries score 0 and are excluded even with the gate open; the
+target itself and revoked candidates are never returned; `RELATED_MAX_RESULTS`
+is respected; determinism (reversed candidate order produces the same
+ordered output); `reasons`/`sharedTerms` accurately reflect the scoring path;
+an empty-string `placeLabel` on both sides is never treated as a place
+match; the pinned 180-day-old-strong-match invariant clears
+`RELATED_MIN_SCORE`; a far-away weak-by-distance match scores below an
+otherwise-identical close match; plus `firstLine`, `relativeDayLabel`, and
+`reasonLabel` formatting cases.
+
+### src/capture/useRelated.ts
+
+**Purpose:** Async glue between the pure scorer and the UI (#83) — loads
+each candidate's text attachments from IndexedDB (`getBlob`), tokenizes
+them, and calls `relatedEntries`. Kept out of `related.ts` on purpose so
+that module stays I/O-free.
+
+**Export:** `useRelated(target: Entry, candidates: readonly Entry[], enabled:
+boolean): RelatedRow[]` where `RelatedRow` extends `RelatedResult` with
+`entry: Entry` and `snippet: string` (the candidate's `cardViewModel`
+primary-text first line, else "Voice note"/"Photo", else empty).
+
+**Behavior:**
+
+- **Cost bound (#83 req. 5):** `enabled` gates all work behind card
+  expansion — an unexpanded card computes nothing, so relatedness never
+  runs for a whole feed, matching the same full-scan cost class as
+  `search_entries` (`src/assistant/tools.ts`), acceptable at personal-log
+  scale.
+- **Session memoization:** a module-scope `tokenCache` (entry id → token
+  set) means re-expanding a card, or an entry that appears as both a target
+  and a candidate elsewhere, never re-reads or re-tokenizes the same blobs
+  in one session; the cache is not persisted.
+- Filters `candidates` to non-target, non-revoked entries before scoring —
+  belt-and-suspenders alongside `relatedEntries`'s own exclusion.
+- A stale-guard (`stale` flag set in the effect cleanup) discards results
+  from a superseded run, matching the pattern used throughout this module
+  for async blob loads.
 
 ### src/capture/AttachmentBody.tsx
 
@@ -1057,3 +1169,19 @@ re-throw, matching the appStore `guard` convention.
   (`daySummaryClient.ts`) and a local digest builder (`dayDigest.ts`) that only
   import the SDK-free `assistant/config.ts`/`assistant/context.ts`, keeping the
   Day screen in the main bundle.
+- **Relatedness is local-only and computed on demand, never proactive (#83):**
+  `related.ts` uses only `placeLabel` exact match, tokenized-text overlap, and a
+  day-gap recency factor — no embeddings, no LLM calls, no network. It runs only
+  when `EntryCard` is expanded (`useRelated`'s `enabled` gate), never for a whole
+  feed. There is no push/notification surface for it (`docs/modules/notify.md`
+  has no backend for "right moment" resurfacing); v1 is card-only.
+- **The related-rows threshold is a hard gate, not a UI nicety:** `relatedEntries`
+  filters by `RELATED_MIN_SCORE` internally, so `useRelated` returning `[]` means
+  "nothing genuinely relates" and `EntryCard` renders no section at all — false
+  connections are worse than none (#83).
+- **Recency damping compares two entries to each other, not to wall-clock now:**
+  `related.ts` takes no `now` argument; the "age" it damps by is
+  `|target.capturedAt − candidate.capturedAt|`, so the module stays pure without
+  needing one. Only the UI-facing `relativeDayLabel` needs "today", and callers
+  supply it (`localDateOf(toLocalIso(new Date()))`) rather than the function
+  computing it internally.
