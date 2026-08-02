@@ -50,7 +50,6 @@ export function useDaySynthesis(
   entries: readonly Entry[],
   dateLabel: string,
   assistantEnabled: boolean,
-  model: string,
 ): UseDaySynthesisResult {
   const stat = useMemo(() => daySynthesis(entries), [entries])
   const [prose, setProse] = useState<string | undefined>(undefined)
@@ -58,8 +57,8 @@ export function useDaySynthesis(
   const key = entriesKey(entries)
   // Latest entries/date for generate() without re-subscribing the callback
   // on every render (entries is a fresh array each render).
-  const latest = useRef({ date, entries, dateLabel, model })
-  latest.current = { date, entries, dateLabel, model }
+  const latest = useRef({ date, entries, dateLabel })
+  latest.current = { date, entries, dateLabel }
 
   // Cache-only lookup on day/content change. Never calls the network.
   useEffect(() => {
@@ -89,7 +88,7 @@ export function useDaySynthesis(
   }, [date, key])
 
   const generate = useCallback(() => {
-    const { date, entries, dateLabel, model } = latest.current
+    const { date, entries, dateLabel } = latest.current
     if (entries.length === 0) return
     setProseState('loading')
     void (async () => {
@@ -101,7 +100,7 @@ export function useDaySynthesis(
         }))
         const hash = synthesisInputHash(entries, texts)
         const prompt = buildDaySummaryPrompt(dateLabel, text)
-        const result = await fetchDaySummary(prompt, model)
+        const result = await fetchDaySummary(prompt)
         if (!result) {
           setProseState('error')
           return
