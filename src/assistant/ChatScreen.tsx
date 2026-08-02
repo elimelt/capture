@@ -278,9 +278,10 @@ function ChatView({
   // Flush the send queue once per settled turn — on the status *transition*
   // (ready/error, including after stop()), never on re-renders where status
   // merely stays settled, so one settle sends exactly one queued message.
-  // Declared after the persist effect: the settled turn's snapshot saves
-  // before the next turn starts (each save upserts the full message array,
-  // so interleaved queued turns can't drop persistence either way).
+  // Declared after the persist effect: the settled turn is handed to
+  // persistence before the next turn starts (persistedCount advances
+  // synchronously there, so an interleaved queued turn's settle appends only
+  // its own new messages — nothing is dropped either way).
   const prevStatusRef = useRef(status)
   useEffect(() => {
     const prev = prevStatusRef.current

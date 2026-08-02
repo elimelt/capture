@@ -44,8 +44,7 @@ Defines the IndexedDB schema (via the `idb` package) and owns the singleton conn
 Key exports:
 
 - `getDb(): Promise<TimeboxDatabase>` — opens (once, memoized in a module-level promise)
-  the `timebox` database at **version 9** and runs versioned upgrades (version 7 is
-  reserved for the in-flight chats stream migration).
+  the `timebox` database at **version 10** and runs versioned upgrades.
 - `resetDbCache(): void` — test hook; forgets the cached connection promise.
 - `type TimeboxDatabase = IDBPDatabase<TimeboxDB>`.
 - `type SyncStatus = 'queued' | 'uploaded' | 'error'` — user-facing rollup.
@@ -61,8 +60,10 @@ Key exports:
 - `interface Place { id; name; lat; lng; radiusM; address? }`.
 - `interface GeocacheRow { key; address; cachedAt }` — reverse-geocode cache row keyed by
   a rounded `"lat,lng"` cell (SPEC §7).
-- `interface StoredChatRow { id; createdAt; updatedAt; messages: unknown[] }` — persisted
-  assistant conversation; message typing lives in `assistant/history.ts`.
+- `interface StoredChatRow { id; createdAt; updatedAt; messages: unknown[] }` — a
+  **legacy** persisted assistant conversation; live chats are event-sourced in the
+  `assistant-chats` stream (see `migrateChatsV1.ts` and `assistant/chatSync.ts`), and
+  the `chats` store is kept only as a rollback artifact.
 - `interface OverlayEventRow { id; stream; seq }` — a calendar-overlay log event
   (`capture.calendar-overlay.v1`, SPEC §3.6/§5.6), stored opaquely beyond the key +
   index fields because the event shape belongs to `gcal/overlay` and `store/` must
@@ -79,7 +80,7 @@ Object stores (schema `TimeboxDB`):
 | `places` | `id` | `Place` |
 | `geocache` | rounded `"lat,lng"` | `GeocacheRow` |
 | `meta` | string (out-of-line) | `unknown` — per-stream seq counters, sync stamps, migration markers, legacy settings |
-| `chats` | `id` | `StoredChatRow` |
+| `chats` | `id` | `StoredChatRow` (legacy; migrated to the `assistant-chats` stream, kept for rollback) |
 | `overlayEvents` | event `id` (+ `by-stream` index) | `OverlayEventRow` — the calendar-overlay log, **owned by `gcal/overlay`**; local-only until wired into sync |
 
 `events` and `sync` are keyed by the event `id` — the identity (SPEC §3.3): two
@@ -96,14 +97,41 @@ recreating** both stores rather than migrating rows, since the local log is a re
 of Drive and a pull rebuilds it; v8 adds `overlayEvents` (id-keyed, `by-stream` index —
 SPEC §3.6/§5.6), self-contained, additive, and guarded by a `contains('overlayEvents')`
 check so it composes with the parallel stream migrations landing in either order; v9
-seeds legacy flat settings into `settings`-stream events via `migrateSettingsV1(tx)` —
-called on **every** upgrade rather than under an `oldVersion` check, because parallel
-workstreams claim their own version numbers and can land in any order (v8 shipped
-first; v7 — the chats stream migration — is still in flight), so a device may already
-sit at a higher version without this migration having run; the call is state-guarded
-by a meta marker instead (see migrateSettingsV1.ts). Any branch adding a migration
-must raise the version above the current max so `upgrade()` fires; each state-guarded
-block then self-selects.
+seeds legacy flat settings into `settings`-stream events via `migrateSettingsV1(tx)`;
+v10 turns legacy `chats` rows into `assistant-chats` stream events via
+`migrateChatsV1(tx)`. The v9 and v10 migrations are called on **every** upgrade
+rather than under an `oldVersion` check, because parallel workstreams claimed their
+own version numbers and landed in arbitrary order, so a device may already sit at a
+higher version without a given migration having run; each call is state-guarded by a
+meta marker (plus, for chats, a stream-state check) instead. Any branch adding a
+migration must raise the version above the current max so `upgrade()` fires; each
+state-guarded block then self-selects.
+
+### src/store/migrateChatsV1.ts
+
+One-shot, idempotent migration of legacy `chats` rows into the `assistant-chats`
+system stream (SPEC §3.1, §10.1). For each legacy conversation (oldest `createdAt`
+first, id as tiebreak) it hand-constructs, inside the caller's transaction, exactly
+what `events.ts#append()` would write: one `capture` event with no attachments (its
+id becomes the chat id) plus one `amend` per message carrying a
+`capture.chatmessage.v1` JSON text attachment — with strictly increasing per-stream
+`seq` across all synthesized events (message order is seq order; the synthesized
+`loggedAt` is the row's `createdAt`/`updatedAt` converted to a local-offset contract
+timestamp). Every event gets a `'queued'` sync row (`record-pending` for captures,
+`attachments-pending` for amends), so the migrated history uploads through the normal
+multi-stream drain. The per-stream `nextSeq` counter is written back once at the end.
+
+Guard (why it is not an `oldVersion` check): it returns early if the
+`migrated:chats:v1` meta marker is set, or — belt and suspenders — if the
+`assistant-chats` stream already has events (then it just sets the marker). A fresh
+install (no legacy rows) writes the marker and nothing else. The legacy `chats`
+store and its rows are deliberately left in place as a rollback artifact.
+
+Exports: `migrateChatsV1(tx)` (generic over `versionchange`/`readwrite` transactions
+so tests and recovery paths can drive it), `CHATS_MIGRATION_MARKER`, and
+`MIGRATED_CHATS_STREAM`/`MIGRATED_CHAT_MESSAGE_PAYLOAD_SCHEMA` — duplicates of the
+constants owned by `assistant/chatSync.ts` (store/ must not import assistant/), with
+the pairing pinned by a test in `assistant/chatSync.test.ts`.
 
 ### src/store/events.ts
 
@@ -412,6 +440,18 @@ re-pushed), seq counter bump correctness, idempotent re-import, blob keying by c
 filename, `listPendingSync` ordering by seq, exclusion of uploaded events from pending
 queue, cross-device merge scenarios with seq collisions, and sequential multi-import
 handling.
+
+### src/store/migrateChatsV1.test.ts
+
+Covers the legacy-chats migration against fake-indexeddb: seeding a pre-migration
+(v5-shaped) database and asserting conversion to capture + ordered amends (strictly
+increasing seq, message order preserved, envelope payloads intact, oldest chat
+first), queued sync rows with the right phases and the advanced seq counter, legacy
+rows left in place, wire-contract round-trips (`parseEvent(serializeEvent(…))`),
+idempotency across two runs, the fresh-install no-op (marker set, no events), the
+applied-state guard running correctly at an already-current DB version (parallel
+branches claimed v8/v9, so `oldVersion` alone is not trusted), and the skip-and-mark
+path when the stream already holds events.
 
 ### src/store/livetext.test.ts
 
