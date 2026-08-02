@@ -15,9 +15,11 @@ It has two halves:
   settings in memory, delegates every write to the repositories, and wires Drive
   auth state and the manual sync action (`src/drive`) into state the components render.
 
-One small module sits outside both halves: `livetext.ts`, a transient in-memory
+Two small modules sit outside both halves: `livetext.ts`, a transient in-memory
 pub/sub store (nothing touches IndexedDB) that carries streaming transcript/caption
-partials from the enrichment runners to the entry cards.
+partials from the enrichment runners to the entry cards; and `syncProgress.ts`, a pure
+reducer + formatters (no React, no store, no IndexedDB) that turn the progress events
+`drainSync` and the drive engine emit into a live `SyncProgress` snapshot for the UI.
 
 State flows one way: a UI action calls a store action → the action writes through a repo
 (one IndexedDB transaction) → the action re-reads (`refresh`/`loadPlaces`/`loadSettings`)
@@ -28,7 +30,10 @@ enqueue a `sync` row, and `drainSync` — whose sole caller is the "Sync now" bu
 Settings — runs one pull-then-push cycle **per registered stream**
 (`allSyncStreams()` from `src/streams/registry`, covering system streams like
 `settings`/`assistant-chats` as well as capture streams): `src/drive/pull` imports
-remote events first, then `src/drive/queue` drains pending rows.
+remote events first, then `src/drive/queue` drains pending rows. Because a cycle can
+touch many attachments/records/batched segments across several streams, `drainSync`
+keeps a live `syncProgress: SyncProgress | null` (never persisted) up to date via
+`reduceSyncProgress` for the Settings screen and the nav's global sync affordance.
 
 Per SPEC §10's layering rule, `store/` is stream-agnostic: it imports only from
 `src/contract`, `src/streams`, and `src/drive`, never from `gcal/`, `dayview/`, or
@@ -408,7 +413,9 @@ completed; null = never synced), `globalSyncSummary: GlobalSyncSummary` (aggrega
 across all registered streams — see below), `places: Place[]`, `appSettings`,
 `streamSettings`, `lastError: string | null` (toast channel), `driveConnection:
 DriveConnection` (`src/drive/token`; drives the reconnect pill, SPEC §8.2), `syncing`
-(sync cycle in flight), and the storage-space snapshot — `localSpace:
+(sync cycle in flight), `syncProgress: SyncProgress | null` (live detail for the cycle
+in flight — see `syncProgress.ts` below; null whenever `syncing` is false, and never
+persisted), and the storage-space snapshot — `localSpace:
 LocalSpaceEstimate | null` (null = unsupported or not yet loaded) and `appSpace:
 AppSpace | null` (both from `space.ts`, set by `refreshSpace`).
 
@@ -461,7 +468,13 @@ Actions:
   clean cycle (`idle`/`drained`) persists *its* `lastSyncAt` via
   `setLastSyncAt(stream, …)`. Afterwards state is refreshed (`refresh()` +
   `loadSettings()`, since pulled system-stream events can change settings) and
-  `syncing` is cleared in a `finally`.
+  `syncing` is cleared in a `finally`. Throughout the loop, a local
+  `emitProgress` helper feeds `SyncProgressEvent`s (`cycle-start` once,
+  `stream-start`/`stream-done` around each stream's pull+push pair, passed
+  straight through to `pullStream`/`drainStream` as their `onProgress`
+  callback for the granular `pull-progress`/`upload-start`/`upload-progress`
+  events) through `reduceSyncProgress` (`syncProgress.ts`) into `syncProgress`;
+  the `finally` clears it back to null alongside `syncing`.
 - Places/settings/data — `addPlace`, `removePlace`, `updateSettings`,
   `updateStreamSettings`, `wipe()` (`wipeAll()` then reload, including
   `refreshSpace()` so the Settings storage line never shows the pre-wipe number),
@@ -471,6 +484,60 @@ All write actions are wrapped in a local `guard(label, fn)` helper: on failure i
 `lastError` to `"<label>: <message>"` **and re-throws** so awaiting callers still see the
 error. `drainSync` is deliberately not guarded; it reports failures via `lastError` and
 in its returned `SyncResult` without throwing.
+
+### src/store/syncProgress.ts
+
+Pure sync-progress model (owner directive: "syncing has GOT to have a progress
+indicator" — a manual "Sync now" can upload many attachments/records/batched
+segments across multiple streams and pull remote changes, with no feedback
+until it finishes). No React, no store, no IndexedDB — a reducer plus
+formatters over a typed event stream, so it is unit-tested directly (no
+jsdom).
+
+Key exports:
+
+- `type SyncProgressEvent` — the boundaries the sync machinery reports:
+  `{ kind: 'cycle-start', streamsTotal }`, `{ kind: 'stream-start', stream }`,
+  `{ kind: 'pull-progress', stream, delta }` (one imported partition/page, not
+  per event), `{ kind: 'upload-start', stream, itemsTotal }` (the pending
+  count for that stream's push), `{ kind: 'upload-progress', stream, delta }`
+  (one committed batch — a lone record or a whole segment, never per file
+  inside it), `{ kind: 'stream-done', stream }`, `{ kind: 'cycle-done' }`.
+  `appStore.drainSync` emits `cycle-start`/`stream-start`/`stream-done` itself
+  (it already owns the per-stream loop); `pullStream` (`src/drive/pull`) emits
+  `pull-progress`; `drainStream` (`src/drive/queue`) emits `upload-start`/
+  `upload-progress` — both via an optional `onProgress` callback parameter
+  (default a no-op, so every existing direct caller/test is unaffected).
+- `interface SyncProgress { phase: SyncPhase; stream: string | null;
+  streamsDone; streamsTotal; itemsDone; itemsTotal: number | null; pulled;
+  uploaded }` — `SyncPhase = 'idle' | 'pulling' | 'uploading' | 'done'`.
+  `itemsTotal` is null while unknown (pull phases are always indeterminate —
+  no cheap upfront count; upload phases become determinate the instant
+  `upload-start` reports one). `pulled`/`uploaded` are cycle-wide running
+  totals, not per-stream.
+- `emptySyncProgress(): SyncProgress` — the pre-cycle/fallback state (`phase:
+  'idle'`, everything zeroed).
+- `reduceSyncProgress(prev: SyncProgress | null, event): SyncProgress` — the
+  pure reducer; `prev: null` is treated as `emptySyncProgress()` (defensive,
+  not a contract — `drainSync` always opens with `cycle-start` first).
+- `syncProgressFraction(p): number | null` — `[0, 1]` for a determinate
+  `ProgressBar` (`src/ui`) fill, or null while indeterminate (`idle`/`pulling`,
+  or `uploading` before `itemsTotal` is known); always `1` once `done`.
+- `formatSyncProgress(p): string` — human label, e.g. `"Uploading 3 of 12 ·
+  Timelog"` or `"Checking Settings for changes (2 of 3)"` or `"Synced — 5
+  uploaded · 2 pulled"`.
+- `prettyStreamName(id): string` — `"assistant-chats"` → `"Assistant Chats"`;
+  a pure string transform (no registry lookup) so this module stays
+  dependency-free.
+
+### src/store/syncProgress.test.ts
+
+Exercises the reducer end to end (every event kind, a null `prev` falling
+back to the empty state without throwing, a full multi-stream cycle played
+through in order) plus `syncProgressFraction` (null while idle/pulling/
+uploading-with-unknown-total, determinate once `upload-start` lands, clamped
+to 1, `1` once done) and `formatSyncProgress` (one case per phase) and
+`prettyStreamName`.
 
 ### src/store/appStore.test.ts
 
@@ -501,7 +568,13 @@ worst-of aggregation, per-stream `lastSyncAt` stamping (only streams whose own
 cycle was clean; idle streams stamped too; nothing stamped on an initial
 reconnect), the `globalSyncSummary` rollup (summed pending/errors, oldest
 `lastSyncAt`, `null` while any stream never synced), plus the connect (no
-post-connect sync) and disconnect flows.
+post-connect sync) and disconnect flows. A `syncProgress` describe block
+covers the live-detail wiring: null before/after a cycle (including the
+no-token/re-entrant early returns), and — by having the `pullStream`/
+`drainStream` mocks call their `onProgress` callback and stall on a deferred
+promise — the store's `syncProgress` reflecting `pull-progress` mid-flight
+(`phase: 'pulling'`) and `upload-start` mid-flight (`phase: 'uploading'`,
+determinate `itemsTotal`), then clearing back to null once the cycle resolves.
 
 ### src/store/events.test.ts
 
@@ -609,6 +682,15 @@ and wrong-typed legacy fields ignored.
   Settings — no foreground/online/capture triggers — and each stream's `lastSyncAt`
   is stamped only when that stream's own pull+push cycle completes cleanly
   (`idle`/`drained`).
+- **`syncProgress` is live-only, never persisted.** It exists purely so a long
+  manual sync (many attachments/records/batched segments across multiple
+  streams) has visible feedback; `drainSync` builds it up via
+  `reduceSyncProgress` (`syncProgress.ts`) and clears it back to null in its
+  `finally`, alongside `syncing`. Errors are never routed through it — a
+  `'reconnect'`/`'retry-later'`/`'error'` outcome still surfaces the normal way
+  (`lastError`, the reconnect pill, `globalSyncSummary`); adding a second,
+  quieter error channel here would undo the lifecycle discipline that
+  `lastError`'s "sets and re-throws" `guard` behavior establishes.
 - **Blobs are keyed by contract filename**, computed at append time — the same name is
   used locally and in Drive, which is what makes re-uploads idempotent.
 - **Blob GC only deletes what is both fold-hidden and durably uploaded.**
