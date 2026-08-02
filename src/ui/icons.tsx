@@ -66,11 +66,17 @@ export function PlusIcon({ size = 14 }: IconProps) {
   )
 }
 
-/** Small pin/dot marking an existing location. */
+/** Small map-pin marking an existing location. */
 export function PinIcon({ size = 14 }: IconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 14 14" fill="none" aria-hidden="true">
-      <circle cx="7" cy="7" r="2.5" fill="currentColor" />
+      <path
+        d="M11.5 5.8c0 3.4-4.5 6.9-4.5 6.9S2.5 9.2 2.5 5.8a4.5 4.5 0 0 1 9 0Z"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinejoin="round"
+      />
+      <circle cx="7" cy="5.8" r="1.5" stroke="currentColor" strokeWidth="1.3" />
     </svg>
   )
 }
