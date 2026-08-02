@@ -81,6 +81,20 @@
   max-width: none;
 }
 
+/* Leaflet assigns high z-indexes to its panes (400) and controls (up to 1000),
+   which would otherwise leak above the app's overlays (Sheet is z-50). Isolate
+   each map into its own stacking context and cap the internal layers so an
+   inline preview map can never paint over a sheet/popup above it. */
+.leaflet-container {
+  isolation: isolate;
+  z-index: 0;
+}
+.leaflet-pane,
+.leaflet-top,
+.leaflet-bottom {
+  z-index: auto;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   ::before,
