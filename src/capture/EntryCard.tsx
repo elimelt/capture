@@ -1,10 +1,12 @@
-import { Suspense, lazy, useRef, useState } from 'react'
+import { Suspense, lazy, useEffect, useRef, useState } from 'react'
 import type { AmendPatch, Entry, GeoLocation } from '../contract/types'
 import { localTimeOf } from '../contract/time'
 import type { SyncStatus } from '../store/db'
+import { getBlob } from '../store/events'
 import {
   Button,
   Card,
+  ChevronDownIcon,
   IconButton,
   PinIcon,
   PlusIcon,
@@ -20,6 +22,8 @@ import { EditEntrySheet } from './EditEntrySheet'
 import { TextSheet } from './TextSheet'
 import { AttachmentBody } from './AttachmentBody'
 import { SyncBadge } from './SyncBadge'
+import { groupAttachments } from './attachmentGroups'
+import { cardViewModel } from './cardView'
 import { useAudioPlayback } from './useAudioPlayback'
 import { useRecorder, type RecordingResult } from './useRecorder'
 
@@ -73,6 +77,9 @@ export function EntryCard({
   onSetLocation,
   onApplyEdit,
 }: EntryCardProps) {
+  // View-local only (#78): never persisted, never an event — the log carries
+  // user data, not UI state. Collapses again on re-render of a fresh card.
+  const [expanded, setExpanded] = useState(false)
   const [noteOpen, setNoteOpen] = useState(false)
   const [locationOpen, setLocationOpen] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
@@ -82,6 +89,7 @@ export function EntryCard({
   const playback = useAudioPlayback(audio?.file)
   // Per-card recorder for "+ audio" — entries can hold multiple clips.
   const rec = useRecorder()
+  const vm = cardViewModel(entry, groupAttachments(entry.attachments))
 
   async function handleAudioTap() {
     if (rec.state === 'recording') {
@@ -94,7 +102,8 @@ export function EntryCard({
 
   return (
     <Card className={motion.riseIn}>
-      {/* Header: time + place grouped left; sync/duration/play pushed right. */}
+      {/* Header: time + place grouped left; sync/duration/play pushed right.
+          This is the collapsed card's "time" and "context". */}
       <div className="flex items-center gap-2">
         <div className={cx('flex min-w-0 flex-1 items-baseline gap-2', type_.body)}>
           {/* Tapping the time opens the native iOS wheel picker (B8); the
@@ -123,9 +132,9 @@ export function EntryCard({
               aria-label="Change entry time"
             />
           </span>
-          {(entry.location?.placeLabel ?? entry.location?.address) && (
+          {vm.collapsedShowsLocation && (
             <span className={cx('truncate', type_.sub, tone.textMuted)}>
-              {entry.location.placeLabel ?? `near ${entry.location.address}`}
+              {entry.location?.placeLabel ?? `near ${entry.location?.address}`}
             </span>
           )}
         </div>
@@ -156,18 +165,34 @@ export function EntryCard({
         )}
       </div>
 
-      <AttachmentBody
-        attachments={entry.attachments}
-        onEditText={onEditText}
-        onRemoveAttachment={onRemoveAttachment}
-      />
+      {/* Collapsed content: the entry's primary text representation only,
+          clamped to two lines; tapping it expands the card. Audio-only
+          entries have no separate content block — the header play button
+          already represents the primary clip. */}
+      {!expanded && vm.primaryText && (
+        <PrimaryTextPreview
+          file={vm.primaryText.file}
+          transcript={vm.primaryText.derivedFrom !== undefined}
+          onTap={() => setExpanded(true)}
+        />
+      )}
 
-      {entry.location && (
-        <div className="mt-2">
-          <Suspense fallback={null}>
-            <MiniMap location={entry.location} />
-          </Suspense>
-        </div>
+      {/* Expanded content: full attachment body + location preview, per #78. */}
+      {expanded && (
+        <>
+          <AttachmentBody
+            attachments={entry.attachments}
+            onEditText={onEditText}
+            onRemoveAttachment={onRemoveAttachment}
+          />
+          {entry.location && (
+            <div className="mt-2">
+              <Suspense fallback={null}>
+                <MiniMap location={entry.location} />
+              </Suspense>
+            </div>
+          )}
+        </>
       )}
 
       {rec.state === 'recording' ? (
@@ -200,56 +225,63 @@ export function EntryCard({
           </button>
         </div>
       ) : (
-        /* Action bar: icon-only (aria-label + title carry the names), add
-           actions left, edit + destructive delete right, above a hairline
-           divider that separates chrome from content. */
-        <div className={cx('-mx-4 mt-3 flex items-center gap-1 border-t px-2 pt-1', tone.border)}>
-          <IconButton variant="ghost" aria-label="Add note" title="Add note" onClick={() => setNoteOpen(true)}>
-            <NoteIcon size={16} />
-          </IconButton>
-          <IconButton
-            variant="ghost"
-            aria-label="Add photo"
-            title="Add photo"
-            onClick={() => photoInputRef.current?.click()}
-          >
-            <PhotoIcon size={16} />
-          </IconButton>
-          {rec.state === 'error' ? (
-            <Button variant="ghost" size="sm" onClick={rec.resetError}>
-              mic unavailable
-            </Button>
-          ) : (
-            <IconButton
-              variant="ghost"
-              aria-label="Record audio"
-              title="Record audio"
-              onClick={() => void handleAudioTap()}
-            >
-              <AudioIcon size={16} />
-            </IconButton>
+        <>
+          {/* Labelled actions — only reachable from the expanded state
+              (#78): the design review's "six unlabeled icons are
+              conceptually ambiguous" complaint. Every action still carries
+              the same glyph as the main CTA/edit affordances, now beside a
+              text label. */}
+          {expanded && (
+            <div className={cx('-mx-4 mt-3 flex flex-wrap items-center gap-1 border-t px-2 pt-2', tone.border)}>
+              <Button variant="ghost" size="sm" onClick={() => setNoteOpen(true)}>
+                <NoteIcon size={14} /> Add note
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => photoInputRef.current?.click()}>
+                <PhotoIcon size={14} /> Add photo
+              </Button>
+              {rec.state === 'error' ? (
+                <Button variant="ghost" size="sm" onClick={rec.resetError}>
+                  mic unavailable
+                </Button>
+              ) : (
+                <Button variant="ghost" size="sm" onClick={() => void handleAudioTap()}>
+                  <AudioIcon size={14} /> Add audio
+                </Button>
+              )}
+              <Button variant="ghost" size="sm" onClick={() => setLocationOpen(true)}>
+                {entry.location ? <PinIcon size={14} /> : <PlusIcon size={14} />} Location
+              </Button>
+              <Button variant="ghost" size="sm" className="ml-auto" onClick={() => setEditOpen(true)}>
+                <SlidersIcon size={14} /> Edit
+              </Button>
+              <Button variant="dangerGhost" size="sm" onClick={onDelete}>
+                <TrashIcon size={14} /> Delete
+              </Button>
+            </div>
           )}
-          <IconButton
-            variant="ghost"
-            aria-label={entry.location ? 'Edit location' : 'Add location'}
-            title={entry.location ? 'Edit location' : 'Add location'}
-            onClick={() => setLocationOpen(true)}
+
+          {/* The one overflow/expand affordance the collapsed card keeps —
+              a real button with aria-expanded (#78 req. 7), never a
+              hover/gesture-only trap. Shows a "+N" hint from the pure
+              view-model when collapsed content hides attachments. */}
+          <button
+            type="button"
+            aria-expanded={expanded}
+            aria-label={expanded ? 'Show less' : 'Show more'}
+            onClick={() => setExpanded((e) => !e)}
+            className={cx(
+              'mt-2 flex items-center gap-1 rounded-md px-1 py-0.5',
+              type_.caption,
+              tone.textFaint,
+              tone.pressWash,
+            )}
           >
-            {entry.location ? <PinIcon size={16} /> : <PlusIcon size={16} />}
-          </IconButton>
-          <IconButton
-            variant="ghost"
-            aria-label="Edit entry"
-            title="Edit entry"
-            onClick={() => setEditOpen(true)}
-            className="ml-auto"
-          >
-            <SlidersIcon size={16} />
-          </IconButton>
-          <IconButton variant="danger" aria-label="Delete entry" title="Delete entry" onClick={onDelete}>
-            <TrashIcon size={16} />
-          </IconButton>
-        </div>
+            <span className={cx('inline-flex transition-transform', expanded && 'rotate-180')}>
+              <ChevronDownIcon size={12} />
+            </span>
+            {expanded ? 'Show less' : vm.extraCount > 0 ? `Show more (+${vm.extraCount})` : 'Show more'}
+          </button>
+        </>
       )}
 
       <input
@@ -291,5 +323,49 @@ export function EntryCard({
         </Suspense>
       )}
     </Card>
+  )
+}
+
+/**
+ * The collapsed card's primary content: the entry's primary text (per
+ * `cardViewModel`), clamped to two lines, tapping through to the expanded
+ * state rather than the inline editor `AttachmentBody`'s `NoteText` opens —
+ * editing lives behind expansion (#78 req. 3). Loads its text the same way
+ * `NoteText` does (async `getBlob`, stale-guarded), so it renders nothing
+ * until the blob resolves.
+ */
+function PrimaryTextPreview({
+  file,
+  transcript,
+  onTap,
+}: {
+  file: string
+  /** True for a machine transcript (reads as the entry's own voice); false for a user note. */
+  transcript: boolean
+  onTap: () => void
+}) {
+  const [text, setText] = useState<string | null>(null)
+  useEffect(() => {
+    let stale = false
+    void getBlob(file).then(async (blob) => {
+      if (blob && !stale) setText(await blob.text())
+    })
+    return () => {
+      stale = true
+    }
+  }, [file])
+  if (text === null) return null
+  return (
+    <button type="button" onClick={onTap} className={cx('mt-2 block w-full text-left', motion.fadeIn)}>
+      <span
+        className={cx(
+          'line-clamp-2 block whitespace-pre-wrap break-words',
+          type_.bodyStrong,
+          transcript ? tone.textPrimary : tone.textSecondary,
+        )}
+      >
+        {text}
+      </span>
+    </button>
   )
 }
