@@ -1,6 +1,6 @@
-# Contributing to Timebox
+# Contributing to Capture
 
-Timebox is a mobile-first, offline-first PWA (TypeScript + React) for voice-first
+Capture is a mobile-first, offline-first PWA (TypeScript + React) for voice-first
 capture with Google Drive as the sync substrate. Before contributing, read
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — it is short and explains the design
 decisions this guide asks you to preserve. `SPEC.md` holds product intent and the

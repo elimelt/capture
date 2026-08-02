@@ -1,6 +1,6 @@
 # Subsystem: AI & enrichment
 
-How Timebox layers machine understanding on top of the append-only capture log without
+How Capture layers machine understanding on top of the append-only capture log without
 ever compromising the offline-first capture path. Four features share this subsystem:
 
 - **Audio transcription** (`src/transcribe`) — Whisper transcripts for captured audio.
@@ -139,7 +139,7 @@ so non-users never download the bundle.
 | Geocoding | `nominatim.openstreetmap.org/reverse` | rounded coordinates |
 
 None of these require an API key: the LLM/transcription hosts are CORS origin-gated,
-and Nominatim is public (identified via a `Referer`). There is no Timebox server;
+and Nominatim is public (identified via a `Referer`). There is no Capture server;
 beyond these calls, data goes only to the user's own Google Drive (SPEC §9.3). The
 assistant makes no request at all until the user sends a message; transcription and
 captioning run automatically once entries exist, but only send the specific attachment

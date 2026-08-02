@@ -137,7 +137,7 @@ Configured via `defineConfig` from `vitest/config` (Vite + Vitest in one file), 
 - `VitePWA` with `registerType: 'autoUpdate'`:
   - `workbox.globIgnores: ['**/ChatScreen-*.js']` keeps the lazy assistant chunk out of the precache; a `CacheFirst` runtime rule (`assistant-chunk`, 3 entries / 30 days) caches it for opted-in users instead.
   - Runtime caching: Google Fonts stylesheets `StaleWhileRevalidate`; font files `CacheFirst` (12 entries / 1 year); OSM tiles `CacheFirst` (`osm-tiles`, 1000 entries / 30 days, `purgeOnQuotaError: true` — offline maps and minimal load on OSM); Nominatim `CacheFirst` (200 entries / 90 days — its usage policy requires client-side caching; IndexedDB caching is the first line, this the second).
-  - Web app manifest: name/short_name `Timebox`, `standalone`, `portrait`, paper theme/background color, 192/512 icons with a maskable 512.
+  - Web app manifest: name/short_name `Capture`, `standalone`, `portrait`, paper theme/background color, 192/512 icons with a maskable 512.
 - `test`: node environment; `*.integration.test.ts` excluded unless `VITEST_INTEGRATION` is set.
 
 ### package.json

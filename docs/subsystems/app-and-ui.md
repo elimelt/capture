@@ -1,6 +1,6 @@
 # Subsystem: Application shell & UI
 
-How Timebox boots, navigates, styles itself, moves state, and behaves as an installed
+How Capture boots, navigates, styles itself, moves state, and behaves as an installed
 PWA. This is the cross-cutting view; for file-level detail see the module docs:
 
 - [App shell, UI design system, and tooling](../modules/app-shell-ui-and-tooling.md)
