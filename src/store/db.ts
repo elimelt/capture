@@ -27,6 +27,14 @@ export interface SyncStatusRow {
   /** ISO local time; absent = eligible for upload now. */
   nextRetryAt?: string
   error?: string
+  /**
+   * Pre-generated Drive file ids (files.generateIds), keyed by contract
+   * filename, persisted *before* each upload attempt so a retry re-uploads
+   * with the same id — Drive answers 409 for an id that already landed, which
+   * the client treats as success. Absent on rows written by older versions;
+   * the drainer falls back to find-before-upload for those (SPEC §8.4).
+   */
+  fileIds?: Record<string, string>
 }
 
 export interface Place {

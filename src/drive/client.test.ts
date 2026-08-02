@@ -4,6 +4,7 @@ import {
   FOLDER_MIME,
   createFolder,
   findFile,
+  generateIds,
   listChildren,
   readFileBlob,
   readFileText,
@@ -65,6 +66,25 @@ describe('createFolder', () => {
       mimeType: FOLDER_MIME,
     })
   })
+
+  it('includes appProperties in the folder metadata when given', async () => {
+    const fetchMock = stubFetch(jsonResponse({ id: 'folder-2' }))
+    await createFolder('tok', '2026-08-02', 'log-1', { captureKind: 'partition' })
+    const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string)
+    expect(body.appProperties).toEqual({ captureKind: 'partition' })
+  })
+})
+
+describe('generateIds', () => {
+  it('requests a batch of ids in the drive space', async () => {
+    const fetchMock = stubFetch(jsonResponse({ ids: ['id-1', 'id-2'] }))
+    expect(await generateIds('tok', 2)).toEqual(['id-1', 'id-2'])
+
+    const url = new URL(String(fetchMock.mock.calls[0][0]))
+    expect(url.pathname).toContain('/files/generateIds')
+    expect(url.searchParams.get('count')).toBe('2')
+    expect(url.searchParams.get('space')).toBe('drive')
+  })
 })
 
 describe('uploadFile', () => {
@@ -104,6 +124,79 @@ describe('uploadFile', () => {
     const [sessionUrl, putInit] = fetchMock.mock.calls[1]
     expect(String(sessionUrl)).toBe('https://upload.example/session')
     expect(putInit?.method).toBe('PUT')
+  })
+
+  it('sends the pre-generated id and appProperties in the multipart metadata', async () => {
+    const fetchMock = stubFetch(jsonResponse({ id: 'pre-1' }))
+    await uploadFile('tok', {
+      name: 'rec.json',
+      parentId: 'p',
+      mimeType: 'application/json',
+      body: '{}',
+      fileId: 'pre-1',
+      appProperties: { captureKind: 'record', captureStream: 'timelog' },
+    })
+
+    const body = fetchMock.mock.calls[0][1]?.body as Blob
+    const metaPart = (await body.text()).split('\r\n\r\n')[1]
+    expect(JSON.parse(metaPart.split('\r\n')[0])).toEqual({
+      name: 'rec.json',
+      parents: ['p'],
+      id: 'pre-1',
+      appProperties: { captureKind: 'record', captureStream: 'timelog' },
+    })
+  })
+
+  it('sends the pre-generated id in the resumable init metadata', async () => {
+    const big = new Blob([new Uint8Array(6 * 1024 * 1024)], { type: 'audio/mp4' })
+    const initRes = new Response(null, {
+      status: 200,
+      headers: { location: 'https://upload.example/session' },
+    })
+    const fetchMock = stubFetch(initRes, jsonResponse({ id: 'pre-2' }))
+    await uploadFile('tok', {
+      name: 'clip.m4a',
+      parentId: 'p',
+      mimeType: 'audio/mp4',
+      body: big,
+      fileId: 'pre-2',
+      appProperties: { captureKind: 'attachment' },
+    })
+    const initBody = JSON.parse(fetchMock.mock.calls[0][1]?.body as string)
+    expect(initBody.id).toBe('pre-2')
+    expect(initBody.appProperties).toEqual({ captureKind: 'attachment' })
+  })
+
+  it('treats 409 as success when uploading with a pre-generated id', async () => {
+    stubFetch(jsonResponse({ error: { message: 'A file already exists' } }, 409))
+    const id = await uploadFile('tok', {
+      name: 'rec.json',
+      parentId: 'p',
+      mimeType: 'application/json',
+      body: '{}',
+      fileId: 'pre-1',
+    })
+    expect(id).toBe('pre-1')
+  })
+
+  it('treats a resumable 409 as success when uploading with a pre-generated id', async () => {
+    const big = new Blob([new Uint8Array(6 * 1024 * 1024)], { type: 'audio/mp4' })
+    stubFetch(jsonResponse({ error: { message: 'A file already exists' } }, 409))
+    const id = await uploadFile('tok', {
+      name: 'clip.m4a',
+      parentId: 'p',
+      mimeType: 'audio/mp4',
+      body: big,
+      fileId: 'pre-2',
+    })
+    expect(id).toBe('pre-2')
+  })
+
+  it('still throws 409 when no pre-generated id was supplied', async () => {
+    stubFetch(jsonResponse({ error: { message: 'conflict' } }, 409))
+    await expect(
+      uploadFile('tok', { name: 'x', parentId: 'p', mimeType: 'text/plain', body: 'x' }),
+    ).rejects.toMatchObject({ status: 409 })
   })
 })
 

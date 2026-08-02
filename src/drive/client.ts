@@ -79,15 +79,39 @@ export async function createFolder(
   token: string,
   name: string,
   parentId: string,
+  appProperties?: Record<string, string>,
 ): Promise<string> {
   const res = await ensureOk(
     await fetch(`${API}/files?fields=id`, {
       method: 'POST',
       headers: { ...bearer(token), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, parents: [parentId], mimeType: FOLDER_MIME }),
+      body: JSON.stringify({
+        name,
+        parents: [parentId],
+        mimeType: FOLDER_MIME,
+        ...(appProperties ? { appProperties } : {}),
+      }),
     }),
   )
   return ((await res.json()) as { id: string }).id
+}
+
+/**
+ * Mint Drive file ids client-side (`files.generateIds`). A pre-generated id
+ * persisted before an upload makes the upload idempotent: retrying the same
+ * id yields 409, which `uploadFile` treats as success (already uploaded).
+ * Note: pre-generated ids work for blob files only — never folders.
+ */
+export async function generateIds(token: string, count: number): Promise<string[]> {
+  const params = new URLSearchParams({
+    count: String(count),
+    space: 'drive',
+    fields: 'ids',
+  })
+  const res = await ensureOk(
+    await fetch(`${API}/files/generateIds?${params}`, { headers: bearer(token) }),
+  )
+  return ((await res.json()) as { ids: string[] }).ids
 }
 
 export interface UploadArgs {
@@ -95,19 +119,41 @@ export interface UploadArgs {
   parentId: string
   mimeType: string
   body: Blob | string
+  /** Pre-generated id (files.generateIds); makes the upload an idempotent PUT-like op. */
+  fileId?: string
+  /** App-private metadata set at creation time (free) for files.list/changes discovery. */
+  appProperties?: Record<string, string>
 }
 
-/** Upload a new file, choosing multipart or resumable by size. Returns its id. */
+/**
+ * Upload a new file, choosing multipart or resumable by size. Returns its id.
+ * When `fileId` is a pre-generated id, a 409 means a previous attempt already
+ * created this exact file — that is success, and the id is returned as-is.
+ */
 export async function uploadFile(token: string, args: UploadArgs): Promise<string> {
   const size = typeof args.body === 'string' ? new Blob([args.body]).size : args.body.size
-  return size > RESUMABLE_THRESHOLD
-    ? uploadResumable(token, args)
-    : uploadMultipart(token, args)
+  try {
+    return size > RESUMABLE_THRESHOLD
+      ? await uploadResumable(token, args)
+      : await uploadMultipart(token, args)
+  } catch (err) {
+    if (args.fileId && err instanceof DriveError && err.status === 409) return args.fileId
+    throw err
+  }
+}
+
+function uploadMeta(args: UploadArgs): string {
+  return JSON.stringify({
+    name: args.name,
+    parents: [args.parentId],
+    ...(args.fileId ? { id: args.fileId } : {}),
+    ...(args.appProperties ? { appProperties: args.appProperties } : {}),
+  })
 }
 
 async function uploadMultipart(token: string, args: UploadArgs): Promise<string> {
   const boundary = `tb-${crypto.randomUUID()}`
-  const meta = JSON.stringify({ name: args.name, parents: [args.parentId] })
+  const meta = uploadMeta(args)
   // multipart/related: metadata part, then the media part. Let the Blob carry
   // the Content-Type so fetch emits the matching boundary automatically.
   const body = new Blob(
@@ -134,7 +180,7 @@ async function uploadResumable(token: string, args: UploadArgs): Promise<string>
     await fetch(`${UPLOAD}/files?uploadType=resumable&fields=id`, {
       method: 'POST',
       headers: { ...bearer(token), 'Content-Type': 'application/json; charset=UTF-8' },
-      body: JSON.stringify({ name: args.name, parents: [args.parentId] }),
+      body: uploadMeta(args),
     }),
   )
   const sessionUrl = init.headers.get('location')
