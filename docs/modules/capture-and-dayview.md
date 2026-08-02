@@ -309,7 +309,10 @@ The card computes its own `EntryLifecycle` from `sync` + `hasPendingEnrichment(e
   pushed to the far right. The time label has no underline decoration; it is still the
   tap target for the native picker (below), and the Edit sheet provides the second,
   labelled path to the same field. The place label renders only when
-  `vm.collapsedShowsLocation` is true.
+  `vm.collapsedShowsLocation` is true. Both are metadata, not content (#85): the time
+  button and place label are explicitly `type_.sub` (sans, tabular-nums on the time) —
+  the row no longer wraps in `type_.body`, which previously leaked serif onto the time
+  via inheritance.
 - **Time editing (B8):** the time label is a button layered over an invisible
   `<input type="time">`; tapping calls `showPicker()` (fallback `focus()`) so iOS shows
   its native wheel picker. `onChange` fires `onSetTime` only for non-empty values.
@@ -322,7 +325,9 @@ The card computes its own `EntryLifecycle` from `sync` + `hasPendingEnrichment(e
   (private) loads the text via `getBlob` (same stale-guarded pattern as
   `AttachmentBody`'s `NoteText`) and renders it `line-clamp-2`, styled `bodyStrong` in
   `textPrimary` (transcript) or `textSecondary` (note); tapping it expands the card
-  rather than opening the inline editor — editing lives behind expansion. Audio-only
+  rather than opening the inline editor — editing lives behind expansion. `bodyStrong`
+  is `leading-snug` (not `leading-normal`, #85) so the two-line clamp reads as a
+  compact fragment of speech, not a headline. Audio-only
   entries show no separate content block; the header play button already represents the
   primary clip.
 - **Expanded content:** the full `AttachmentBody` (all attachments, inline editing) plus
@@ -893,7 +898,10 @@ attachments, location, or playback — those belong to captures.
 
 - The card content is a full-width button (calendar glyph, time range, title, note)
   that opens the edit sheet via `onEdit`; the action row has ghost Hide
-  (`EyeOffIcon`) and Edit (`SlidersIcon`) buttons.
+  (`EyeOffIcon`) and Edit (`SlidersIcon`) buttons. Time range is metadata (`type_.caption`,
+  sans, tabular-nums); title and note are content the user typed and both render serif
+  (`type_.body` / `type_.bodySmall`, #85) — the note used to be sans (`type_.sub`), which
+  misclassified a free-text annotation as chrome.
 - **Badges (informational, never blocking):** "May be outdated" (danger wash) only
   when `dirty === 'conflict'` — the base moved under an edited field; auto-merged
   and clean states show no badge. "Deleted upstream" (muted, bordered) when

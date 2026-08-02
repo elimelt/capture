@@ -1,6 +1,12 @@
 /**
  * Editorial markdown for assistant replies: serif body via design tokens,
  * quiet chrome for code/quotes/tables. GFM for lists and tables.
+ *
+ * Typography exception (#85): the inline/block `code` sizes below are raw
+ * `font-mono text-[…]` classes, not `type_` tokens. Code is a third register
+ * (literal, monospaced) outside the serif-content/sans-chrome split the
+ * `type_` scale encodes, and there is no third scale to add it to without
+ * over-fitting one call site — left as documented, deliberate raw classes.
  */
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'

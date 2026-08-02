@@ -464,6 +464,10 @@ targets just this file.
   `assistant/`, so tests on both sides enforce the pairing.
 - **Revoked entries** are always filtered out by both `list_entries` and
   `search_entries`.
+- **Typography exception (#85)**: `Markdown.tsx`'s inline/block `code` styling uses raw
+  `font-mono text-[…]` classes rather than a `type_` token — code is a third,
+  monospaced register outside the serif-content/sans-chrome split the type scale
+  encodes, documented in-file as a deliberate exception rather than tokenized.
 - **Truncation semantics differ**: `list_entries` keeps the *newest* 300 in range;
   `search_entries` keeps the *first* 50 matches in store order (while reporting the true
   total). Both say so in the returned text.

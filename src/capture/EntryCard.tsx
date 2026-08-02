@@ -107,9 +107,10 @@ export function EntryCard({
       {/* Header: time + place grouped left; sync/duration/play pushed right.
           This is the collapsed card's "time" and "context". */}
       <div className="flex items-center gap-2">
-        <div className={cx('flex min-w-0 flex-1 items-baseline gap-2', type_.body)}>
+        <div className="flex min-w-0 flex-1 items-baseline gap-2">
           {/* Tapping the time opens the native iOS wheel picker (B8); the
-              Edit sheet is the second, discoverable path to the same field. */}
+              Edit sheet is the second, discoverable path to the same field.
+              Time is metadata, not content (#85) — sans, tabular-nums. */}
           <span className="relative shrink-0">
             <button
               onClick={() => {
@@ -118,7 +119,12 @@ export function EntryCard({
                 if (typeof el.showPicker === 'function') el.showPicker()
                 else el.focus()
               }}
-              className={cx('rounded-md font-semibold tabular-nums', tone.textPrimary, tone.pressWash)}
+              className={cx(
+                'rounded-md font-semibold tabular-nums',
+                type_.sub,
+                tone.textPrimary,
+                tone.pressWash,
+              )}
             >
               {timeLabel(entry.capturedAt)}
             </button>

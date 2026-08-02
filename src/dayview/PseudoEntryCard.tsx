@@ -76,8 +76,11 @@ export function PseudoEntryCard({ entry, onEdit, onHide, onRemove }: PseudoEntry
           )}
         </div>
         <p className={cx('mt-1 truncate', type_.body, tone.textPrimary)}>{entry.title}</p>
+        {/* The note is a free-text annotation the user typed on this event —
+            content, not chrome (#85) — so it reads serif like an entry note,
+            just one step quieter (textSecondary) than the title. */}
         {entry.note !== undefined && entry.note !== '' && (
-          <p className={cx('mt-0.5', type_.sub, tone.textSecondary)}>{entry.note}</p>
+          <p className={cx('mt-0.5', type_.bodySmall, tone.textSecondary)}>{entry.note}</p>
         )}
       </button>
 
