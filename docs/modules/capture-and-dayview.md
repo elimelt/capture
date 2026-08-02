@@ -47,6 +47,14 @@ type="file" accept="image/*" capture="environment">`, either an `EmptyState` or
 
 **Key behaviors:**
 
+- **Contextual idle prompt (#76):** computes `PromptContext` from local state
+  each render — `now` (`new Date()`), `todayCount` (`todayEntries.length`),
+  and `minutesSinceLastCapture` (gap since `todayEntries[0]`, the newest
+  entry, or `undefined` on an empty day) — and calls the pure `capturePrompt`
+  (`prompt.ts`) to get the idle-state prompt line passed to `RecordPanel`.
+  `todayEntries.length` is also passed through as `todayCount` for the panel's
+  compact day-summary line. No new store state; this is a plain per-render
+  derivation from the same `entries` array the today filter already uses.
 - **Record tap flow** (`handleRecordTap`): when idle, notes the tap time
   (`tapStartRef`), kicks off `snapshotLocation(...)` into `locationRef` (a
   `Promise<GeoLocation | undefined>` resolving concurrently with recording), and calls
@@ -88,7 +96,10 @@ type="file" accept="image/*" capture="environment">`, either an `EmptyState` or
 `Recorder` (from `useRecorder`).
 
 **Export:** `RecordPanel({ recorder, maxClipSec, onTap, onDiscard,
-onCamera, onText }: RecordPanelProps)`.
+onCamera, onText, prompt, todayCount }: RecordPanelProps)` — a pure
+presentational component; `prompt` and `todayCount` are computed by
+`CaptureScreen` (`prompt` via `capturePrompt`, `todayCount` from the same
+today-filtered `entries` array), never inside this component.
 
 **Behavior by recorder state:**
 
@@ -98,14 +109,50 @@ onCamera, onText }: RecordPanelProps)`.
   entry" (`onText`), so capture never dead-ends.
 - `recording`: focused panel with `LevelMeter` (fed `recorder.getLevel`), an m:ss timer,
   an "Ns left" countdown once `maxClipSec - elapsedSec <= 10`, and Discard / Done
-  buttons (`onDiscard` / `onTap`).
-- idle: the large mic button (`onTap`) flanked by camera and text-cursor `SatelliteButton`s
-  (`onCamera` / `onText`). No visible labels — all three capture buttons are icon-only
-  for visual consistency (aria-labels for accessibility).
+  buttons (`onDiscard` / `onTap`). Unchanged by #76.
+- idle (#76 hierarchy pass): the large mic button (`onTap`) is the sole dominant
+  affordance, top-centered; directly below it, the contextual `prompt` line
+  (`type_.sub`/`tone.textSecondary` — chrome, not content) and, once
+  `todayCount > 0`, a compact "N moments today" line (`type_.caption`/
+  `tone.textFaint`) reclaim the space a static layout used to leave empty.
+  Camera and text render as smaller (44px, `tap`-sized), visually subordinate
+  `SatelliteButton`s offset below the mic (`tone.surface`/`tone.textMuted`,
+  a plain hairline border) — still plain, individually tappable `<button>`s
+  with unchanged `aria-label`s and `onCamera`/`onText` wiring. No visible
+  labels beyond the aria-labels, for visual consistency with the mic.
 
 Private helpers: `SatelliteButton`, `clock()`. The mic/camera/text-cursor glyphs come from
 the shared `captureIcon` mapping in `src/ui` (icons.tsx), which entry cards reuse so
 their action buttons match the main CTA.
+
+### src/capture/prompt.ts
+
+**Purpose:** Pure, deterministic contextual prompt for the idle `RecordPanel`
+(#76) — no I/O, no `Date.now()`/`Math.random()` inside the module, tested
+directly in `prompt.test.ts` (no jsdom).
+
+**Exports:**
+
+- `interface PromptContext { now: Date; todayCount: number;
+  minutesSinceLastCapture?: number }` — callers assemble this once per
+  render (`CaptureScreen`) so the same context always yields the same
+  prompt.
+- `capturePrompt(ctx: PromptContext): string` — bucket priority: a capture
+  under 15 minutes ago wins ("Anything else?"); a gap of 180+ minutes since
+  the last capture nudges "Capture what just happened"; absent either
+  signal, an empty day (`todayCount === 0`) gets a time-of-day opener
+  (morning/afternoon/evening/night, e.g. "What should you remember?" in the
+  morning) distinct from the generic prompt a day already in progress gets.
+  Every bucket returns a non-empty string and the function never throws.
+
+### src/capture/prompt.test.ts
+
+Vitest unit tests for `capturePrompt`: stability for a fixed context (`toBe`
+across repeated calls), distinctness of the empty-morning / recent-capture /
+long-gap buckets, exact behavior at the 15- and 180-minute boundaries, and a
+fuzz sweep over all 24 hours × counts `0/1/50` × gaps
+`undefined/0/600` asserting the result is always a non-empty string and the
+function never throws.
 
 ### src/capture/LevelMeter.tsx
 

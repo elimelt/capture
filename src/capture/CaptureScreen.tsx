@@ -10,6 +10,7 @@ import { needsPlacePrompt, snapshotLocation } from './geo'
 import { usePendingDelete } from './usePendingDelete'
 import { EntryList } from './EntryList'
 import { RecordPanel } from './RecordPanel'
+import { capturePrompt } from './prompt'
 import { TextSheet } from './TextSheet'
 import { NamePlaceSheet } from './NamePlaceSheet'
 
@@ -176,6 +177,15 @@ export default function CaptureScreen() {
     .filter((e) => !e.revoked && e.id !== del.pendingId && localDateOf(e.capturedAt) === today)
     .sort((a, b) => b.capturedAt.localeCompare(a.capturedAt))
 
+  // Contextual idle prompt (#76): pure function of hour, today's count, and
+  // the gap since the most recent capture (todayEntries is newest-first).
+  const now = new Date()
+  const lastCapturedAt = todayEntries[0]?.capturedAt
+  const minutesSinceLastCapture = lastCapturedAt
+    ? Math.max(0, Math.round((now.getTime() - new Date(lastCapturedAt).getTime()) / 60000))
+    : undefined
+  const prompt = capturePrompt({ now, todayCount: todayEntries.length, minutesSinceLastCapture })
+
   // C14: before the very first entry, in-browser visitors get nudged toward
   // the installed experience (standalone is where capture is one tap away).
   const firstLaunch = entries.length === 0
@@ -197,6 +207,8 @@ export default function CaptureScreen() {
         onDiscard={handleDiscard}
         onCamera={() => photoInputRef.current?.click()}
         onText={() => setTextOpen(true)}
+        prompt={prompt}
+        todayCount={todayEntries.length}
       />
 
       <input
