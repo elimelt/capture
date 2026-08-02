@@ -104,6 +104,14 @@ export const motion = {
   sheetIn: 'animate-sheet-in',
   /** Toasts. */
   toastIn: 'animate-toast-in',
+  /**
+   * The one continuous (non-entrance) animation: the sweeping fill of an
+   * indeterminate `ProgressBar` (a phase with no known total, e.g. a sync
+   * pull). Like every other `motion` token, `prefers-reduced-motion: reduce`
+   * (src/index.css) collapses its duration to ~0 — the bar goes static
+   * instead of moving, rather than being hidden.
+   */
+  indeterminate: 'animate-sync-sweep',
 } as const
 
 /**
