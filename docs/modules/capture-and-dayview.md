@@ -99,7 +99,9 @@ onCamera, onText }: RecordPanelProps)`.
   (`onCamera` / `onText`). No visible labels — all three capture buttons are icon-only
   for visual consistency (aria-labels for accessibility).
 
-Private helpers: `SatelliteButton`, `CameraIcon`, `PencilIcon`, `MicIcon`, `clock()`.
+Private helpers: `SatelliteButton`, `clock()`. The mic/camera/pencil glyphs come from
+the shared `captureIcon` mapping in `src/ui` (icons.tsx), which entry cards reuse so
+their action buttons match the main CTA.
 
 ### src/capture/LevelMeter.tsx
 
@@ -172,6 +174,10 @@ actions open.
   `durationSec`s for the primary clip; `SyncBadge` reflects `syncStatus`.
 - Hidden photo input (camera capture) and a `TextSheet` for "+ note" mirror the
   capture-screen patterns.
+- **Action-row icons:** the note/photo/audio buttons render the same glyphs as the main
+  CTA — pencil/camera/mic via `captureIcon` from `src/ui` — so an entry's add actions
+  share the capture control's visual language; location uses `PinIcon`/`PlusIcon` and
+  delete uses `TrashIcon` from the same shared set.
 
 ### src/capture/AttachmentBody.tsx
 

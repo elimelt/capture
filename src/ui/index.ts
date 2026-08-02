@@ -11,3 +11,14 @@ export { Sheet, useKeyboardInset } from './Sheet'
 export { Toast } from './Toast'
 export { FieldRow, Select, TextArea, TextInput, Toggle } from './fields'
 export { ScreenHeader } from './ScreenHeader'
+export {
+  CameraIcon,
+  MicIcon,
+  PencilIcon,
+  PinIcon,
+  PlusIcon,
+  TrashIcon,
+  captureIcon,
+  type CaptureKind,
+  type IconProps,
+} from './icons'

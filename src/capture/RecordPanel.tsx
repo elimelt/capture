@@ -1,7 +1,13 @@
 import type { ReactNode } from 'react'
-import { Button, cx, motion, tone, type_ } from '../ui'
+import { Button, captureIcon, cx, motion, tone, type_ } from '../ui'
 import type { Recorder } from './useRecorder'
 import { LevelMeter } from './LevelMeter'
+
+// The main CTA's icons come from the shared capture-modality mapping so
+// entry action rows (EntryCard) render the exact same glyphs.
+const MicIcon = captureIcon('audio')
+const CameraIcon = captureIcon('photo')
+const PencilIcon = captureIcon('text')
 
 function clock(sec: number): string {
   return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`
@@ -106,7 +112,7 @@ export function RecordPanel({
           aria-label="Start recording"
           className="flex h-28 w-28 items-center justify-center rounded-full bg-spruce text-white shadow-lg shadow-spruce/30 transition-transform active:scale-95 active:bg-spruce-deep dark:bg-spruce-dark dark:shadow-spruce-dark/20 dark:active:bg-spruce-deep-dark"
         >
-          <MicIcon />
+          <MicIcon size={36} />
         </button>
         <SatelliteButton label="Type an entry" onClick={onText}>
           <PencilIcon />
@@ -142,47 +148,5 @@ function SatelliteButton({
     >
       {children}
     </button>
-  )
-}
-
-function CameraIcon() {
-  return (
-    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path
-        d="M4 8.5A1.5 1.5 0 0 1 5.5 7h2.1l1.15-1.73a1.5 1.5 0 0 1 1.25-.67h4a1.5 1.5 0 0 1 1.25.67L16.4 7h2.1A1.5 1.5 0 0 1 20 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5v-9Z"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinejoin="round"
-      />
-      <circle cx="12" cy="13" r="3.2" stroke="currentColor" strokeWidth="1.8" />
-    </svg>
-  )
-}
-
-function PencilIcon() {
-  return (
-    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path
-        d="M14.5 5.7l3.8 3.8L8.6 19.2 4.5 20l.8-4.1 9.2-10.2Z"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinejoin="round"
-      />
-      <path d="M12.8 7.6l3.6 3.6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-    </svg>
-  )
-}
-
-function MicIcon() {
-  return (
-    <svg width="36" height="36" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <rect x="9" y="3" width="6" height="11" rx="3" fill="currentColor" />
-      <path
-        d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
-    </svg>
   )
 }
