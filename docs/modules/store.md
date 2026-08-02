@@ -61,7 +61,9 @@ Key exports:
   row; rows from older versions may still carry it). `fileIds` maps contract filenames
   to pre-generated Drive file ids,
   persisted by the drainer before each first upload attempt so retries reuse the same
-  id (SPEC §8.4); absent on rows written by older versions (no migration needed —
+  id (SPEC §8.4); a `.ndjson` key is a segment assignment (SPEC §5.7) — the same
+  segment filename+id pair persisted on every member row, pinning the batch across
+  crashed drains; absent on rows written by older versions (no migration needed —
   the drainer falls back to find-before-upload for those).
 - `interface Place { id; name; lat; lng; radiusM; address? }`.
 - `interface GeocacheRow { key; address; cachedAt }` — reverse-geocode cache row keyed by
