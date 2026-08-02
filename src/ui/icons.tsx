@@ -2,7 +2,7 @@
  * Shared icon set (C15): every capture glyph is drawn once here so the main
  * CTA (RecordPanel) and the entry cards speak the same visual language.
  * `captureIcon` is the single mapping from capture modality → icon
- * (audio → mic, photo → camera, text → pencil); anything that offers a
+ * (audio → mic, photo → camera, text → text cursor); anything that offers a
  * capture action should render icons through it rather than drawing its own.
  */
 import type { ReactElement } from 'react'
@@ -42,17 +42,16 @@ export function CameraIcon({ size = 24 }: IconProps) {
   )
 }
 
-/** Text capture (notes, typed entries). */
-export function PencilIcon({ size = 24 }: IconProps) {
+/** Text capture (notes, typed entries) — a classic I-beam text cursor. */
+export function TextCursorIcon({ size = 24 }: IconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
       <path
-        d="M14.5 5.7l3.8 3.8L8.6 19.2 4.5 20l.8-4.1 9.2-10.2Z"
+        d="M12 6.5v11M8.5 3.5c2 0 3.5 1 3.5 3 0-2 1.5-3 3.5-3M8.5 20.5c2 0 3.5-1 3.5-3 0 2 1.5 3 3.5 3"
         stroke="currentColor"
         strokeWidth="1.8"
-        strokeLinejoin="round"
+        strokeLinecap="round"
       />
-      <path d="M12.8 7.6l3.6 3.6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
     </svg>
   )
 }
@@ -98,7 +97,7 @@ export function TrashIcon({ size = 14 }: IconProps) {
 
 /**
  * Small sliders for "edit/adjust" affordances (e.g. the entry Edit sheet).
- * Distinct from PencilIcon, which means *text* capture via `captureIcon`.
+ * Distinct from TextCursorIcon, which means *text* capture via `captureIcon`.
  */
 export function SlidersIcon({ size = 14 }: IconProps) {
   return (
@@ -129,6 +128,6 @@ export function captureIcon(kind: CaptureKind): (props: IconProps) => ReactEleme
     case 'photo':
       return CameraIcon
     case 'text':
-      return PencilIcon
+      return TextCursorIcon
   }
 }

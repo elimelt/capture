@@ -7,7 +7,7 @@ import { LevelMeter } from './LevelMeter'
 // entry action rows (EntryCard) render the exact same glyphs.
 const MicIcon = captureIcon('audio')
 const CameraIcon = captureIcon('photo')
-const PencilIcon = captureIcon('text')
+const TextIcon = captureIcon('text')
 
 function clock(sec: number): string {
   return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`
@@ -115,7 +115,7 @@ export function RecordPanel({
           <MicIcon size={36} />
         </button>
         <SatelliteButton label="Type an entry" onClick={onText}>
-          <PencilIcon />
+          <TextIcon />
         </SatelliteButton>
       </div>
       {/* Location context removed — it's redundant with each entry's location

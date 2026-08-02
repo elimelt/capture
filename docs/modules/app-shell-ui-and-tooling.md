@@ -49,7 +49,7 @@ Build-time constants: `GOOGLE_CLIENT_ID` (a public OAuth browser-client identifi
 
 ### src/ui/index.ts
 
-Barrel for the design system. Re-exports the tokens (`cx`, `layer`, `motion`, `shape`, `tap`, `tone`, `type_`), every primitive: `Button`, `IconButton`, `Card`, `EmptyState`, `Section`, `ErrorBoundary`, `OverlayPortal`, `Sheet`, `useKeyboardInset`, `Toast`, `FieldRow`, `Select`, `TextArea`, `TextInput`, `Toggle`, the numeric-draft helpers (`parseNumericDraft`, `canCommitNumericDraft`, `commitNumericDraft`), `ScreenHeader`, and the shared icon set (`MicIcon`, `CameraIcon`, `PencilIcon`, `PlusIcon`, `PinIcon`, `TrashIcon`, `captureIcon`, types `CaptureKind`/`IconProps`). Screens import from here — never from token/palette classes directly (C15).
+Barrel for the design system. Re-exports the tokens (`cx`, `layer`, `motion`, `shape`, `tap`, `tone`, `type_`), every primitive: `Button`, `IconButton`, `Card`, `EmptyState`, `Section`, `ErrorBoundary`, `OverlayPortal`, `Sheet`, `useKeyboardInset`, `Toast`, `FieldRow`, `Select`, `TextArea`, `TextInput`, `Toggle`, the numeric-draft helpers (`parseNumericDraft`, `canCommitNumericDraft`, `commitNumericDraft`), `ScreenHeader`, and the shared icon set (`MicIcon`, `CameraIcon`, `TextCursorIcon`, `PlusIcon`, `PinIcon`, `TrashIcon`, `captureIcon`, types `CaptureKind`/`IconProps`). Screens import from here — never from token/palette classes directly (C15).
 
 ### src/ui/tokens.ts
 
@@ -115,7 +115,7 @@ allowed as draft but not committable, partial input, out-of-range clamping, roun
 
 ### src/ui/icons.tsx
 
-Shared SVG icon set — every capture glyph is drawn once here so screens stay visually consistent. Each icon takes an optional `size` prop (px). `captureIcon(kind: CaptureKind)` is the single capture-modality → icon mapping (`audio` → `MicIcon`, `photo` → `CameraIcon`, `text` → `PencilIcon`), used by both the main capture CTA (`RecordPanel`) and the entry-card action row; `PlusIcon`, `PinIcon`, `SlidersIcon`, and `TrashIcon` cover add/location/edit/delete affordances (sliders — not the pencil, which means *text capture* — marks the entry Edit sheet). The mapping is unit-tested in `icons.test.ts`.
+Shared SVG icon set — every capture glyph is drawn once here so screens stay visually consistent. Each icon takes an optional `size` prop (px). `captureIcon(kind: CaptureKind)` is the single capture-modality → icon mapping (`audio` → `MicIcon`, `photo` → `CameraIcon`, `text` → `TextCursorIcon`), used by both the main capture CTA (`RecordPanel`) and the entry-card action row; `PlusIcon`, `PinIcon`, `SlidersIcon`, and `TrashIcon` cover add/location/edit/delete affordances (sliders — not the text cursor, which means *text capture* — marks the entry Edit sheet). The mapping is unit-tested in `icons.test.ts`.
 
 ### src/settings/SettingsScreen.tsx
 

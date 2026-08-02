@@ -15,10 +15,10 @@ export { ScreenHeader } from './ScreenHeader'
 export {
   CameraIcon,
   MicIcon,
-  PencilIcon,
   PinIcon,
   PlusIcon,
   SlidersIcon,
+  TextCursorIcon,
   TrashIcon,
   captureIcon,
   type CaptureKind,
