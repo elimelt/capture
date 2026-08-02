@@ -137,7 +137,7 @@ Module docs:
 
 Boot is a three-stage handoff (HTML splash → service-worker registration and
 persistent-storage request in `main.tsx` → store `init()` in `App.tsx`) so first
-paint is real content. The Capture, Day view, Context, Chat, and Settings screens hang off one
+paint is real content. The Capture, Day view, Chat, and Settings screens hang off one
 flat route table and a bottom tab bar; drill-downs are modal sheets, not routes.
 The Day view overlays read-only Google Calendar events from a user-chosen target
 calendar via `src/gcal` (single Google token, `calendar.readonly` scope; the app

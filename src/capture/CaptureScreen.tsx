@@ -1,6 +1,6 @@
 /** Screen 1 — Capture (SPEC §4.1). Tap to record, tap to stop; never dead-ends. */
 import { useEffect, useRef, useState } from 'react'
-import type { CaptureEvent, GeoLocation } from '../contract/types'
+import type { CaptureEvent, Entry, GeoLocation } from '../contract/types'
 import { localDateOf, toLocalIso } from '../contract/time'
 import { reverseGeocode } from '../places/geocode'
 import { useAppStore } from '../store/appStore'
@@ -14,6 +14,9 @@ import { RecordPanel } from './RecordPanel'
 import { capturePrompt } from './prompt'
 import { TextSheet } from './TextSheet'
 import { NamePlaceSheet } from './NamePlaceSheet'
+import { getBlob } from '../store/events'
+import { copyPlainText } from '../context/clipboard'
+import { formatEntryPlainText } from '../context/plainText'
 
 type ToastState = { kind: 'captured'; entryId: string } | { kind: 'discarded' }
 
@@ -43,6 +46,7 @@ export default function CaptureScreen() {
   const del = usePendingDelete(revoke)
   const [textOpen, setTextOpen] = useState(false)
   const [toast, setToast] = useState<ToastState | null>(null)
+  const [copyFeedback, setCopyFeedback] = useState<'copied' | 'error' | null>(null)
   const [pendingPlace, setPendingPlace] = useState<PendingPlace | null>(null)
   // Best-effort "near …" hint for the naming sheet (#59): capture-time
   // snapshots never carry `address` (geocoding happens lazily), so this is
@@ -62,6 +66,21 @@ export default function CaptureScreen() {
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
   useEffect(() => () => clearTimeout(toastTimerRef.current), [])
+
+  useEffect(() => {
+    if (!copyFeedback) return
+    const timer = setTimeout(() => setCopyFeedback(null), 3500)
+    return () => clearTimeout(timer)
+  }, [copyFeedback])
+
+  async function copyEntry(entry: Entry) {
+    try {
+      await copyPlainText(await formatEntryPlainText(entry, getBlob))
+      setCopyFeedback('copied')
+    } catch {
+      setCopyFeedback('error')
+    }
+  }
 
   function showToast(next: ToastState) {
     clearTimeout(toastTimerRef.current)
@@ -324,7 +343,7 @@ export default function CaptureScreen() {
           )}
         </EmptyState>
       ) : (
-        <EntryList entries={todayEntries} onDelete={handleDelete} />
+        <EntryList entries={todayEntries} onDelete={handleDelete} onCopy={(entry) => void copyEntry(entry)} />
       )}
 
       {textOpen && (
@@ -375,6 +394,8 @@ export default function CaptureScreen() {
         </Toast>
       )}
       {toast?.kind === 'discarded' && <Toast>Recording discarded</Toast>}
+      {copyFeedback === 'copied' && <Toast>Entry copied</Toast>}
+      {copyFeedback === 'error' && <Toast>Couldn’t copy entry</Toast>}
     </div>
   )
 }

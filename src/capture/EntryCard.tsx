@@ -7,6 +7,7 @@ import type { SyncStatusRow } from '../store/db'
 import {
   Card,
   ChevronDownIcon,
+  CopyIcon,
   IconButton,
   PinIcon,
   PlusIcon,
@@ -69,6 +70,8 @@ interface EntryCardProps {
   onSetLocation: (location: GeoLocation | null) => void
   /** One combined edit (date/time + attachment removals) as a single amend. */
   onApplyEdit: (patch: AmendPatch) => void
+  /** Request a plain-text representation of this entry from the parent. */
+  onCopy?: (entry: Entry) => void
 }
 
 export function EntryCard({
@@ -84,6 +87,7 @@ export function EntryCard({
   onRemoveAttachment,
   onSetLocation,
   onApplyEdit,
+  onCopy,
 }: EntryCardProps) {
   // View-local only, never persisted, never an event — the log carries user
   // data, not UI state (#78, revised by #102). `menuOpen` is the single "+"
@@ -127,7 +131,7 @@ export function EntryCard({
 
   return (
     <Card className={motion.riseIn}>
-      {/* Header: time + place grouped left; sync/duration/play pushed right. */}
+      {/* Header: time + place grouped left; sync/duration/audio pushed right. */}
       <div className="flex items-center gap-2">
         <div className="flex min-w-0 flex-1 items-baseline gap-2">
           {/* Tapping the time opens the native iOS wheel picker (B8); the
@@ -176,7 +180,7 @@ export function EntryCard({
             {audio.durationSec}s
           </span>
         )}
-        {/* Signature fingerprint (#86), "beside the play control": rendered
+        {/* Signature fingerprint (#86): rendered
             here whenever the content below isn't *also* showing this same
             clip's fingerprint — i.e. whenever the entry has text content
             (`vm.primaryText`), since a text entry's content area shows text,
@@ -186,23 +190,18 @@ export function EntryCard({
             twice for the same clip, and never absent while the audio is
             visible (#86 req. 5), regardless of the "+" menu's state. */}
         {audio && vm.primaryText && (
-          <Waveform file={audio.file} progress={playback.progress} className="w-14 shrink-0" />
-        )}
-        {audio && (
-          <IconButton
-            variant="accent"
+          <button
+            type="button"
             aria-label={playback.playing ? 'Stop playback' : 'Play recording'}
             onClick={() => void playback.toggle()}
-            className="relative overflow-hidden"
+            className="shrink-0 rounded-md"
           >
-            {/* Progress fill behind the icon (B10). */}
-            {playback.playing && (
-              <span
-                className="absolute inset-y-0 left-0 bg-spruce/20 transition-[width] duration-200 ease-linear dark:bg-spruce-dark/25"
-                style={{ width: `${playback.progress * 100}%` }}
-              />
-            )}
-            <span className="relative">{playback.playing ? '■' : '▶'}</span>
+            <Waveform file={audio.file} progress={playback.progress} className="w-14" />
+          </button>
+        )}
+        {onCopy && (
+          <IconButton aria-label="Copy entry" onClick={() => onCopy(entry)}>
+            <CopyIcon size={16} />
           </IconButton>
         )}
       </div>

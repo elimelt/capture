@@ -12,9 +12,11 @@ interface EntryListProps {
    * without needing un-revoke in the contract.
    */
   onDelete: (entryId: string) => void
+  /** Request a plain-text representation of an entry from the parent. */
+  onCopy?: (entry: Entry) => void
 }
 
-export function EntryList({ entries, onDelete }: EntryListProps) {
+export function EntryList({ entries, onDelete, onCopy }: EntryListProps) {
   const amend = useAppStore((s) => s.amend)
   const streamSettings = useAppStore((s) => s.streamSettings)
   const syncStatuses = useAppStore((s) => s.syncStatuses)
@@ -28,6 +30,7 @@ export function EntryList({ entries, onDelete }: EntryListProps) {
           maxClipSec={streamSettings.maxClipSec}
           sync={syncStatuses.get(entry.id)}
           onDelete={() => onDelete(entry.id)}
+          onCopy={onCopy}
           onSetTime={(time) =>
             void amend({
               targets: [entry.id],

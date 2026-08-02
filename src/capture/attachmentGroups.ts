@@ -19,7 +19,7 @@ export interface AttachmentGroups {
   transcripts: Attachment[]
   /** User-typed notes (text without derivedFrom). */
   notes: Attachment[]
-  /** All audio clips, in order; the first plays from the card header. */
+  /** All audio clips, in order; the first waveform appears in the card header. */
   audio: Attachment[]
   /** Each photo paired with its derived captions, in attachment order. */
   photoGroups: PhotoGroup[]

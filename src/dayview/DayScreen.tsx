@@ -3,11 +3,16 @@
  * entries and calendar pseudo-entries (editable overlays — §3.6), rendered
  * by DayTimeline.
  */
+import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { localDateOf, toLocalIso } from '../contract/time'
+import type { Entry } from '../contract/types'
 import { useAppStore } from '../store/appStore'
 import { usePendingDelete } from '../capture/usePendingDelete'
-import { Button, IconButton, ScreenHeader, Toast, cx, motion } from '../ui'
+import { getBlob } from '../store/events'
+import { copyPlainText } from '../context/clipboard'
+import { formatEntriesPlainText, formatEntryPlainText } from '../context/plainText'
+import { Button, CopyIcon, IconButton, ScreenHeader, Toast, cx, motion } from '../ui'
 import { DaySynthesisCard } from './DaySynthesisCard'
 import { DayTimeline } from './DayTimeline'
 import { useDaySynthesis } from './useDaySynthesis'
@@ -35,6 +40,13 @@ export default function DayScreen() {
   const revoke = useAppStore((s) => s.revoke)
   const appSettings = useAppStore((s) => s.appSettings)
   const del = usePendingDelete(revoke)
+  const [copyFeedback, setCopyFeedback] = useState<'copied' | 'error' | null>(null)
+
+  useEffect(() => {
+    if (!copyFeedback) return
+    const timer = setTimeout(() => setCopyFeedback(null), 3500)
+    return () => clearTimeout(timer)
+  }, [copyFeedback])
 
   const today = localDateOf(toLocalIso(new Date()))
   const date = params.date && /^\d{4}-\d{2}-\d{2}$/.test(params.date) ? params.date : today
@@ -43,6 +55,24 @@ export default function DayScreen() {
   const dayEntries = entries
     .filter((e) => !e.revoked && e.id !== del.pendingId && localDateOf(e.capturedAt) === date)
     .sort((a, b) => a.capturedAt.localeCompare(b.capturedAt))
+
+  async function copyEntry(entry: Entry) {
+    try {
+      await copyPlainText(await formatEntryPlainText(entry, getBlob))
+      setCopyFeedback('copied')
+    } catch {
+      setCopyFeedback('error')
+    }
+  }
+
+  async function copyDay() {
+    try {
+      await copyPlainText(await formatEntriesPlainText(dayEntries, getBlob))
+      setCopyFeedback('copied')
+    } catch {
+      setCopyFeedback('error')
+    }
+  }
 
   const synthesis = useDaySynthesis(
     date,
@@ -78,6 +108,13 @@ export default function DayScreen() {
             >
               ›
             </IconButton>
+            <IconButton
+              aria-label="Copy day"
+              disabled={dayEntries.length === 0}
+              onClick={() => void copyDay()}
+            >
+              <CopyIcon size={16} />
+            </IconButton>
           </div>
         }
       />
@@ -88,6 +125,7 @@ export default function DayScreen() {
         date={date}
         entries={dayEntries}
         onDeleteEntry={del.request}
+        onCopyEntry={(entry) => void copyEntry(entry)}
         emptyTitle={`Nothing logged ${date === today ? 'yet today' : 'this day'}`}
       />
 
@@ -96,6 +134,8 @@ export default function DayScreen() {
           Entry deleted
         </Toast>
       )}
+      {copyFeedback === 'copied' && <Toast>Copied to clipboard</Toast>}
+      {copyFeedback === 'error' && <Toast>Couldn’t copy</Toast>}
     </div>
   )
 }

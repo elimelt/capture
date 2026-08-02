@@ -166,6 +166,16 @@ export function EyeOffIcon({ size = 14 }: IconProps) {
   )
 }
 
+/** Small copy glyph for exporting an entry or day as plain text. */
+export function CopyIcon({ size = 14 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 14 14" fill="none" aria-hidden="true">
+      <rect x="4.5" y="4.5" width="7" height="7" rx="1" stroke="currentColor" strokeWidth="1.3" />
+      <path d="M9.5 4.5V3.2a1 1 0 0 0-1-1h-5a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1h1" stroke="currentColor" strokeWidth="1.3" />
+    </svg>
+  )
+}
+
 /** The three capture modalities offered by the main CTA. */
 export type CaptureKind = 'audio' | 'photo' | 'text'
 

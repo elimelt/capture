@@ -395,10 +395,10 @@ component shows a neutral placeholder (an all-zero `peaks` array fed through the
 code is needed) so a card never blocks on this. On any failure — missing blob, no
 `AudioContext`, or a `decodeAudioData` rejection (iOS `audio/mp4` is expected to work;
 this is a silent best-effort fallback matching `useRecorder`'s `LevelMeter` precedent) —
-the component renders `null`, leaving exactly the plain play control that existed before
+the component renders `null`, leaving the surrounding waveform playback target available
 this feature; it never throws or blocks the card.
 
-**Placement (req. 4/5):** `EntryCard.tsx` mounts it beside the header play control when
+**Placement (req. 4/5):** `EntryCard.tsx` mounts it as the compact header playback target when
 the card's primary-content slot is already showing `vm.primaryText` (a transcribed
 clip), and as the collapsed primary-content slot itself for audio-only entries (no
 `primaryText`) — tapping it expands the card, like `PrimaryTextPreview`. `AttachmentBody`'s
@@ -406,6 +406,10 @@ clip), and as the collapsed primary-content slot itself for audio-only entries (
 everywhere the entry's audio appears, not just the header.
 
 ### src/capture/EntryList.tsx
+
+Entry cards expose an optional `onCopy(entry)` callback. Capture and Day use it
+to copy a labeled plain-text representation from `src/context/plainText.ts`;
+the card action is icon-only but has the accessible label "Copy entry".
 
 **Purpose:** Maps `Entry[]` to `EntryCard`s and translates every card edit into a store
 `amend` call — the single place where card callbacks become contract events.
@@ -553,7 +557,7 @@ render" — every attachment surfaces somewhere in `EntryCard`, and `extraCount`
 - `cardViewModel(entry, groups): CardViewModel` — `primaryText` is the first transcript,
   else the first user note (undefined for an audio-only or photo-only entry), with its
   `authorship()` (`authorship.ts`) precomputed; `primaryAudio` is the first audio
-  attachment (the one that plays from the card header); `collapsedShowsLocation` mirrors
+  attachment (the one whose waveform plays from the card header); `collapsedShowsLocation` mirrors
   the header's place-label/address condition; `photoGroups` is a pass-through of
   `groups.photoGroups` (every photo, paired with its captions, in capture order) — the
   source for the card's always-visible thumbnail grid (`PhotoGrid`).
@@ -849,7 +853,7 @@ in-grid captions compose the exact same tokens/edit flow rather than re-deriving
 what `cardViewModel` calls `primaryText`, but it renders identically to every other
 transcript/note here; there is no separate clamped "primary" preview any more), then
 any still-**streaming** transcripts, notes, extra audio rows (clips beyond the first,
-which plays from the card header), then any orphan captions (photo since removed — the
+the first waveform plays from the card header), then any orphan captions (photo since removed — the
 one caption case still handled here, since it has no photo left to sit beside in
 `PhotoGrid`). Returns `null` if every group is empty (streaming transcripts count — a
 fresh audio-only entry shows its transcript growing).
@@ -1589,8 +1593,8 @@ re-throw, matching the appStore `guard` convention.
 - **Pending delete is screen-local:** `usePendingDelete` hides via `pendingId` filtering
   and appends the revoke on timeout *or unmount*; only one delete can be pending, and
   requesting a new one commits the previous immediately.
-- **First audio attachment is special:** it plays from the card header and supplies the
-  header duration; `AttachmentBody` renders only clips 2..n.
+- **First audio attachment is special:** its waveform plays from the card header and
+  supplies the header duration; `AttachmentBody` renders only clips 2..n.
 - **Card expansion is view state, never contract state (#78):** `EntryCard`'s `expanded`
   flag is local `useState`, never written to the event log and never read back from it —
   the append-only log carries user data, not UI state. Every card starts collapsed.

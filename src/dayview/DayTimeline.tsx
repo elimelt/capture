@@ -44,11 +44,13 @@ interface DayTimelineProps {
   entries: Entry[]
   /** Delete requests bubble up for the screen's undoable-delete flow. */
   onDeleteEntry: (entryId: string) => void
+  /** Copy one real entry as labeled plain text. */
+  onCopyEntry: (entry: Entry) => void
   /** EmptyState title when the merged timeline has nothing at all. */
   emptyTitle: string
 }
 
-export function DayTimeline({ date, entries, onDeleteEntry, emptyTitle }: DayTimelineProps) {
+export function DayTimeline({ date, entries, onDeleteEntry, onCopyEntry, emptyTitle }: DayTimelineProps) {
   const events = useDayEvents(date)
 
   const overlays = useOverlays((s) => s.overlays)
@@ -141,7 +143,12 @@ export function DayTimeline({ date, entries, onDeleteEntry, emptyTitle }: DayTim
                 }}
               />
             ) : (
-              <EntryList key={group.entries[0].id} entries={group.entries} onDelete={onDeleteEntry} />
+              <EntryList
+                key={group.entries[0].id}
+                entries={group.entries}
+                onDelete={onDeleteEntry}
+                onCopy={onCopyEntry}
+              />
             ),
           )}
         </div>
