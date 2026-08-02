@@ -65,6 +65,35 @@ describe('drainSync', () => {
     expect(result).toEqual({ outcome: 'drained', uploaded: 3, pulled: 2 })
   })
 
+  it('stamps lastSyncAt after a clean cycle', async () => {
+    getValidAccessToken.mockResolvedValue('tok')
+    pullStream.mockResolvedValue({ outcome: 'pulled', pulled: 1 })
+    drainStream.mockResolvedValue({ outcome: 'drained', uploaded: 1 })
+    const store = await freshStore()
+    store.setState({ currentStreamId: 'clean-cycle' })
+    expect(store.getState().lastSyncAt).toBeNull()
+    await store.getState().drainSync()
+    expect(store.getState().lastSyncAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+  })
+
+  it('does not stamp lastSyncAt when the cycle errors', async () => {
+    getValidAccessToken.mockResolvedValue('tok')
+    drainStream.mockResolvedValue({ outcome: 'error', uploaded: 0, error: 'Drive full' })
+    const store = await freshStore()
+    store.setState({ currentStreamId: 'errored-cycle' })
+    await store.getState().drainSync()
+    expect(store.getState().lastSyncAt).toBeNull()
+  })
+
+  it('does not stamp lastSyncAt when the pull asks to reconnect', async () => {
+    getValidAccessToken.mockResolvedValue('tok')
+    pullStream.mockResolvedValue({ outcome: 'reconnect', pulled: 0 })
+    const store = await freshStore()
+    store.setState({ currentStreamId: 'reconnect-cycle' })
+    await store.getState().drainSync()
+    expect(store.getState().lastSyncAt).toBeNull()
+  })
+
   it('flips to expired when the drainer asks to reconnect', async () => {
     getValidAccessToken.mockResolvedValue('tok')
     drainStream.mockResolvedValue({ outcome: 'reconnect', uploaded: 0 })
@@ -120,7 +149,7 @@ describe('drainSync', () => {
 })
 
 describe('connectDrive', () => {
-  it('connects, marks connected, and drains', async () => {
+  it('connects and marks connected without contacting Drive for a sync', async () => {
     connect.mockResolvedValue({ accessToken: 'tok', expiresAt: Date.now() + 3600_000 })
     // After connect the token is valid; connectionState reflects that.
     connectionState.mockResolvedValue('connected')
@@ -129,7 +158,9 @@ describe('connectDrive', () => {
     await store.getState().connectDrive()
     expect(connect).toHaveBeenCalledTimes(1)
     expect(store.getState().driveConnection).toBe('connected')
-    expect(drainStream).toHaveBeenCalledWith('tok', 'timelog')
+    // Sync is manual-only: connecting must not pull or drain by itself.
+    expect(pullStream).not.toHaveBeenCalled()
+    expect(drainStream).not.toHaveBeenCalled()
   })
 })
 

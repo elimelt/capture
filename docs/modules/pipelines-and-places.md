@@ -156,7 +156,11 @@ Per-file drain logic (see the pattern section above for the shared failure model
    (`eligible`) or have a `transcribe:skip:<file>` marker in the `meta` store.
 3. Missing blob (audio was never kept locally — `keepAudioLocally` off) → mark skipped
    permanently, no API call. Empty transcript → mark skipped permanently.
-4. Otherwise `appendAmend({ stream, targets: [entryId], attachments: [{ kind: 'text',
+4. After `transcribeAudio` resolves, re-plan against the current log (fresh
+   `listEvents` → `pendingTranscriptions`) and drop the result if the audio no longer
+   needs a transcript — a sync pull may have imported another device's transcript
+   while the API call was in flight (at-most-once transcription globally).
+5. Still pending → `appendAmend({ stream, targets: [entryId], attachments: [{ kind: 'text',
    blob, mimeType: 'text/plain', derivedFrom: audio.file }] })`.
 
 Constants: `MAX_ATTEMPTS_PER_SESSION = 5`, `BACKOFF_BASE_MS = 15_000`.
@@ -182,8 +186,10 @@ HTTP and non-string `text` in the response body.
 Exercises `drainTranscriptions` against fake IndexedDB with a mocked API: the amend
 shape (`targets`, `derivedFrom`, stored blob content), idempotent second drains,
 permanent skip markers for empty transcripts and missing blobs, backoff after failures,
-the offline no-op, and coalescing of overlapping drains onto one promise. Resets the
-module registry per test because the runner keeps module-level state.
+the offline no-op, the two pull-race cases (audio whose transcript arrived via a pulled
+amend is never sent to the API; an in-flight result is dropped when a pull imports a
+remote transcript mid-drain), and coalescing of overlapping drains onto one promise.
+Resets the module registry per test because the runner keeps module-level state.
 
 ### src/vision/plan.ts
 
@@ -235,7 +241,7 @@ file (its canvas/bitmap path is browser-only).
 
 ### src/vision/runner.ts
 
-Background captioning drain; structurally identical to `transcribe/runner.ts`.
+Background captioning drain; structurally near-identical to `transcribe/runner.ts`.
 
 Exports:
 
@@ -247,7 +253,9 @@ Differences from the transcribe runner are limited to: skip-marker prefix
 `caption:skip:<file>`, `pendingCaptions` as the plan, and `captionPhoto(blob)` (no mime
 type argument) as the API. Same constants (5 attempts/session, 15 s backoff base), same
 offline check, same amend shape with `derivedFrom: photo.file`. Also invoked from the
-`src/App.tsx` effect.
+`src/App.tsx` effect. One structural gap: the transcribe runner's post-API re-plan
+(drop the result if a pull imported a transcript mid-flight) has no counterpart here
+yet.
 
 ### src/vision/plan.test.ts
 
@@ -327,6 +335,9 @@ Covers `haversineM` (zero distance, ~111,195 m per degree of latitude, symmetry)
   metadata: `isCaption` requires `derivedFrom` to match `/_photo\d*\./`. This depends on
   the `contract/filenames.ts` suffix scheme (`_photo`, `_note`); changing that scheme
   would silently break caption detection.
+- **The transcribe runner re-plans after the API call** and drops the result if a pull
+  imported another device's transcript mid-flight (at-most-once transcription
+  globally); the vision runner has no such re-check yet.
 - **Runners keep module-level state.** Retry backoff resets on app relaunch; the
   in-flight `draining` promise means concurrent calls share one result — and a call with
   a different `streamId` during an in-flight drain returns the existing drain's promise.

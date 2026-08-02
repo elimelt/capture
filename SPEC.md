@@ -40,7 +40,7 @@ subscription is the compute.
 
 - One-tap capture of the stream's primary kind (audio for timelog); ≤ 2s from app open
   to recording.
-- Fully offline-capable capture with an upload queue that drains when online.
+- Fully offline-capable capture with an upload queue drained on demand ("Sync now").
 - A clean, documented, **stream-generic file contract** in Drive that any LLM assistant
   can process.
 - A provider-agnostic **skill specification** (prompt + procedure) per stream, shipped
@@ -111,11 +111,11 @@ subscription is the compute.
    `MediaRecorder` emits `audio/mp4` (AAC), not webm/opus — never hardcode a mime type,
    use `MediaRecorder.isTypeSupported()` and record the actual type in the entry.
 3. **No background execution.** Recording and uploading happen only while the app is
-   foregrounded. The upload queue drains on app open, on `online` events, and after each
-   capture.
+   foregrounded. The upload queue drains only on an explicit "Sync now" tap in Settings.
 4. **Storage eviction:** Safari can evict script-writable storage after ~7 days of disuse
    (Home-Screen apps are treated more leniently). Call `navigator.storage.persist()`, and
-   treat Drive as the durable store — upload eagerly so unsynced local data is short-lived.
+   treat Drive as the durable store — surface unsynced data in Settings ("Out of sync"
+   plus an entries-waiting count) so the user syncs explicitly.
 5. **Popups are unreliable in standalone mode.** Google OAuth must be initiated from an
    explicit user tap and must tolerate account-chooser UI; test the full auth loop in
    standalone mode specifically (see §8.3).
@@ -662,10 +662,11 @@ user's assistant, authorized separately by the user in that product.
 - GIS token model: `initTokenClient` → `requestAccessToken()`; access tokens last ~1 hour;
   renewal requires a user gesture (no silent programmatic refresh exists in this model).
 - Accommodations:
-  - Uploads are queued in IndexedDB; the queue drains whenever a valid token exists.
-    Capture itself never needs a token.
-  - Token renewal piggybacks on natural gestures (opening the app, tapping "Sync"), with
-    a passive "Reconnect Google" pill when expired — never a blocking modal.
+  - Uploads are queued in IndexedDB; the queue drains on "Sync now" when a valid token
+    exists. Capture itself never needs a token.
+  - Token renewal piggybacks on the explicit Settings gestures (tapping "Sync now" or
+    Connect), with a passive "Reconnect Google" pill when expired — never a blocking
+    modal.
   - Token + expiry mirrored to IndexedDB so a relaunch within the hour reuses it
     (accepted, documented risk — see §9).
 
@@ -683,8 +684,8 @@ user's assistant, authorized separately by the user in that product.
 ### 8.4 Upload engine (stream-agnostic)
 
 1. Event saved → IndexedDB (blobs + event record, keyed by stream) → status `queued`.
-2. Queue drains: on capture, app open/focus, `online` event, manual sync. Sequential
-   uploads into the event's stream/date partition, following the atomic append protocol
+2. Queue drains: on manual "Sync now" only. Sequential uploads into the event's
+   stream/date partition, following the atomic append protocol
    (§5.2): attachments first (resumable upload for anything > 5 MB — rare for audio;
    possible for photos), the event record `.json` last — the record is the commit.
 3. Success → status `uploaded`; local audio blob retained or pruned per Settings.
@@ -694,8 +695,8 @@ user's assistant, authorized separately by the user in that product.
 ### 8.5 Pull engine (Drive → local; bidirectional sync)
 
 The local IndexedDB is a **replica** of the Drive log, not the source of truth. Every
-sync cycle runs **pull, then push** (same triggers as §8.4), so a second device — or a
-reinstalled/wiped one — converges on the full log:
+sync cycle runs **pull, then push** (same trigger as §8.4 — manual "Sync now"), so a
+second device — or a reinstalled/wiped one — converges on the full log:
 
 1. **Discover by filename.** List `log/`'s date-partition folders, then each
    partition's children. Record filenames carry `seq_ts_id` (§5.1), so the missing set
@@ -728,10 +729,10 @@ chat subscription instead of per-call API keys.
 
 | Consequence | Mitigation |
 |---|---|
-| No refresh tokens → ~1h token expiry, gesture required to renew | Queue-based uploads; renewal on natural gestures; passive reconnect pill (§8.2) |
+| No refresh tokens → ~1h token expiry, gesture required to renew | Queue-based uploads; renewal on explicit sync/connect taps; passive reconnect pill (§8.2) |
 | OAuth client ID public in bundle | Normal for public clients; restrict authorized JS origins to the production domain |
 | Tokens readable via XSS | No third-party runtime scripts except GIS; strict CSP (`script-src 'self' https://accounts.google.com`); React escaping only, no `dangerouslySetInnerHTML` |
-| Device holds unsynced entries; Safari may evict storage | `navigator.storage.persist()`; eager upload so local-only data is short-lived; Drive is durable |
+| Device holds unsynced entries; Safari may evict storage | `navigator.storage.persist()`; Settings surfaces "Out of sync" + entries-waiting counts so the user syncs explicitly; Drive is durable |
 | App can't trigger skills or push notifications to them | Scheduled tasks in the chat provider; "Process now" copy-to-clipboard helper (§4.2) |
 | Batch (not live) processing | Accepted by design; Day view interleaves pending entries so today is still legible |
 | Unverified OAuth app (testing mode) | Personal-use posture; manual test-user list; interstitial documented in onboarding |

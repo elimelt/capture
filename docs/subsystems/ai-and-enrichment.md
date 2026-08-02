@@ -71,11 +71,11 @@ machine transcripts exactly as it sees user notes — modulo `derivedFrom`.
 ## Drain triggers, backoff, and skip markers
 
 Runners are drained from a single `src/App.tsx` effect that fires **whenever the folded
-entries change** (initial load, capture, foreground refresh). Both drains run in
-parallel; if either appended amends, the app refreshes the store, which re-runs the
-effect — the second pass finds nothing pending, a natural fixpoint. Foreground
-visibility and the `online` event trigger store refresh / queue drains, so regaining
-network or reopening the PWA indirectly re-drains the pipelines too.
+entries change** (initial load, capture, foreground refresh, sync pull). Both drains run
+in parallel; if either appended amends, the app refreshes the store, which re-runs the
+effect — the second pass finds nothing pending, a natural fixpoint. Returning to the
+foreground triggers a store refresh, so reopening the PWA indirectly re-drains the
+pipelines too (Drive sync itself is manual-only — "Sync now" in Settings).
 
 Failure handling is identical in both runners:
 
@@ -88,6 +88,12 @@ Failure handling is identical in both runners:
   the IndexedDB `meta` store — never retried, across sessions. Empty results are valid
   API outcomes (silent clip, uncaptionable image), not errors.
 - **Coalescing**: re-entrant drain calls share the single in-flight promise.
+
+One cross-device guard is transcription-specific: after the API call resolves, the
+transcribe runner **re-plans against the current log** and drops the result if that
+audio no longer needs a transcript — a sync pull may have imported another device's
+transcript while the call was in flight. This keeps transcription at-most-once
+globally, not just per device.
 
 ## Place matching & reverse geocoding
 

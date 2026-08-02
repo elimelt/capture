@@ -2,6 +2,7 @@ import 'fake-indexeddb/auto'
 import { IDBFactory } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AmendEvent } from '../contract/types'
+import { EVENT_SCHEMA } from '../contract/types'
 
 const { transcribeAudio } = vi.hoisted(() => ({
   transcribeAudio: vi.fn<(blob: Blob, mimeType: string) => Promise<string>>(),
@@ -31,6 +32,28 @@ async function appendAudioCapture(s: Awaited<ReturnType<typeof setup>>) {
 
 function amendsOf(events: readonly { type: string }[]): AmendEvent[] {
   return events.filter((e): e is AmendEvent => e.type === 'amend')
+}
+
+/** A transcript amend as another device would have pushed it to Drive. */
+function remoteTranscriptAmend(targetId: string, audioFile: string): AmendEvent {
+  return {
+    schema: EVENT_SCHEMA,
+    type: 'amend',
+    id: 'remote1',
+    seq: 2,
+    stream: 'timelog',
+    loggedAt: AT,
+    deviceTz: 'America/New_York',
+    targets: [targetId],
+    attachments: [
+      {
+        kind: 'text',
+        file: '000002_remote_note.txt',
+        mimeType: 'text/plain',
+        derivedFrom: audioFile,
+      },
+    ],
+  }
 }
 
 beforeEach(() => {
@@ -118,6 +141,45 @@ describe('drainTranscriptions', () => {
     expect(await s.drainTranscriptions('timelog')).toBe(0)
     expect(transcribeAudio).not.toHaveBeenCalled()
     expect(amendsOf(await s.listEvents('timelog'))).toEqual([])
+  })
+
+  it('does not re-transcribe audio whose transcript arrived via a pulled amend', async () => {
+    const s = await setup()
+    transcribeAudio.mockResolvedValue('hello world')
+    const cap = await appendAudioCapture(s)
+    await s.importEvents(
+      'timelog',
+      [remoteTranscriptAmend(cap.id, cap.attachments[0].file)],
+      new Map<string, Blob>(),
+    )
+
+    expect(await s.drainTranscriptions('timelog')).toBe(0)
+    expect(transcribeAudio).not.toHaveBeenCalled()
+    expect(amendsOf(await s.listEvents('timelog'))).toHaveLength(1)
+  })
+
+  it('drops an in-flight transcript when a pull imports a remote one mid-drain', async () => {
+    const s = await setup()
+    let resolveText!: (text: string) => void
+    transcribeAudio.mockImplementation(
+      () =>
+        new Promise((res) => {
+          resolveText = res
+        }),
+    )
+    const cap = await appendAudioCapture(s)
+
+    const drain = s.drainTranscriptions('timelog')
+    await vi.waitFor(() => expect(transcribeAudio).toHaveBeenCalledTimes(1))
+    await s.importEvents(
+      'timelog',
+      [remoteTranscriptAmend(cap.id, cap.attachments[0].file)],
+      new Map<string, Blob>(),
+    )
+    resolveText('hello world')
+
+    expect(await drain).toBe(0)
+    expect(amendsOf(await s.listEvents('timelog'))).toHaveLength(1)
   })
 
   it('coalesces overlapping drains onto one in-flight promise', async () => {

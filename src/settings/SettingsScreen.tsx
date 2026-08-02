@@ -9,6 +9,7 @@ import { getTargetCalendar, setTargetCalendar } from '../gcal/config'
 import type { CalendarSummary } from '../gcal/events'
 import { reverseGeocode } from '../places/geocode'
 import { useAppStore } from '../store/appStore'
+import { summarizeSyncStatuses } from '../store/events'
 import {
   Button,
   FieldRow,
@@ -302,12 +303,54 @@ function syncResultLabel(result: SyncResult): string | null {
     case 'idle':
       return 'Already up to date'
     case 'retry-later':
-      return 'Sync busy — will retry shortly'
+      return 'A sync is already in progress'
     case 'error':
       return `Sync failed${result.error ? `: ${result.error}` : ''}`
     case 'reconnect':
       return null
   }
+}
+
+/** "Last synced" timestamp, kept short: time only today, date + time otherwise. */
+function lastSyncedLabel(iso: string): string {
+  const at = new Date(iso)
+  const sameDay = at.toDateString() === new Date().toDateString()
+  return at.toLocaleString(
+    [],
+    sameDay
+      ? { hour: 'numeric', minute: '2-digit' }
+      : { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' },
+  )
+}
+
+/**
+ * Local sync-state rollup: pending/error counts from the sync rows plus the
+ * persisted lastSyncAt. "Out of sync" whenever anything is pending, anything
+ * errored, or no clean cycle has ever completed. No network involved.
+ */
+function SyncStatusLine() {
+  const syncStatuses = useAppStore((s) => s.syncStatuses)
+  const lastSyncAt = useAppStore((s) => s.lastSyncAt)
+  const { pending, errors, lastError } = summarizeSyncStatuses(syncStatuses.values())
+  const outOfSync = pending > 0 || errors > 0 || !lastSyncAt
+
+  const parts: string[] = [outOfSync ? 'Out of sync' : 'Up to date']
+  if (pending > 0) parts.push(pending === 1 ? '1 entry waiting' : `${pending} entries waiting`)
+  if (errors > 0) parts.push(errors === 1 ? '1 failed' : `${errors} failed`)
+
+  return (
+    <div className="flex flex-col gap-0.5">
+      <p className={cx(type_.sub, outOfSync ? tone.danger : tone.textMuted)}>
+        {parts.join(' · ')}
+      </p>
+      {lastError && (
+        <p className={cx(type_.caption, tone.danger)}>Last error: {lastError}</p>
+      )}
+      <p className={cx(type_.caption, tone.textFaint)}>
+        {lastSyncAt ? `Last synced ${lastSyncedLabel(lastSyncAt)}` : 'Never synced'}
+      </p>
+    </div>
+  )
 }
 
 /**
@@ -401,12 +444,16 @@ function GoogleSection() {
   const connectDrive = useAppStore((s) => s.connectDrive)
   const disconnectDrive = useAppStore((s) => s.disconnectDrive)
   const drainSync = useAppStore((s) => s.drainSync)
+  const refresh = useAppStore((s) => s.refresh)
   const refreshConnection = useAppStore((s) => s.refreshConnection)
   const [syncNote, setSyncNote] = useState<string | null>(null)
 
+  // Re-read local state on entry so the status line is current; neither call
+  // touches the network (sync itself is manual-only).
   useEffect(() => {
     void refreshConnection()
-  }, [refreshConnection])
+    void refresh()
+  }, [refreshConnection, refresh])
 
   const handleSync = async () => {
     setSyncNote(null)
@@ -420,6 +467,7 @@ function GoogleSection() {
         {CONNECTION_LABEL[connection]}
         {connected && <span className={cx('ml-1', tone.textFaint)}>· Drive file access</span>}
       </p>
+      <SyncStatusLine />
       <div className="flex gap-2">
         {connected ? (
           <>

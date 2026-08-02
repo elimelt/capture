@@ -33,6 +33,7 @@ beforeEach(async () => {
     syncStatuses: new Map(),
     places: [],
     lastError: null,
+    lastSyncAt: null,
     appSettings: { locationEnabled: true, assistantEnabled: false, assistantModel: 'gpt-oss:20b' },
     streamSettings: { maxClipSec: 60, keepAudioLocally: true },
   })

@@ -5,8 +5,10 @@ import {
   appendAmend,
   appendCapture,
   appendRevoke,
+  getLastSyncAt,
   getSyncStatuses,
   listEntries,
+  setLastSyncAt,
   wipeAll,
   type NewAttachment,
 } from './events'
@@ -20,6 +22,7 @@ import {
   type StreamSettings,
 } from './settings'
 import type { SyncStatusRow } from './db'
+import { toLocalIso } from '../contract/time'
 import { connectionState, getValidAccessToken, type DriveConnection } from '../drive/token'
 import { connect, disconnect } from '../drive/auth'
 import { getStoredToken } from '../drive/token'
@@ -49,6 +52,8 @@ interface AppState {
   currentStreamId: string
   entries: Entry[]
   syncStatuses: Map<string, SyncStatusRow>
+  /** When the last full pull+push cycle completed cleanly; null = never synced. */
+  lastSyncAt: string | null
   places: Place[]
   appSettings: AppSettings
   streamSettings: StreamSettings
@@ -66,16 +71,17 @@ interface AppState {
   init: () => Promise<void>
   clearError: () => void
 
-  /** Request a Drive token from a user gesture, then drain (SPEC §8.3). */
+  /** Request a Drive token from a user gesture (SPEC §8.3). Does not sync. */
   connectDrive: () => Promise<void>
   disconnectDrive: () => Promise<void>
   /**
    * One full sync cycle if a valid token exists: pull the remote log first
    * (so pushes append after everything other devices committed), then drain
-   * the upload queue. Safe to call from any trigger (app open, focus, online,
-   * post-capture, manual). Returns the combined outcome so a manual
-   * "Sync now" can report it; a missing/expired token yields 'reconnect' and
-   * a re-entrant call yields 'retry-later'.
+   * the upload queue. Sync is manual-only: the sole caller is the "Sync now"
+   * button in Settings, so Drive is contacted only on an explicit user ask.
+   * Returns the combined outcome so "Sync now" can report it; a
+   * missing/expired token yields 'reconnect' and a re-entrant call yields
+   * 'retry-later'. A clean cycle persists lastSyncAt.
    */
   drainSync: () => Promise<SyncResult>
 
@@ -123,14 +129,16 @@ export const useAppStore = create<AppState>()((set, get) => {
     lastError: null,
     driveConnection: 'disconnected',
     syncing: false,
+    lastSyncAt: null,
 
     refresh: async (streamId) => {
       const stream = streamId ?? get().currentStreamId
-      const [entries, syncStatuses] = await Promise.all([
+      const [entries, syncStatuses, lastSyncAt] = await Promise.all([
         listEntries(stream),
         getSyncStatuses(stream),
+        getLastSyncAt(stream),
       ])
-      set({ currentStreamId: stream, entries, syncStatuses })
+      set({ currentStreamId: stream, entries, syncStatuses, lastSyncAt: lastSyncAt ?? null })
     },
 
     loadPlaces: async () => {
@@ -151,14 +159,14 @@ export const useAppStore = create<AppState>()((set, get) => {
 
     init: async () => {
       try {
+        // Local-only status computation: entries, sync rows, lastSyncAt, and
+        // the stored token's expiry. Sync itself is manual ("Sync now").
         await Promise.all([
           get().refresh(),
           get().loadPlaces(),
           get().loadSettings(),
           get().refreshConnection(),
         ])
-        // A relaunch within the token's hour drains without any gesture (§8.2).
-        void get().drainSync()
       } finally {
         // Even a failed boot must lift the splash so the error is visible.
         set({ ready: true })
@@ -170,7 +178,6 @@ export const useAppStore = create<AppState>()((set, get) => {
     connectDrive: guard('Could not connect Google', async () => {
       await connect()
       set({ driveConnection: await connectionState() })
-      await get().drainSync()
     }),
 
     disconnectDrive: guard('Could not disconnect Google', async () => {
@@ -205,6 +212,10 @@ export const useAppStore = create<AppState>()((set, get) => {
           OUTCOME_RANK[pullOutcome] > OUTCOME_RANK[push.outcome] ? pullOutcome : push.outcome
         const error = push.error ?? pull.error
         if (outcome === 'error' && error) set({ lastError: `Sync failed: ${error}` })
+        // A fully clean cycle (no reconnect/retry/error) marks the log synced.
+        if (outcome === 'idle' || outcome === 'drained') {
+          await setLastSyncAt(get().currentStreamId, toLocalIso(new Date()))
+        }
         await get().refresh()
         return { outcome, uploaded: push.uploaded, pulled: pull.pulled, ...(error ? { error } : {}) }
       } catch (err) {
@@ -224,9 +235,8 @@ export const useAppStore = create<AppState>()((set, get) => {
         attachments: NewAttachment[]
       }) => {
         const event = await appendCapture({ stream: get().currentStreamId, ...input })
+        // No eager upload: the entry stays queued locally until "Sync now".
         await get().refresh()
-        // Eager upload so unsynced local data is short-lived (§2.3, §8.4).
-        void get().drainSync()
         return event
       },
     ),
