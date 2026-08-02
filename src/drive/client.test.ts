@@ -5,6 +5,7 @@ import {
   createFolder,
   findFile,
   readFileText,
+  updateFileContent,
   uploadFile,
 } from './client'
 
@@ -127,5 +128,18 @@ describe('readFileText', () => {
     const text = await readFileText('tok', 'file-9')
     expect(text).toBe('checkpoint-body')
     expect(String(fetchMock.mock.calls[0][0])).toContain('/files/file-9?alt=media')
+  })
+})
+
+describe('updateFileContent', () => {
+  it('PATCHes the media body in place for an existing file id', async () => {
+    const fetchMock = stubFetch(jsonResponse({ id: 'cfg-1' }))
+    await updateFileContent('tok', 'cfg-1', 'application/json', '{"a":2}')
+
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(String(url)).toContain('/files/cfg-1?uploadType=media')
+    expect(init?.method).toBe('PATCH')
+    expect((init!.headers as Record<string, string>)['Content-Type']).toBe('application/json')
+    expect((init!.headers as Record<string, string>).Authorization).toBe('Bearer tok')
   })
 })

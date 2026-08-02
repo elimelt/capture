@@ -61,9 +61,10 @@ describe('connect', () => {
     expect(await store.getStoredToken()).toEqual(token)
   })
 
-  it('requests drive.file scope and reuses a single token client', async () => {
+  it('requests the combined Drive + Calendar scope and reuses a single token client', async () => {
     const gis = stubGis()
     const auth = await load()
+    const { GOOGLE_SCOPES } = await import('../config')
 
     const p1 = auth.connect()
     await vi.waitFor(() => expect(gis.requestAccessToken).toHaveBeenCalledTimes(1))
@@ -76,7 +77,9 @@ describe('connect', () => {
     await p2
 
     expect(gis.initTokenClient).toHaveBeenCalledTimes(1)
-    expect(gis.initTokenClient.mock.calls[0][0].scope).toBe(auth.DRIVE_SCOPE)
+    // One consent grants both drive.file and calendar.readonly (§8.1).
+    expect(gis.initTokenClient.mock.calls[0][0].scope).toBe(GOOGLE_SCOPES.join(' '))
+    expect(gis.initTokenClient.mock.calls[0][0].scope).toContain(auth.DRIVE_SCOPE)
     expect(gis.requestAccessToken).toHaveBeenLastCalledWith({ prompt: 'consent' })
   })
 

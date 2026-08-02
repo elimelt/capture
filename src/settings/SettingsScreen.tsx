@@ -2,6 +2,10 @@
 import { useEffect, useState } from 'react'
 import { modelLabel } from '../assistant/config'
 import type { DrainResult } from '../drive/queue'
+import { getValidAccessToken } from '../drive/token'
+import { CalendarError, listCalendars } from '../gcal/client'
+import { getTargetCalendar, setTargetCalendar } from '../gcal/config'
+import type { CalendarSummary } from '../gcal/events'
 import { reverseGeocode } from '../places/geocode'
 import { useAppStore } from '../store/appStore'
 import {
@@ -9,6 +13,7 @@ import {
   FieldRow,
   ScreenHeader,
   Section,
+  Select,
   TextInput,
   Toggle,
   cx,
@@ -292,6 +297,91 @@ function syncResultLabel(result: DrainResult): string | null {
   }
 }
 
+/**
+ * Target-calendar picker (SPEC §4.3): lists the connected account's calendars
+ * and persists the choice (local + config.json) via gcal/config. Only rendered
+ * when connected. A 401/403 here means the calendar scope isn't granted on the
+ * current token — prompt a reconnect rather than showing an empty list.
+ */
+function CalendarPicker() {
+  const [calendars, setCalendars] = useState<CalendarSummary[] | null>(null)
+  const [selected, setSelected] = useState<string>('')
+  const [status, setStatus] = useState<'loading' | 'ready' | 'auth' | 'error'>('loading')
+  const [saveNote, setSaveNote] = useState<string | null>(null)
+
+  useEffect(() => {
+    let live = true
+    void (async () => {
+      const token = await getValidAccessToken()
+      if (token === undefined) {
+        if (live) setStatus('auth')
+        return
+      }
+      try {
+        const [cals, target] = await Promise.all([listCalendars(token), getTargetCalendar()])
+        if (!live) return
+        setCalendars(cals)
+        setSelected(target?.id ?? cals.find((c) => c.primary)?.id ?? '')
+        setStatus('ready')
+      } catch (err) {
+        if (!live) return
+        setStatus(err instanceof CalendarError && err.isAuth ? 'auth' : 'error')
+      }
+    })()
+    return () => {
+      live = false
+    }
+  }, [])
+
+  const handlePick = async (id: string) => {
+    setSelected(id)
+    setSaveNote(null)
+    const cal = calendars?.find((c) => c.id === id)
+    const token = await getValidAccessToken()
+    if (cal === undefined || token === undefined) {
+      setSaveNote('Reconnect to save your calendar')
+      return
+    }
+    try {
+      await setTargetCalendar(token, { id: cal.id, summary: cal.summary })
+      setSaveNote(`Showing “${cal.summary}” on the day view`)
+    } catch {
+      // Local pick already persisted; only the Drive mirror failed (§5.3).
+      setSaveNote('Saved on this device; will sync to Drive later')
+    }
+  }
+
+  if (status === 'auth')
+    return (
+      <p className={cx(type_.sub, tone.textFaint)}>
+        Reconnect to grant calendar access, then pick a calendar.
+      </p>
+    )
+  if (status === 'error')
+    return <p className={cx(type_.sub, tone.textFaint)}>Couldn’t load your calendars.</p>
+  if (status === 'loading' || calendars === null)
+    return <p className={cx(type_.sub, tone.textFaint)}>Loading calendars…</p>
+
+  return (
+    <div className="flex flex-col gap-2">
+      <FieldRow label="Day-view calendar">
+        <Select value={selected} onChange={(e) => void handlePick(e.target.value)}>
+          <option value="" disabled>
+            Choose a calendar
+          </option>
+          {calendars.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.summary}
+              {c.primary ? ' (primary)' : ''}
+            </option>
+          ))}
+        </Select>
+      </FieldRow>
+      {saveNote && <p className={cx(type_.sub, tone.textFaint)}>{saveNote}</p>}
+    </div>
+  )
+}
+
 function GoogleSection() {
   const connection = useAppStore((s) => s.driveConnection)
   const syncing = useAppStore((s) => s.syncing)
@@ -336,6 +426,7 @@ function GoogleSection() {
       {connected && syncNote && !syncing && (
         <p className={cx(type_.sub, tone.textFaint)}>{syncNote}</p>
       )}
+      {connected && <CalendarPicker />}
     </div>
   )
 }

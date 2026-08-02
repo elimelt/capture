@@ -9,7 +9,7 @@
  * global `google.accounts.oauth2` surface, declared minimally below (no types
  * package). Everything else about auth state lives in token.ts.
  */
-import { GOOGLE_CLIENT_ID } from '../config'
+import { DRIVE_SCOPE, GOOGLE_CLIENT_ID, GOOGLE_SCOPES } from '../config'
 import { clearToken, saveToken, type DriveToken } from './token'
 
 /** Only what we touch of the GIS oauth2 token-client surface. */
@@ -40,8 +40,13 @@ declare global {
   var google: { accounts?: { oauth2?: GisOauth2 } } | undefined
 }
 
-/** drive.file only: the app can see and touch only files it creates (§5.5). */
-export const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file'
+/**
+ * drive.file lets the app see/touch only files it creates (§5.5); re-exported
+ * for callers/tests that key off it. The token client requests the full
+ * GOOGLE_SCOPES set (Drive + read-only Calendar, §8.1) in one consent, so the
+ * single stored token also authorizes Calendar reads (gcal/).
+ */
+export { DRIVE_SCOPE }
 
 /** Resolves once the GIS script (loaded in index.html) is on `window`. */
 function waitForGis(timeoutMs = 10_000): Promise<GisOauth2> {
@@ -67,7 +72,7 @@ async function getClient(): Promise<{ oauth2: GisOauth2; client: TokenClient }> 
   const oauth2 = await waitForGis()
   client ??= oauth2.initTokenClient({
     client_id: GOOGLE_CLIENT_ID,
-    scope: DRIVE_SCOPE,
+    scope: GOOGLE_SCOPES.join(' '),
     // Overridden per-request; a default keeps the client valid before first use.
     callback: () => {},
   })

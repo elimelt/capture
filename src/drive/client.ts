@@ -154,3 +154,24 @@ export async function readFileText(token: string, fileId: string): Promise<strin
   )
   return res.text()
 }
+
+/**
+ * Overwrite an existing file's media in place, leaving its name/parents alone.
+ * Used to update the app-owned config.json (the target-calendar selection —
+ * §5.3); the immutable log/ is never touched this way (§5.5).
+ */
+export async function updateFileContent(
+  token: string,
+  fileId: string,
+  mimeType: string,
+  body: Blob | string,
+): Promise<void> {
+  const blob = typeof body === 'string' ? new Blob([body], { type: mimeType }) : body
+  await ensureOk(
+    await fetch(`${UPLOAD}/files/${fileId}?uploadType=media&fields=id`, {
+      method: 'PATCH',
+      headers: { ...bearer(token), 'Content-Type': mimeType },
+      body: blob,
+    }),
+  )
+}
