@@ -39,6 +39,7 @@ export function fold(events: readonly LogEvent[], opts: FoldOptions = {}): Entry
           deviceTz: e.deviceTz,
           location: e.location,
           attachments: [...e.attachments],
+          attachmentLoggedAt: Object.fromEntries(e.attachments.map((a) => [a.file, e.loggedAt])),
           lastEventSeq: e.seq,
           revoked: false,
         })
@@ -57,7 +58,13 @@ export function fold(events: readonly LogEvent[], opts: FoldOptions = {}): Entry
             const gone = new Set(e.patch.removeAttachments)
             entry.attachments = entry.attachments.filter((a) => !gone.has(a.file))
           }
-          if (e.attachments) entry.attachments.push(...e.attachments)
+          if (e.attachments) {
+            entry.attachments.push(...e.attachments)
+            const attachmentLoggedAt = (entry.attachmentLoggedAt ??= {})
+            for (const attachment of e.attachments) {
+              attachmentLoggedAt[attachment.file] = e.loggedAt
+            }
+          }
           entry.lastEventSeq = e.seq
         }
         break

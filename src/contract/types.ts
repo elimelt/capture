@@ -99,6 +99,8 @@ export interface Entry {
   deviceTz: string
   location?: GeoLocation
   attachments: Attachment[]
+  /** Append timestamp for each currently visible attachment, keyed by file. */
+  attachmentLoggedAt?: Record<string, string>
   /** Highest seq of any event that affected this entry. */
   lastEventSeq: number
   revoked: boolean

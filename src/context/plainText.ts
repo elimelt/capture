@@ -45,6 +45,16 @@ function formatText(text: string): string {
     .join('\n')
 }
 
+function formatTimestamp(timestamp: string): string {
+  const date = timestamp.slice(0, 10)
+  const time = timestamp.slice(11, 19)
+  return `${date} ${time} (${utcOffset(timestamp)})`
+}
+
+function attachmentTimestamp(entry: Entry, attachment: Attachment): string {
+  return entry.attachmentLoggedAt?.[attachment.file] ?? entry.loggedAt
+}
+
 /** Render one folded entry, reading only its text attachments through getBlob. */
 export async function formatEntryPlainText(entry: Entry, getBlob: GetBlob): Promise<string> {
   const audio = entry.attachments.filter((attachment) => attachment.kind === 'audio')
@@ -65,11 +75,28 @@ export async function formatEntryPlainText(entry: Entry, getBlob: GetBlob): Prom
   ]
   if (location) lines.push(`- Location: ${location}`)
 
+  for (const attachment of audio) {
+    lines.push(
+      `  - Recording · ${formatTimestamp(attachmentTimestamp(entry, attachment))}${
+        attachment.durationSec !== undefined ? ` · ${attachment.durationSec}s` : ''
+      }`,
+    )
+  }
+  for (const attachment of photos) {
+    lines.push(`  - Photo · ${formatTimestamp(attachmentTimestamp(entry, attachment))}`)
+  }
+
   const textAttachments = entry.attachments.filter((attachment) => attachment.kind === 'text')
   for (const attachment of textAttachments) {
     const blob = await getBlob(attachment.file)
     const text = await blob?.text()
-    lines.push('', `### ${sourceKind(attachment, entry.attachments)}`, formatText(text ?? '(text unavailable)'))
+    lines.push(
+      '',
+      `### ${sourceKind(attachment, entry.attachments)} · ${formatTimestamp(
+        attachmentTimestamp(entry, attachment),
+      )}`,
+      formatText(text ?? '(text unavailable)'),
+    )
   }
   return lines.join('\n')
 }
