@@ -1,7 +1,7 @@
 /**
  * Client-side chat transport. The PWA has no server, so the AI SDK's
  * DirectChatTransport runs the agent in-process against the
- * OpenAI-compatible endpoint. The agent reads the log through read-only
+ * OpenAI-compatible endpoint. The agent works the log through injected
  * tools; instructions are re-built per message so the current-time header
  * stays fresh.
  */

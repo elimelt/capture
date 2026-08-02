@@ -1,18 +1,50 @@
 /**
- * Read-only tools the agent calls over the local log. Data access is
- * injected — createAssistantTools takes getters — so ChatScreen wires the
- * zustand store while tests inject fixtures; only text-blob reads (getBlob)
- * touch IndexedDB. Tools return plain text in the formatDigest rendering.
+ * Tools the agent calls over the local log: three reads plus two narrow
+ * writes (create_entry / update_entry). Data access is injected —
+ * createAssistantTools takes getters and an EntryWriter — so ChatScreen wires
+ * the zustand store while tests inject fixtures; only text-blob reads
+ * (getBlob) touch IndexedDB. Writes go through the injected store actions
+ * (the single write path), so they append ordinary capture/amend events —
+ * the log stays append-only and the normal sync queue picks them up. Tools
+ * return terse plain text: digests for reads, "Created/Updated entry <id>."
+ * or an "(error: …)" line for writes.
  */
 import { jsonSchema, tool } from 'ai'
-import type { Entry } from '../contract/types'
-import { getBlob } from '../store/events'
+import { toLocalIso, withTimeOfDayIso } from '../contract/time'
+import type { AmendPatch, CaptureEvent, Entry } from '../contract/types'
+import { getBlob, type NewAttachment } from '../store/events'
 import type { Place } from '../store/places'
 import { formatDigest, type DigestItem } from './context'
 
 /** Output caps; the rendered text says so when a result is truncated. */
 export const LIST_ENTRIES_MAX = 300
 export const SEARCH_ENTRIES_MAX = 50
+
+/**
+ * The only writes the assistant can perform. ChatScreen injects the store's
+ * capture/amend actions (the single write path); nothing else — revoke,
+ * settings, sync, wipe — is reachable from a tool call.
+ */
+export interface EntryWriter {
+  capture: (input: { capturedAt: string; attachments: NewAttachment[] }) => Promise<CaptureEvent>
+  amend: (input: {
+    targets: string[]
+    patch?: AmendPatch
+    attachments?: NewAttachment[]
+  }) => Promise<void>
+}
+
+/** 24-hour wall-clock time, "HH:MM". */
+const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/
+
+function noteAttachment(text: string): NewAttachment {
+  return { kind: 'text', blob: new Blob([text], { type: 'text/plain' }), mimeType: 'text/plain' }
+}
+
+/** Terse failure line the model can read; never throws out of a tool. */
+function errorText(prefix: string, err: unknown): string {
+  return `(error: ${prefix}: ${err instanceof Error ? err.message : String(err)})`
+}
 
 /** Digest view of one entry; reads its text attachments from blob storage. */
 export async function toDigestItem(entry: Entry): Promise<DigestItem> {
@@ -25,6 +57,7 @@ export async function toDigestItem(entry: Entry): Promise<DigestItem> {
   }
   return {
     capturedAt: entry.capturedAt,
+    id: entry.id,
     place: entry.location?.placeLabel,
     texts,
     audioCount: entry.attachments.filter((a) => a.kind === 'audio').length,
@@ -40,6 +73,7 @@ function formatSorted(items: readonly DigestItem[]): string {
 export function createAssistantTools(
   getEntries: () => readonly Entry[],
   getPlaces: () => readonly Place[],
+  writer: EntryWriter,
 ) {
   return {
     list_entries: tool({
@@ -106,6 +140,93 @@ export function createAssistantTools(
         return total > matches.length
           ? `${text}\n(truncated: showing the first ${matches.length} of ${total} matches)`
           : text
+      },
+    }),
+
+    create_entry: tool({
+      description:
+        'Create a new log entry with the given note text, captured at the current time. Use only when the user explicitly asks to log something.',
+      inputSchema: jsonSchema<{ text: string }>({
+        type: 'object',
+        properties: { text: { type: 'string', description: 'Note text of the new entry.' } },
+        required: ['text'],
+        additionalProperties: false,
+      }),
+      execute: async ({ text }) => {
+        if (typeof text !== 'string' || text.trim() === '') {
+          return '(error: text must be a non-empty string)'
+        }
+        try {
+          // Same shape the capture screen's "+ note" path appends (one
+          // capture event, one text attachment); location is UI-only.
+          const event = await writer.capture({
+            capturedAt: toLocalIso(new Date()),
+            attachments: [noteAttachment(text.trim())],
+          })
+          return `Created entry ${event.id}.`
+        } catch (err) {
+          return errorText('could not create entry', err)
+        }
+      },
+    }),
+
+    update_entry: tool({
+      description:
+        'Update an existing log entry by id — the "(id …)" suffix in list/search results. Can replace the entry’s note text and/or set its capture time of day (the date is kept). Transcripts of recorded audio are never touched.',
+      inputSchema: jsonSchema<{ id: string; text?: string; time?: string }>({
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'Id of the entry to update.' },
+          text: {
+            type: 'string',
+            description: 'New note text; replaces the entry’s existing note(s).',
+          },
+          time: {
+            type: 'string',
+            description: 'New capture time of day, "HH:MM" (24-hour, user-local).',
+          },
+        },
+        required: ['id'],
+        additionalProperties: false,
+      }),
+      execute: async ({ id, text, time }) => {
+        const entry = getEntries().find((e) => e.id === id)
+        if (!entry) return `(error: no entry with id "${id}")`
+        if (entry.revoked) return `(error: entry "${id}" is deleted)`
+        if (text === undefined && time === undefined) {
+          return '(error: nothing to update — provide text and/or time)'
+        }
+        if (text !== undefined && (typeof text !== 'string' || text.trim() === '')) {
+          return '(error: text must be a non-empty string)'
+        }
+        if (time !== undefined && (typeof time !== 'string' || !TIME_RE.test(time))) {
+          return '(error: time must be "HH:MM", 24-hour)'
+        }
+        // One amend event carrying every change — the same pipeline as the
+        // UI edit path (EntryList): editing text removes the old note files
+        // and appends the new one; the log itself is never mutated.
+        const patch: AmendPatch = {}
+        if (time !== undefined) patch.capturedAt = withTimeOfDayIso(entry.capturedAt, time)
+        let attachments: NewAttachment[] | undefined
+        if (text !== undefined) {
+          // Replace user notes only; machine-derived texts (transcripts,
+          // captions — anything with derivedFrom) stay untouched.
+          const notes = entry.attachments.filter(
+            (a) => a.kind === 'text' && a.derivedFrom === undefined,
+          )
+          if (notes.length > 0) patch.removeAttachments = notes.map((a) => a.file)
+          attachments = [noteAttachment(text.trim())]
+        }
+        try {
+          await writer.amend({
+            targets: [id],
+            ...(Object.keys(patch).length > 0 ? { patch } : {}),
+            ...(attachments ? { attachments } : {}),
+          })
+          return `Updated entry ${id}.`
+        } catch (err) {
+          return errorText('could not update entry', err)
+        }
       },
     }),
   }

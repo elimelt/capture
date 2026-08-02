@@ -1,8 +1,10 @@
 /**
  * Assistant chat (opt-in). Client-only: useChat over a DirectChatTransport
- * against llm.elimelt.com; the agent reads the log through read-only tools.
- * Editorial voice: assistant replies are serif markdown on the page itself;
- * user turns are quiet spruce-washed bubbles.
+ * against llm.elimelt.com; the agent reads the log through tools and can
+ * create/update entries via the store's own capture/amend actions (nothing
+ * else is injected — see EntryWriter in tools.ts). Editorial voice:
+ * assistant replies are serif markdown on the page itself; user turns are
+ * quiet spruce-washed bubbles.
  */
 import { useEffect, useRef, useState } from 'react'
 import { Chat, useChat } from '@ai-sdk/react'
@@ -60,6 +62,12 @@ function getChat(model: string, seed: ChatSeed): Chat<UIMessage> {
         createAssistantTools(
           () => useAppStore.getState().entries,
           () => useAppStore.getState().places,
+          // Only these two store actions are handed to the agent: entry
+          // create + amend. Revoke, settings, sync and wipe stay unreachable.
+          {
+            capture: (input) => useAppStore.getState().capture(input),
+            amend: (input) => useAppStore.getState().amend(input),
+          },
         ),
       ),
     }),
@@ -119,6 +127,10 @@ function toolActivityLabel(part: UIMessage['parts'][number]): string | null {
     return `Searched the log for \u201c${args.query}\u201d`
   }
   if (toolName === 'get_places') return 'Looked up saved places'
+  if (toolName === 'create_entry') return 'Added a log entry'
+  if (toolName === 'update_entry') {
+    return typeof args.id === 'string' ? `Updated entry ${args.id}` : 'Updated an entry'
+  }
   return `Consulted the log (${toolName})`
 }
 
