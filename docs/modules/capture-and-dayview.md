@@ -35,9 +35,10 @@ shadow) rather than a boxed card.
 
 `EntryCard` renders its content **unconditionally** (#102, inverting #78's collapse):
 place-label context, the entry's full primary text (no line clamp) or its primary
-clip's waveform fingerprint, every other note/transcript and extra audio clip
-(`AttachmentBody`), every photo as its own row with the caption beside it (`PhotoGrid`),
-and the compact place card — nothing attachment-shaped is ever hidden. The only things that
+clip's waveform fingerprint, then an attachment sub-timeline ordered by each
+attachment's append timestamp. Audio waveforms and their transcripts share a row,
+photos and their captions share a row, and notes/orphaned descriptions occupy their
+own rows. The compact place card follows — nothing attachment-shaped is ever hidden. The only things that
 collapse are chrome: a single "+" affordance expands into a compact icon-only action
 menu (add note / add photo / add audio / location / edit / delete — each icon still
 carries an `aria-label`), and up to two **related memories** (#83 v1) stay behind their
@@ -405,12 +406,10 @@ this is a silent best-effort fallback matching `useRecorder`'s `LevelMeter` prec
 the component renders `null`, leaving the surrounding waveform playback target available
 this feature; it never throws or blocks the card.
 
-**Placement (req. 4/5):** `EntryCard.tsx` mounts it as the compact header playback target when
-the card's primary-content slot is already showing `vm.primaryText` (a transcribed
-clip), and as the collapsed primary-content slot itself for audio-only entries (no
-`primaryText`) — tapping it expands the card, like `PrimaryTextPreview`. `AttachmentBody`'s
-`AudioRow` mounts one per extra clip (index ≥ 1) so the fingerprint reads as identity
-everywhere the entry's audio appears, not just the header.
+**Placement (req. 4/5):** `AttachmentTimeline.tsx` mounts one waveform row for every
+audio attachment, ordered by attachment timestamp. The waveform is the playback target
+and any transcript derived from that audio sits in the row's right column; no audio
+attachment is promoted into the entry header.
 
 ### src/capture/EntryList.tsx
 
@@ -565,12 +564,12 @@ render" — every attachment surfaces somewhere in `EntryCard`, and `extraCount`
   re-deriving it from a raw `derivedFrom` string. `primaryText`/`primaryAudio` are now
   purely *layout* signals (which text leads; whether the header's compact waveform or
   the full-width audio-only one applies) — they no longer gate visibility, since any
-  additional transcripts/notes/clips render too, via `EntryCard`'s unconditional
-  `AttachmentBody`.
+  additional transcripts/notes/clips render too, via `EntryCard`'s timestamp-ordered
+  `AttachmentTimeline`.
 - `cardViewModel(entry, groups): CardViewModel` — `primaryText` is the first transcript,
   else the first user note (undefined for an audio-only or photo-only entry), with its
-  `authorship()` (`authorship.ts`) precomputed; `primaryAudio` is the first audio
-  attachment (the one whose waveform plays from the card header); `collapsedShowsLocation` mirrors
+  `authorship()` (`authorship.ts`) precomputed; `primaryAudio` remains a related-memory
+  classification hint; `collapsedShowsLocation` mirrors
   the header's place-label/address condition; `photoGroups` is a pass-through of
   `groups.photoGroups` (every photo, paired with its captions, in capture order) — the
   source for the card's always-visible photo rows (`PhotoGrid`).
@@ -592,8 +591,8 @@ caption-attachment insertion order, a captionless photo pairing with an empty
 **Purpose:** One entry's card (#78, inverted by #102: **content is always visible;
 actions are what collapse**), rendered as a node on the timeline rail (`TimelineRow`):
 the captured time + rail dot in the gutter, then the content column with a header (place
-label, lifecycle badge, duration, play button), then unconditionally every
-note/transcript, every extra audio clip, every photo (one row each), and the place card,
+label and lifecycle badge), an attachment sub-timeline ordered by each attachment's
+append timestamp, and the place card,
 then a footer holding a "Related" reveal and the single "+" action menu, plus the
 sheets/inputs those actions open.
 
@@ -612,13 +611,12 @@ The card computes its own `EntryLifecycle` from `sync` + `hasPendingEnrichment(e
   state or `expanded` toggle. `menuOpen` (the "+" action menu) and `relatedOpen` (the
   one thing still allowed to stay behind a reveal) are separate, unrelated, view-local
   `useState`s — never persisted, never an event — so opening one never implies the
-  other. The pure `cardViewModel(entry, groupAttachments(entry.attachments))` still
-  decides header layout and the photo rows' contents, but no longer decides what's
-  visible at all.
+  other. `AttachmentTimeline` owns the visible attachment ordering and media/text
+  pairing; `cardViewModel` remains a pure helper for related-memory classification.
 - **Rail gutter + header:** the editable time moved out of the header into the
   `TimelineRow` `time` slot (`timeControl` — the same tap-to-edit button, now in the
-  gutter beside the rail dot). The header is one flex row holding only the place label on
-  the left with sync badge + clip duration + play button pushed to the far right. The
+  gutter beside the rail dot). The header is one flex row holding the place label and
+  lifecycle badge; attachment playback lives in the sub-timeline. The
   time button has no underline decoration; it is still the tap target for the native
   picker (below), and the Edit sheet provides the second, labelled path to the same
   field. The place label renders only when `vm.collapsedShowsLocation` is true. Both are
@@ -630,30 +628,15 @@ The card computes its own `EntryLifecycle` from `sync` + `hasPendingEnrichment(e
 - **Time editing (B8):** the time label is a button layered over an invisible
   `<input type="time">`; tapping calls `showPicker()` (fallback `focus()`) so iOS shows
   its native wheel picker. `onChange` fires `onSetTime` only for non-empty values.
-- **Primary clip playback (B10):** the *first* audio attachment plays from the header
-  via `useAudioPlayback(audio?.file)` as an `accent`-variant `IconButton` (accent wash +
-  border so it reads as interactive against the card); while playing, a progress fill
-  widens behind the ▶/■ icon. Later clips render inside `AttachmentBody`, always. A
-  `Waveform` strip (`waveformMath.ts`/`Waveform.tsx`, #86, fed the same
-  `playback.progress`) renders beside this button whenever the content area below
-  *isn't* also showing this clip's fingerprint — i.e. whenever the card has
-  `vm.primaryText` (a transcribed clip; the content area shows text, not audio). The one
-  case that skips it is an audio-only card (no `vm.primaryText`), where the fingerprint
-  renders full-width in the content area instead — the two conditions are mutually
-  exclusive and exhaustive, so the fingerprint is never drawn twice for the same clip,
-  and never absent while the audio is visible (req. 5), independent of `menuOpen`.
-- **Content, unconditional (#102):** an audio-only entry (no `vm.primaryText`) leads
-  with its `Waveform` fingerprint (#86) full-width, fed `playback.progress`, wrapped in
-  a button that toggles playback on tap (replacing the old "tap to expand" — there is no
-  expand any more). Then `AttachmentBody` mounts unconditionally: every transcript and
-  note (the "primary" one is simply first in its render order — transcripts before
-  notes — with no separate clamped preview any more, so it and every other text render
-  identically, full text, no line clamp, tap-to-edit), every streaming transcript, every
-  extra audio clip, and any orphan caption. Then `PhotoGrid` mounts unconditionally with
-  `vm.photoGroups` (every photo, one row each, capture order — see `PhotoGrid.tsx`). Then
-  the `PlaceCard` row (when `entry.location` is set) — leaflet-free, no network, no map
-  tiles in the feed (#81); tapping it sets `mapOpen`, which mounts the lazy `MiniMap`
-  full-screen dialog. Leaflet's chunk loads only on that explicit tap.
+- **Attachment sub-timeline:** `AttachmentTimeline.tsx` stably sorts visible attachments
+  by `entry.attachmentLoggedAt[file]`, falling back to `entry.loggedAt` for older or
+  synthetic entries. Each row shows its append time. Audio puts its clickable waveform
+  on the left and all transcripts derived from that audio on the right; photos put their
+  thumbnail on the left and their caption on the right. Notes and orphaned descriptions
+  remain standalone rows, so no audio clip has special precedence.
+- **Place card:** the `PlaceCard` row (when `entry.location` is set) remains leaflet-free,
+  with no network or map tiles in the feed (#81); tapping it sets `mapOpen`, which mounts
+  the lazy `MiniMap` full-screen dialog. Leaflet's chunk loads only on that explicit tap.
 - **Per-card recorder:** "Add audio" (in the "+" menu) uses its own `useRecorder()`
   instance so entries can hold multiple clips; while recording, the footer (the
   "Related" reveal and "+" menu) is replaced by a compact timer bar with Discard/Done.
@@ -851,30 +834,32 @@ primary-text first line, else "Voice note"/"Photo", else empty).
   from a superseded run, matching the pattern used throughout this module
   for async blob loads.
 
+### src/capture/AttachmentTimeline.tsx
+
+**Purpose:** Owns the entry's attachment sub-timeline. It stably orders visible
+attachments by their originating event timestamp (`Entry.attachmentLoggedAt`, with
+the entry timestamp as a fallback), shows that timestamp on each row, and pairs
+audio waveforms with their transcripts and photos with their captions. Notes and
+orphaned descriptions remain standalone rows. Each media row keeps its existing
+playback, caption editing, photo viewer, and removal behavior.
+
 ### src/capture/AttachmentBody.tsx
 
-**Purpose:** Renders an entry's text content and extra audio clips (#78, revised by
-#102), classified along the authored-vs-generated axis (#80). Always mounted by
-`EntryCard` now — #102's "content is always visible" inversion removed the `expanded`
-gate this component used to render behind. Photos (and their removal) moved to
-`PhotoGrid.tsx` (#102, now laid out as one timeline row per photo — see below), so this
-component owns only text/audio and has no attachment-removal affordance of its own.
+**Purpose:** Provides the shared text classification, streaming, styling, and edit
+helpers used by `AttachmentTimeline` (the timeline owns the visible row layout).
+The older grouped `AttachmentBody` renderer remains available for compatibility,
+but `EntryCard` now uses `AttachmentTimeline` so media/text pieces are ordered and
+paired by timestamp.
 
 **Export:** `AttachmentBody({ attachments, onEditText }: AttachmentBodyProps)`; also
 exports `useLiveText` (the shared `useSyncExternalStore` wiring for a `LiveTextStore`),
 `StreamingText`, `AUTHORSHIP_STYLE`, and `EDIT_TITLE` — all reused by `PhotoGrid.tsx` so
 in-grid captions compose the exact same tokens/edit flow rather than re-deriving them.
 
-**Ordering/classification:** delegates grouping to the pure `groupAttachments`
-(`attachmentGroups.ts`) and per-attachment classification to the pure `authorship()`
-(`authorship.ts`). Render order: transcripts (the first one — transcript-over-note — is
-what `cardViewModel` calls `primaryText`, but it renders identically to every other
-transcript/note here; there is no separate clamped "primary" preview any more), then
-any still-**streaming** transcripts, notes, extra audio rows (clips beyond the first,
-the first waveform plays from the card header), then any orphan captions (photo since removed — the
-one caption case still handled here, since it has no photo left to sit beside in
-`PhotoGrid`). Returns `null` if every group is empty (streaming transcripts count — a
-fresh audio-only entry shows its transcript growing).
+**Classification helpers:** delegates per-attachment classification to the pure
+`authorship()` (`authorship.ts`). `AttachmentTimeline` uses its exported text and
+streaming helpers so transcripts, notes, captions, and live enrichment keep the
+same authored-vs-generated treatment.
 
 **Type scale (#80):** authored notes and spoken transcripts both render at
 `type_.bodyStrong`/`tone.textPrimary` — the heaviest, darkest treatment, **full text, no
@@ -912,13 +897,10 @@ edit-title table (`EDIT_TITLE`) are both keyed by `Authorship`, so every call si
 
 ### src/capture/PhotoGrid.tsx
 
-**Purpose:** An entry's photos as timeline rows (#102) — one row per photo, a
-fixed-size thumbnail on the left with its caption text horizontally aligned to its
-right, so a photo's related text reads beside its asset the way the rest of the timeline
-aligns content to its node. Replaces the earlier 3-across grid (caption stacked
-underneath), itself a replacement for the original one-thumbnail-per-row layout formerly
-in `AttachmentBody`. Always mounted by `EntryCard`, fed `cardViewModel(...).photoGroups`
-(every photo, capture order) — nothing photo-shaped is hidden any more.
+**Purpose:** Legacy standalone photo-row implementation retained for the photo
+viewer behavior and related tests. `EntryCard` now renders photos through
+`AttachmentTimeline`, which keeps each photo/caption row in timestamp order with
+the rest of the entry's attachments.
 
 **Export:** `PhotoGrid({ photoGroups, onEditText, onRemoveAttachment }: PhotoGridProps)`.
 Renders `null` for an entry with no photos.
@@ -1625,8 +1607,9 @@ re-throw, matching the appStore `guard` convention.
 - **Pending delete is screen-local:** `usePendingDelete` hides via `pendingId` filtering
   and appends the revoke on timeout *or unmount*; only one delete can be pending, and
   requesting a new one commits the previous immediately.
-- **First audio attachment is special:** its waveform plays from the card header and
-  supplies the header duration; `AttachmentBody` renders only clips 2..n.
+- **Attachment timestamps are preserved:** each visible attachment keeps the
+  `loggedAt` of the capture/amend event that added it via `Entry.attachmentLoggedAt`,
+  and `AttachmentTimeline` uses those timestamps to order the entry's sub-timeline.
 - **Card expansion is view state, never contract state (#78):** `EntryCard`'s `expanded`
   flag is local `useState`, never written to the event log and never read back from it —
   the append-only log carries user data, not UI state. Every card starts collapsed.

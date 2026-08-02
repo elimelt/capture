@@ -21,19 +21,14 @@ import {
 } from '../ui'
 import { EditEntrySheet } from './EditEntrySheet'
 import { TextSheet } from './TextSheet'
-import { AttachmentBody } from './AttachmentBody'
+import { AttachmentTimeline } from './AttachmentTimeline'
 import { LifecycleBadge } from './LifecycleBadge'
 import { entryLifecycle, hasPendingEnrichment } from './lifecycle'
-import { groupAttachments } from './attachmentGroups'
-import { cardViewModel } from './cardView'
-import { PhotoGrid } from './PhotoGrid'
 import { PlaceCard } from './PlaceCard'
 import { locationName } from './placeCardModel'
 import { reasonLabel, relativeDayLabel } from './related'
-import { useAudioPlayback } from './useAudioPlayback'
 import { useRecorder, type RecordingResult } from './useRecorder'
 import { useRelated, type RelatedRow } from './useRelated'
-import { Waveform } from './Waveform'
 
 // Leaflet-backed; lazy so its chunk (JS + CSS) stays out of the initial
 // bundle and now only loads once a card's `PlaceCard` row is explicitly
@@ -110,11 +105,8 @@ export function EntryCard({
   const [mapOpen, setMapOpen] = useState(false)
   const photoInputRef = useRef<HTMLInputElement>(null)
   const timeInputRef = useRef<HTMLInputElement>(null)
-  const audio = entry.attachments.find((a) => a.kind === 'audio')
-  const playback = useAudioPlayback(audio?.file)
   // Per-card recorder for "+ audio" — entries can hold multiple clips.
   const rec = useRecorder()
-  const vm = cardViewModel(entry, groupAttachments(entry.attachments))
   const lifecycle = entryLifecycle(sync, hasPendingEnrichment(entry))
   const navigate = useNavigate()
   // Candidates span the whole log, not just what this screen filtered to —
@@ -166,10 +158,10 @@ export function EntryCard({
 
   return (
     <TimelineRow time={timeControl} first={first} last={last} className={motion.riseIn}>
-      {/* Header: place label grouped left; sync/duration/play pushed right. */}
+      {/* Header: place label and lifecycle status; attachment media lives below. */}
       <div className="flex items-center gap-2">
         <div className="flex min-w-0 flex-1 items-baseline gap-2">
-          {vm.collapsedShowsLocation && entry.location && (
+          {entry.location && (
             <span className={cx('truncate', type_.sub, tone.textMuted)}>
               {locationName(entry.location)}
             </span>
@@ -178,30 +170,6 @@ export function EntryCard({
         <span className="shrink-0">
           <LifecycleBadge lifecycle={lifecycle} />
         </span>
-        {audio?.durationSec !== undefined && (
-          <span className={cx('shrink-0 tabular-nums', type_.caption, tone.textFaint)}>
-            {audio.durationSec}s
-          </span>
-        )}
-        {/* Signature fingerprint (#86): rendered
-            here whenever the content below isn't *also* showing this same
-            clip's fingerprint — i.e. whenever the entry has text content
-            (`vm.primaryText`), since a text entry's content area shows text,
-            not audio. An audio-only entry (no `vm.primaryText`) renders its
-            fingerprint full-width in the content area instead (below) — the
-            two are mutually exclusive, so the fingerprint is never drawn
-            twice for the same clip, and never absent while the audio is
-            visible (#86 req. 5), regardless of the "+" menu's state. */}
-        {audio && vm.primaryText && (
-          <button
-            type="button"
-            aria-label={playback.playing ? 'Stop playback' : 'Play recording'}
-            onClick={() => void playback.toggle()}
-            className="shrink-0 rounded-md"
-          >
-            <Waveform file={audio.file} progress={playback.progress} className="w-14" />
-          </button>
-        )}
         {onCopy && (
           <IconButton aria-label="Copy entry" onClick={() => onCopy(entry)}>
             <CopyIcon size={16} />
@@ -209,29 +177,10 @@ export function EntryCard({
         )}
       </div>
 
-      {/* Content — always visible (#102's core inversion: content is never
-          what collapses, only actions/chrome do). An audio-only entry (no
-          text at all) leads with its waveform fingerprint full-width, tap to
-          toggle playback — the one case the header's compact fingerprint
-          above skips, so this is never a second copy of the same clip. */}
-      {!vm.primaryText && audio && (
-        <button
-          type="button"
-          onClick={() => void playback.toggle()}
-          aria-label={playback.playing ? 'Stop playback' : 'Play recording'}
-          className="mt-2 block w-full"
-        >
-          <Waveform file={audio.file} progress={playback.progress} height={28} />
-        </button>
-      )}
-      {/* Every note/transcript (the primary one and any others), every extra
-          audio clip, and any orphan caption — unconditional, nothing here is
-          "extra" any more. */}
-      <AttachmentBody attachments={entry.attachments} onEditText={onEditText} />
-      {/* Every photo, tight grid, capture order (#102) — replaces the old
-          one-row-per-photo layout that only showed on expansion. */}
-      <PhotoGrid
-        photoGroups={vm.photoGroups}
+      <AttachmentTimeline
+        attachments={entry.attachments}
+        attachmentLoggedAt={entry.attachmentLoggedAt}
+        entryLoggedAt={entry.loggedAt}
         onEditText={onEditText}
         onRemoveAttachment={onRemoveAttachment}
       />
