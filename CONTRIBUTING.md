@@ -26,7 +26,7 @@ npm run preview      # serve the production build locally
 | `src/contract/` | Event schema, fold, filenames, byte-stable wire format. Depends on nothing else in `src/`. |
 | `src/streams/` | Registry of capture profiles (v1 ships only `timelog`). |
 | `src/store/` | IndexedDB repositories (events, places, settings) and the single Zustand `appStore`. |
-| `src/drive/` | GIS auth, Drive client, tree bootstrap, upload queue. |
+| `src/drive/` | GIS auth, Drive client, tree bootstrap, upload queue, pull engine. |
 | `src/gcal/` | Read-only Google Calendar client + target-calendar config (timelog read-back; feeds the Day view). |
 | `src/transcribe/`, `src/vision/`, `src/places/` | Post-capture enrichment pipelines. |
 | `src/capture/`, `src/dayview/`, `src/settings/`, `src/assistant/` | The four screens. |
@@ -50,6 +50,9 @@ with exactly three types: `capture` creates, `amend` patches, `revoke` hides.
 Never mutate or delete an event in place — "edit" and "delete" are new events
 referencing earlier ids. Read state is always derived via `fold(events)`
 (`src/contract/fold.ts`), which is deterministic and tolerant of arrival order.
+Identity is the event `id`; `seq` is a per-device ordering hint that can collide
+across devices — order everything through `compareEvents` (`seq` → `loggedAt` →
+`id`) and never key anything by `[stream, seq]`.
 
 **Byte-stable serialization.** `serializeEvent` (`src/contract/serialize.ts`)
 produces deterministic JSON: fixed key order, 2-space indent, trailing newline,
@@ -59,9 +62,11 @@ it as a contract change (see golden-file tests in `src/contract/serialize.test.t
 
 **Store is the single write path.** All writes go through `useAppStore` actions
 (wrapped in `guard`, which routes failures to the global error toast) and the
-event repository in `src/store/events.ts` — the only writer of the local log. A
-local append is one atomic IndexedDB transaction (seq counter + event + blobs +
-sync row). Do not write to IndexedDB or append events from anywhere else.
+event repository in `src/store/events.ts` — the only writer of the local log
+(`append` for locally-minted events, `importEvents` for events pulled from
+Drive). A local append is one atomic IndexedDB transaction (seq counter + event +
+blobs + sync row), and so is an import. Do not write to IndexedDB or append
+events from anywhere else.
 
 **UI styling.** Screens never hardcode palette or shape classes. All visual
 styling flows through `src/ui/tokens.ts` (`tone`, `shape`, `type_`, `motion`,

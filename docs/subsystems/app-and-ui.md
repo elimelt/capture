@@ -51,8 +51,9 @@ who never enable it. Navigation is flat — tabs only, no nested routers or stac
 bottom sheets, not routes. Deployment supports deep links by copying `index.html` to
 `404.html` on GitHub Pages.
 
-Beyond routing, `App.tsx` owns the app-level lifecycle: it drains the Drive upload
-queue on `visibilitychange` (visible) and `online` events — the "natural gestures" the
+Beyond routing, `App.tsx` owns the app-level lifecycle: it runs a Drive sync cycle
+(pull remote events, then drain the upload queue) on `visibilitychange` (visible) and
+`online` events — the "natural gestures" the
 no-backend token model relies on — and runs background transcription/captioning
 whenever `entries` change, calling `refresh()` when work completed so the effect
 re-runs until nothing is pending. New long-running background work should hook these
@@ -125,8 +126,9 @@ reports failures via `lastError` without throwing.
   reverse-geocoding (`CacheFirst`, 90 days) as the second cache line behind the
   IndexedDB geocode cache, per Nominatim's usage policy.
 - **Offline expectations**: capture, day view, and settings work fully offline —
-  entries land in IndexedDB and the sync queue; uploads drain on the next
-  foreground/online/manual trigger. There is no backend and no push scheduler.
+  entries land in IndexedDB and the sync queue; the next foreground/online/manual
+  trigger runs a full pull-then-push sync cycle. There is no backend and no push
+  scheduler.
 - **iOS specifics**: standalone display with a `black-translucent` status bar (content
   extends under it — App pads `main` with `env(safe-area-inset-top)`); persistent
   storage requested at boot because Drive is the only other copy of the log; iOS

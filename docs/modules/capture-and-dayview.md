@@ -18,7 +18,7 @@ The module writes exclusively through the zustand store (`src/store/appStore.ts`
 `capture` appends a capture event, `amend` patches entries (time, location, attachment
 add/remove), and `revoke` deletes them. All writes land in the append-only local event
 log (`src/store/events.ts`, folded per `src/contract`) and are eagerly drained to Google
-Drive; `SyncBadge` reflects the per-seq upload status from `src/store/db.ts`.
+Drive; `SyncBadge` reflects the per-event-id upload status from `src/store/db.ts`.
 
 ### `src/dayview`
 
@@ -131,7 +131,7 @@ hides the entry immediately and appends the revoke only after the undo window.
   needs an explicit flag).
 
 It also reads `streamSettings.maxClipSec` and looks up each entry's sync status by
-`entry.seq` from `syncStatuses`.
+`entry.id` from `syncStatuses`.
 
 ### src/capture/EntryCard.tsx
 

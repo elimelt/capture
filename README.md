@@ -18,8 +18,10 @@ no-ops when offline or disabled).
 
 - One-tap voice capture with timestamp and location snapshot; works fully offline
 - Append-only event log (`capture` / `amend` / `revoke`) with idempotent,
-  crash-safe sync to a `timebox/` folder tree in the user's Google Drive
-  (file-scoped `drive.file` access, no refresh tokens, no backend)
+  crash-safe bidirectional sync to a `timebox/` folder tree in the user's Google
+  Drive (file-scoped `drive.file` access, no refresh tokens, no backend) — each
+  cycle pulls events other devices committed before pushing local ones, and the
+  deterministic fold converges every replica to identical state
 - Day view of folded entries, with undo-able delete (a delayed `revoke`)
 - Read-only Google Calendar overlay on the Day view: pick a target calendar in
   Settings and see its events alongside your entries, deep-linking into Google
@@ -99,7 +101,7 @@ publishes the artifact with `deploy-pages`.
   and the append-only log + fold design
 - Subsystem docs:
   - [docs/subsystems/data-and-sync.md](docs/subsystems/data-and-sync.md) —
-    event log, fold, IndexedDB store, Drive auth and upload queue
+    event log, fold, IndexedDB store, Drive auth, upload queue, and pull engine
   - [docs/subsystems/ai-and-enrichment.md](docs/subsystems/ai-and-enrichment.md) —
     transcription/vision pipelines, places, and the assistant
   - [docs/subsystems/app-and-ui.md](docs/subsystems/app-and-ui.md) — boot,
