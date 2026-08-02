@@ -5,10 +5,17 @@ interface ToastProps {
   children: ReactNode
   actionLabel?: string
   onAction?: () => void
+  /**
+   * Clearance above the tab bar, in rem. Default clears it with a small
+   * gutter; callers that may render alongside another Toast (e.g. an
+   * update-available prompt next to the error toast) bump this so the two
+   * stack instead of overlapping.
+   */
+  bottomRem?: number
 }
 
 /** Transient bottom toast with an optional action (undo etc.). */
-export function Toast({ children, actionLabel, onAction }: ToastProps) {
+export function Toast({ children, actionLabel, onAction, bottomRem = 5.5 }: ToastProps) {
   return (
     <div
       className={cx(
@@ -20,7 +27,7 @@ export function Toast({ children, actionLabel, onAction }: ToastProps) {
         type_.ui,
         motion.toastIn,
       )}
-      style={{ bottom: 'calc(env(safe-area-inset-bottom) + 5.5rem)' }}
+      style={{ bottom: `calc(env(safe-area-inset-bottom) + ${bottomRem}rem)` }}
       role="status"
     >
       <span className="min-w-0 truncate">{children}</span>

@@ -134,6 +134,28 @@ describe('wipe', () => {
     expect(state.entries).toEqual([])
     expect(state.places).toEqual([])
   })
+
+  it('also disconnects Drive and clears every Cache Storage bucket (#65)', async () => {
+    useAppStore.setState({ driveConnection: 'connected' })
+    const deleted: string[] = []
+    const fakeCaches = {
+      keys: async () => ['nominatim', 'osm-tiles'],
+      delete: async (key: string) => {
+        deleted.push(key)
+        return true
+      },
+    }
+    // @ts-expect-error -- test double for the Cache Storage API, absent in node
+    globalThis.caches = fakeCaches
+    try {
+      await useAppStore.getState().wipe()
+    } finally {
+      // @ts-expect-error -- restore the ambient (unavailable) state
+      delete globalThis.caches
+    }
+    expect(useAppStore.getState().driveConnection).toBe('disconnected')
+    expect(deleted.sort()).toEqual(['nominatim', 'osm-tiles'])
+  })
 })
 
 describe('space accounting', () => {
