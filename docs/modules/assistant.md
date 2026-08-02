@@ -320,9 +320,10 @@ Conversation lifecycle:
   focus); otherwise it builds a fresh
   `Chat` from the seed's stored messages (`persisted`/`persistedCount` seeded from
   `seed.messages.length`).
-- **Entry-focused dispatch ("Ask AI"):** the screen is reached from an entry card's
-  "Ask AI" action (`navigate('/chat', { state: { entryId } })` — there is no assistant
-  tab). When `location.state.entryId` is present and this `location.key` hasn't been
+- **Entry-focused dispatch ("Ask AI"):** the screen is reached after an entry card's
+  sparkle action opens an intent sheet. Submitting that sheet navigates with
+  `navigate('/chat', { state: { entryId, intent } })` — there is no assistant tab.
+  When `location.state.entryId` is present and this `location.key` hasn't been
   dispatched yet (a module-scope `dispatchedNavKey` remembers the last one, so
   back/forward or tab-away-and-back resumes rather than re-minting), the screen starts
   a **fresh conversation** whose transport instructions are `focusedInstructions(id)`:
@@ -331,7 +332,9 @@ Conversation lifecycle:
   current content. A deleted/unknown entry falls back to the plain instructions. The
   empty state swaps in entry-focused copy and `ENTRY_SUGGESTIONS` ("Summarize this
   entry", "Clean up the wording", "Move it to a different time"), and the header gains
-  a "Done" button (`navigate(-1)`) back to the dispatching screen.
+  a "Done" button (`navigate(-1)`) back to the dispatching screen. The submitted
+  intent is automatically sent as the first user turn, so the agent can immediately
+  answer or perform the requested write action.
 - Otherwise, on first mount in a JS lifetime, a `useEffect` hydrates the most recent
   conversation
   from the stream (`loadMostRecentChat`), falling back to `freshSeed()`

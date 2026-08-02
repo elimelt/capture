@@ -69,7 +69,7 @@ interface EntryCardProps {
   onCopy?: (entry: Entry) => void
   /** Open an assistant conversation focused on this entry ("Ask AI");
    *  present only when the opt-in assistant is enabled. */
-  onAsk?: (entry: Entry) => void
+  onAsk?: (entry: Entry, intent: string) => void
 }
 
 export function EntryCard({
@@ -93,6 +93,7 @@ export function EntryCard({
 }: EntryCardProps) {
   // View-local only, never persisted, never an event.
   const [noteOpen, setNoteOpen] = useState(false)
+  const [askOpen, setAskOpen] = useState(false)
   const [locationOpen, setLocationOpen] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
   // The full-screen interactive map (#81): opened explicitly from the
@@ -155,7 +156,7 @@ export function EntryCard({
           onEditLocation={() => setLocationOpen(true)}
           onEditEntry={() => setEditOpen(true)}
           onCopy={onCopy && (() => onCopy(entry))}
-          onAsk={onAsk && (() => onAsk(entry))}
+          onAsk={onAsk ? () => setAskOpen(true) : undefined}
           onDelete={onDelete}
         />
       )}
@@ -179,6 +180,15 @@ export function EntryCard({
           cta="Save note"
           onSave={onAddNote}
           onClose={() => setNoteOpen(false)}
+        />
+      )}
+      {askOpen && onAsk && (
+        <TextSheet
+          title="What do you want to do with this entry?"
+          placeholder="e.g. Clean up the wording, move it to 3 PM, or summarize it…"
+          cta="Open AI"
+          onSave={(intent) => onAsk(entry, intent)}
+          onClose={() => setAskOpen(false)}
         />
       )}
       {editOpen && (
