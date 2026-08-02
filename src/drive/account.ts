@@ -4,7 +4,7 @@
  * (changes.ts), and pre-generated upload file ids (ids.ts pool + sync-row
  * `fileIds`) are only meaningful on the account that minted them; after an
  * account switch they would point at the *old* account's files. We therefore
- * bind local state to the account's stable `user.permanentId` (about.get —
+ * bind local state to the account's stable `user.permissionId` (about.get —
  * one cheap request per token per session, memoized) persisted in the `meta`
  * store: a fresh token whose id matches keeps every cache warm; a mismatch
  * discards all account-bound state exactly as if this device had never
@@ -23,7 +23,7 @@ import { clearTree } from './tree'
 
 const ACCOUNT_KEY = 'drive:account'
 
-/** The permanentId the local caches are bound to, if any grant ever completed. */
+/** The permissionId the local caches are bound to, if any grant ever completed. */
 export async function getStoredAccountId(): Promise<string | undefined> {
   const db = await getDb()
   return (await db.get('meta', ACCOUNT_KEY)) as string | undefined
@@ -49,16 +49,16 @@ let verifiedAccessToken: string | undefined
  */
 export async function ensureAccountBound(token: string): Promise<boolean> {
   if (token === verifiedAccessToken) return false
-  const { permanentId } = await getAboutUser(token)
+  const { permissionId } = await getAboutUser(token)
   const stored = await getStoredAccountId()
-  const switched = stored !== undefined && stored !== permanentId
+  const switched = stored !== undefined && stored !== permissionId
   if (switched) {
     await clearTree()
     await clearAllChangesTokens()
     await stripPendingFileIds()
     resetIdPool()
   }
-  if (stored !== permanentId) await saveAccountId(permanentId)
+  if (stored !== permissionId) await saveAccountId(permissionId)
   verifiedAccessToken = token
   return switched
 }

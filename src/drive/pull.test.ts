@@ -134,7 +134,7 @@ function fakeDrive() {
     setUser(id: string) {
       user = id
     },
-    getAboutUser: vi.fn(async (_t: string) => ({ permanentId: user })),
+    getAboutUser: vi.fn(async (_t: string) => ({ permissionId: user })),
   }
 }
 

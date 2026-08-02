@@ -12,7 +12,7 @@ function fakeDrive() {
   let user = 'user-A'
   let n = 0
   return {
-    getAboutUser: vi.fn(async (_t: string) => ({ permanentId: user })),
+    getAboutUser: vi.fn(async (_t: string) => ({ permissionId: user })),
     generateIds: vi.fn(async (_t: string, count: number) =>
       Array.from({ length: count }, () => `gen-${n++}`),
     ),

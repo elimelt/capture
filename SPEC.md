@@ -886,7 +886,7 @@ device — or a reinstalled/wiped one — converges on the full log:
    the walk and persisted only after a fully successful pull, so no change window
    is ever skipped, at worst replayed. Cursors — like the cached folder/file ids
    and pre-generated upload ids — are account-bound: local sync caches are bound
-   to the granting account's stable id (`about.get` `user.permanentId`) and are
+   to the granting account's stable id (`about.get` `user.permissionId`) and are
    silently discarded when a token from a different Google account appears, so a
    switch just costs one re-bootstrap + full walk.
 2. **Download eagerly.** For each missing record: fetch the `.json`, then fetch every
