@@ -22,6 +22,12 @@ import {
   type StreamSettings,
 } from './settings'
 import type { SyncStatusRow } from './db'
+import {
+  estimateLocalSpace,
+  measureAppSpace,
+  type AppSpace,
+  type LocalSpaceEstimate,
+} from './space'
 import { toLocalIso } from '../contract/time'
 import { connectionState, getValidAccessToken, type DriveConnection } from '../drive/token'
 import { connect, disconnect } from '../drive/auth'
@@ -63,11 +69,17 @@ interface AppState {
   driveConnection: DriveConnection
   /** True while a drain is in flight, so the UI can show progress / disable Sync. */
   syncing: boolean
+  /** Origin-level usage/quota from storage.estimate(); null = unsupported/unloaded. */
+  localSpace: LocalSpaceEstimate | null
+  /** Byte breakdown of the app's own IndexedDB data; null until refreshSpace(). */
+  appSpace: AppSpace | null
 
   refresh: (streamId?: string) => Promise<void>
   loadPlaces: () => Promise<void>
   loadSettings: () => Promise<void>
   refreshConnection: () => Promise<void>
+  /** Re-measure local storage (origin estimate + app breakdown). No network. */
+  refreshSpace: () => Promise<void>
   init: () => Promise<void>
   clearError: () => void
 
@@ -130,6 +142,8 @@ export const useAppStore = create<AppState>()((set, get) => {
     driveConnection: 'disconnected',
     syncing: false,
     lastSyncAt: null,
+    localSpace: null,
+    appSpace: null,
 
     refresh: async (streamId) => {
       const stream = streamId ?? get().currentStreamId
@@ -155,6 +169,11 @@ export const useAppStore = create<AppState>()((set, get) => {
 
     refreshConnection: async () => {
       set({ driveConnection: await connectionState() })
+    },
+
+    refreshSpace: async () => {
+      const [localSpace, appSpace] = await Promise.all([estimateLocalSpace(), measureAppSpace()])
+      set({ localSpace, appSpace })
     },
 
     init: async () => {
@@ -276,7 +295,9 @@ export const useAppStore = create<AppState>()((set, get) => {
 
     wipe: guard('Could not wipe data', async () => {
       await wipeAll()
-      await Promise.all([get().refresh(), get().loadPlaces()])
+      // refreshSpace included so the Settings storage line never shows the
+      // pre-wipe number (it used to be measured once on mount and go stale).
+      await Promise.all([get().refresh(), get().loadPlaces(), get().refreshSpace()])
     }),
   }
 })
