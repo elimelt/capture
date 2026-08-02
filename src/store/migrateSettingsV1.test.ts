@@ -74,7 +74,12 @@ async function rerunMigration(): Promise<void> {
   await tx.done
 }
 
-const LEGACY_APP = { locationEnabled: false, assistantEnabled: false, assistantModel: 'gemma3:27b' }
+const LEGACY_APP = {
+  locationEnabled: false,
+  enrichmentEnabled: false,
+  assistantEnabled: false,
+  assistantModel: 'gemma3:27b',
+}
 const LEGACY_TIMELOG = { maxClipSec: 60, keepAudioLocally: false }
 
 describe('migrateSettingsV1 (db v9)', () => {

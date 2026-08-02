@@ -96,8 +96,22 @@ describe('app settings', () => {
     expect(await getSettings()).toEqual(APP_SETTINGS_DEFAULTS)
   })
 
+  // Owner policy (issue #89): every AI/LLM feature is off by default.
+  it('every AI/LLM feature defaults to off', async () => {
+    const defaults = await getSettings()
+    expect(defaults.enrichmentEnabled).toBe(false)
+    expect(defaults.assistantEnabled).toBe(false)
+    expect(APP_SETTINGS_DEFAULTS.enrichmentEnabled).toBe(false)
+    expect(APP_SETTINGS_DEFAULTS.assistantEnabled).toBe(false)
+  })
+
   it('round-trips saved settings', async () => {
-    const saved = { locationEnabled: false, assistantEnabled: true, assistantModel: 'gemma3:27b' }
+    const saved = {
+      locationEnabled: false,
+      enrichmentEnabled: true,
+      assistantEnabled: true,
+      assistantModel: 'gemma3:27b',
+    }
     await saveSettings(saved)
     expect(await getSettings()).toEqual(saved)
   })
@@ -148,6 +162,7 @@ describe('event sourcing (diff on save)', () => {
 
     await saveSettings({
       locationEnabled: false, // unchanged
+      enrichmentEnabled: false, // unchanged
       assistantEnabled: true, // changed
       assistantModel: 'gemma3:27b', // changed
     })
@@ -332,6 +347,7 @@ describe('capture.settings.v1 payload contract', () => {
 
   it('round-trips through parseSettingsPayload', () => {
     for (const p of [
+      set('app.enrichmentEnabled', true),
       set('app.assistantEnabled', true),
       set('stream.timelog.maxClipSec', 90),
       set('app.assistantModel', 'gemma3:27b'),

@@ -191,7 +191,12 @@ export const useAppStore = create<AppState>()((set, get) => {
     entries: [],
     syncStatuses: new Map(),
     places: [],
-    appSettings: { locationEnabled: true, assistantEnabled: false, assistantModel: 'gpt-oss:20b' },
+    appSettings: {
+      locationEnabled: true,
+      enrichmentEnabled: false,
+      assistantEnabled: false,
+      assistantModel: 'gpt-oss:20b',
+    },
     streamSettings: { maxClipSec: 60, keepAudioLocally: true },
     lastError: null,
     driveConnection: 'disconnected',
