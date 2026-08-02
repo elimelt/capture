@@ -3,11 +3,11 @@
  * hardcode palette/shape classes. Visual polish later = editing tokens.ts
  * and these primitives, not the screens.
  */
-export { cx, motion, shape, tap, tone, type_ } from './tokens'
+export { cx, layer, motion, shape, tap, tone, type_ } from './tokens'
 export { Button, IconButton } from './Button'
 export { Card, EmptyState, Section } from './Card'
 export { ErrorBoundary } from './ErrorBoundary'
-export { Sheet, useKeyboardInset } from './Sheet'
+export { OverlayPortal, Sheet, useKeyboardInset } from './Sheet'
 export { Toast } from './Toast'
 export { FieldRow, Select, TextArea, TextInput, Toggle } from './fields'
 export { canCommitNumericDraft, commitNumericDraft, parseNumericDraft } from './numberDraft'

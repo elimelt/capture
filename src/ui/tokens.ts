@@ -78,6 +78,27 @@ export const motion = {
   toastIn: 'animate-toast-in',
 } as const
 
+/**
+ * Fixed/sticky stacking strata — the app's single z-index scale. The order
+ * is the contract: nav (tab bar, sticky screen chrome) < raised (toasts,
+ * fixed composers) < overlay (sheet backdrops, sheets, fullscreen viewers).
+ * New fixed-position UI picks a stratum here; never hardcode a z-* class.
+ * (The boot splash in index.html sits above everything at z 100.)
+ *
+ * Overlays must also mount via OverlayPortal (src/ui/Sheet.tsx): entrance
+ * animations run with fill `both`, which keeps screens and cards permanent
+ * stacking contexts, so an overlay rendered in place would be trapped
+ * beneath the later-in-DOM tab bar no matter how high its z-index.
+ */
+export const layer = {
+  /** App chrome: bottom tab bar, sticky screen headers. */
+  nav: 'z-30',
+  /** Above chrome, below overlays: toasts, fixed chat composer. */
+  raised: 'z-40',
+  /** Modal layers: sheet backdrop + sheet, fullscreen photo/map viewers. */
+  overlay: 'z-50',
+} as const
+
 /** Minimum tap target (Apple HIG 44pt). */
 export const tap = 'min-h-11 min-w-11'
 

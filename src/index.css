@@ -82,7 +82,8 @@
 }
 
 /* Leaflet assigns high z-indexes to its panes (400) and controls (up to 1000),
-   which would otherwise leak above the app's overlays (Sheet is z-50). Isolate
+   which would otherwise leak above the app's overlays (`layer.overlay` = z-50
+   in src/ui/tokens.ts — the top of the app's z scale below the splash). Isolate
    each map into its own stacking context and cap the internal layers so an
    inline preview map can never paint over a sheet/popup above it. */
 .leaflet-container {

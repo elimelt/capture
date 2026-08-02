@@ -10,7 +10,7 @@ This document covers the application shell (`src/App.tsx`, `src/main.tsx`, `src/
 
 ### `src/ui` design-system primitives
 
-`src/ui/` is the single place visual identity lives (SPEC C15). `tokens.ts` exports class-string tokens (`tone`, `shape`, `type_`, `motion`, `tap`) plus the `cx` class combiner; the raw palette and keyframes are defined in `src/index.css` under Tailwind v4's `@theme`. Components (`Button`, `IconButton`, `Card`, `Section`, `EmptyState`, `Sheet`, `Toast`, form fields, `ScreenHeader`, `ErrorBoundary`) compose the tokens; screens import everything from the `src/ui` barrel (`index.ts`) and never hardcode palette/shape classes. A future visual redesign edits `tokens.ts`/`index.css` and the primitives, not the screens.
+`src/ui/` is the single place visual identity lives (SPEC C15). `tokens.ts` exports class-string tokens (`tone`, `shape`, `type_`, `motion`, `layer`, `tap`) plus the `cx` class combiner; the raw palette and keyframes are defined in `src/index.css` under Tailwind v4's `@theme`. Components (`Button`, `IconButton`, `Card`, `Section`, `EmptyState`, `Sheet`, `Toast`, form fields, `ScreenHeader`, `ErrorBoundary`) compose the tokens; screens import everything from the `src/ui` barrel (`index.ts`) and never hardcode palette/shape classes. A future visual redesign edits `tokens.ts`/`index.css` and the primitives, not the screens.
 
 ### Settings screen
 
@@ -31,7 +31,7 @@ This document covers the application shell (`src/App.tsx`, `src/main.tsx`, `src/
 Default-exports the root `App` component. Responsibilities:
 
 - **Routing**: `Routes` for `/` (CaptureScreen), `/day` and `/day/:date` (DayScreen), `/chat` (lazy `ChatScreen`, guarded by `assistantEnabled` — otherwise `Navigate` to `/`), `/settings` (SettingsScreen), and a catch-all redirect to `/`. `ChatScreen` is `lazy()`-loaded so users who never enable the assistant never download the AI SDK + markdown bundle.
-- **Tab bar**: a fixed, translucent, backdrop-blurred bottom `nav` built from the `TABS` array; the Chat tab is filtered out unless `appSettings.assistantEnabled` is true. Active tabs use `tone.accent`, inactive `tone.textMuted`.
+- **Tab bar**: a fixed, translucent, backdrop-blurred bottom `nav` on `layer.nav`, built from the `TABS` array; the Chat tab is filtered out unless `appSettings.assistantEnabled` is true. Active tabs use `tone.accent`, inactive `tone.textMuted`.
 - **Splash teardown**: when the store reports `ready`, adds the `done` class to `#splash` (defined in `index.html`) and removes the element after a 400 ms fade.
 - **Lifecycle effects**: on mount calls `init()`; on `visibilitychange` (visible) calls `refresh()` only — returning to the foreground re-reads local state. There is no `online` listener and no automatic `drainSync`: Drive sync is manual-only, via the "Sync now" button in Settings (SPEC §8.4).
 - **Background media understanding**: whenever `entries` change, runs `drainTranscriptions(currentStreamId)` and `drainCaptions(currentStreamId)` in parallel; if either produced results, calls `refresh()`, which re-runs the effect until nothing is pending.
@@ -48,7 +48,7 @@ Build-time constants: `GOOGLE_CLIENT_ID` (a public OAuth browser-client identifi
 
 ### src/ui/index.ts
 
-Barrel for the design system. Re-exports the tokens (`cx`, `motion`, `shape`, `tap`, `tone`, `type_`), every primitive: `Button`, `IconButton`, `Card`, `EmptyState`, `Section`, `ErrorBoundary`, `Sheet`, `useKeyboardInset`, `Toast`, `FieldRow`, `Select`, `TextArea`, `TextInput`, `Toggle`, the numeric-draft helpers (`parseNumericDraft`, `canCommitNumericDraft`, `commitNumericDraft`), `ScreenHeader`, and the shared icon set (`MicIcon`, `CameraIcon`, `PencilIcon`, `PlusIcon`, `PinIcon`, `TrashIcon`, `captureIcon`, types `CaptureKind`/`IconProps`). Screens import from here — never from token/palette classes directly (C15).
+Barrel for the design system. Re-exports the tokens (`cx`, `layer`, `motion`, `shape`, `tap`, `tone`, `type_`), every primitive: `Button`, `IconButton`, `Card`, `EmptyState`, `Section`, `ErrorBoundary`, `OverlayPortal`, `Sheet`, `useKeyboardInset`, `Toast`, `FieldRow`, `Select`, `TextArea`, `TextInput`, `Toggle`, the numeric-draft helpers (`parseNumericDraft`, `canCommitNumericDraft`, `commitNumericDraft`), `ScreenHeader`, and the shared icon set (`MicIcon`, `CameraIcon`, `PencilIcon`, `PlusIcon`, `PinIcon`, `TrashIcon`, `captureIcon`, types `CaptureKind`/`IconProps`). Screens import from here — never from token/palette classes directly (C15).
 
 ### src/ui/tokens.ts
 
@@ -79,11 +79,12 @@ Class component (the only way to catch render errors). On error it renders a ful
 ### src/ui/Sheet.tsx
 
 - `useKeyboardInset(): number` — hook tracking how much of the iOS software keyboard overlaps the layout viewport, via `window.visualViewport` resize/scroll listeners (`innerHeight − vv.height − vv.offsetTop`, clamped ≥ 0). Exported for fixed composers too (C12).
-- `Sheet({ title, onClose, children })` — modal bottom sheet (`role="dialog"`, `aria-modal`). Backdrop tap closes; inner clicks `stopPropagation()`. While mounted it freezes the page with `body { position: fixed; top: -scrollY }` (iOS ignores `overflow: hidden` and scrolls the body through fixed overlays) and restores scroll on unmount. Bottom padding is `max(safe-area-inset-bottom, 1rem) + keyboardInset` so content lifts above the keyboard. Overlay is `z-50`; content animates in with `motion.sheetIn`.
+- `Sheet({ title, onClose, children })` — modal bottom sheet (`role="dialog"`, `aria-modal`). Backdrop tap closes; inner clicks `stopPropagation()`. While mounted it freezes the page with `body { position: fixed; top: -scrollY }` (iOS ignores `overflow: hidden` and scrolls the body through fixed overlays) and restores scroll on unmount. Bottom padding is `max(safe-area-inset-bottom, 1rem) + keyboardInset` so content lifts above the keyboard. The whole sheet mounts through `OverlayPortal` on `layer.overlay`, so the backdrop covers (and blocks taps on) the tab bar; content animates in with `motion.sheetIn`.
+- `OverlayPortal({ children })` — `createPortal(children, document.body)` for anything on `layer.overlay` (sheets, scrims, fullscreen viewers). Required because entrance animations run with fill `both`, which keeps screen roots and cards permanent stacking contexts: an overlay rendered in place would paint beneath the later-in-DOM tab bar regardless of its z-index. React events still bubble through the component tree.
 
 ### src/ui/Toast.tsx
 
-`Toast({ children, actionLabel?, onAction? })` — fixed transient toast (`role="status"`, `z-40`) positioned `5.5rem` above the safe-area bottom so it clears the tab bar. Inverted colors in light mode (`bg-ink text-paper`), card surface in dark. Renders an action button (e.g. Undo/Dismiss) only when both `actionLabel` and `onAction` are given. Not self-dismissing — callers own the timer (e.g. `App` clears `lastError` after 6 s).
+`Toast({ children, actionLabel?, onAction? })` — fixed transient toast (`role="status"`, `layer.raised`) positioned `5.5rem` above the safe-area bottom so it clears the tab bar. Inverted colors in light mode (`bg-ink text-paper`), card surface in dark. Renders an action button (e.g. Undo/Dismiss) only when both `actionLabel` and `onAction` are given. Not self-dismissing — callers own the timer (e.g. `App` clears `lastError` after 6 s).
 
 ### src/ui/fields.tsx
 
@@ -127,7 +128,7 @@ Default-exports `SettingsScreen`; all state flows through `useAppStore`. Section
 
 ### src/index.css
 
-Tailwind v4 entry (`@import "tailwindcss"`). The `@theme` block defines the whole palette as CSS variables (paper/card/well surfaces, line borders, ink text ramp, spruce accent, clay danger — each with a `-dark` twin), the serif/sans font stacks, and the five entrance animations plus their keyframes and easings. Also: Leaflet fixes (undo Preflight's `img { max-width: 100% }` inside maps; isolate `.leaflet-container` into its own stacking context with capped pane z-indexes so inline maps never paint over the `z-50` Sheet), a global `prefers-reduced-motion` kill switch, `overscroll-behavior: none` and no tap highlight on `html/body`, sans as the default body font (content opts into serif via tokens), and an `html` background matching `tone.bg` in both color schemes so nothing white shows behind iOS overscroll/home-indicator areas.
+Tailwind v4 entry (`@import "tailwindcss"`). The `@theme` block defines the whole palette as CSS variables (paper/card/well surfaces, line borders, ink text ramp, spruce accent, clay danger — each with a `-dark` twin), the serif/sans font stacks, and the five entrance animations plus their keyframes and easings. Also: Leaflet fixes (undo Preflight's `img { max-width: 100% }` inside maps; isolate `.leaflet-container` into its own stacking context with capped pane z-indexes so inline maps never paint over `layer.overlay` sheets), a global `prefers-reduced-motion` kill switch, `overscroll-behavior: none` and no tap highlight on `html/body`, sans as the default body font (content opts into serif via tokens), and an `html` background matching `tone.bg` in both color schemes so nothing white shows behind iOS overscroll/home-indicator areas.
 
 ### src/layering.test.ts
 
@@ -200,5 +201,5 @@ Ignores logs, `node_modules`, build output (`dist`, `dist-ssr`), `*.local`, and 
 - **CSP is a meta tag in `index.html`** and must be updated whenever a new network endpoint is introduced (the comment above it enumerates the current ones). No inline scripts are allowed — the splash uses only CSS.
 - **App tsconfig has no node types.** Tests under `src/` must avoid `node:*` imports (see `layering.test.ts`'s `import.meta.glob` approach); node-flavoured code belongs with `vite.config.ts` under `tsconfig.node.json`.
 - **Sync has no backend scheduler and no automatic triggers**: sync cycles (pull then push) run only on manual "Sync now" in Settings — never on foreground or `online` events. Background enrichment (transcription/captioning) hooks the entries-changed effect in `App.tsx`; sync deliberately does not.
-- **Z-index ladder**: Leaflet maps are capped at `z-0` (isolated), `Toast` is `z-40`, `Sheet` is `z-50`, splash is `z-100`. Keep new overlays within this ordering.
+- **Z-index ladder lives in `layer` (`src/ui/tokens.ts`)**: Leaflet maps capped at `z-0` (isolated) → `layer.nav` (tab bar, sticky headers, `z-30`) → `layer.raised` (toasts, chat composer, `z-40`) → `layer.overlay` (sheets, fullscreen viewers, `z-50`) → boot splash `z-100`. Never hardcode a `z-*` class, and mount anything on `layer.overlay` through `OverlayPortal` — entrance animations (fill `both`) keep screens/cards permanent stacking contexts, so an in-place overlay gets trapped beneath the tab bar (the pre-fix navbar-over-sheet bug). `src/ui/tokens.test.ts` pins the ordering.
 - **`Toast` does not auto-dismiss** — callers own dismissal timing (App uses 6 s for `lastError`).

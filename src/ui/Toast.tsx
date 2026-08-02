@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { cx, motion, shape, type_ } from './tokens'
+import { cx, layer, motion, shape, type_ } from './tokens'
 
 interface ToastProps {
   children: ReactNode
@@ -12,7 +12,8 @@ export function Toast({ children, actionLabel, onAction }: ToastProps) {
   return (
     <div
       className={cx(
-        'fixed inset-x-4 z-40 mx-auto flex max-w-md items-center justify-between gap-3',
+        'fixed inset-x-4 mx-auto flex max-w-md items-center justify-between gap-3',
+        layer.raised,
         shape.control,
         'border border-transparent bg-ink px-4 py-3 text-paper shadow-lg',
         'dark:border-line-dark dark:bg-card-dark dark:text-ink-dark',

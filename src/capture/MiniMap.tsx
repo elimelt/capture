@@ -7,7 +7,7 @@ import 'leaflet/dist/leaflet.css'
 import { useEffect, useState } from 'react'
 import { Circle, CircleMarker, MapContainer, Popup, TileLayer, useMap } from 'react-leaflet'
 import type { GeoLocation } from '../contract/types'
-import { cx, motion, shape, tone, type_ } from '../ui'
+import { OverlayPortal, cx, layer, motion, shape, tone, type_ } from '../ui'
 
 const SPRUCE = '#3A605B'
 const CLAY = '#C46D4D'
@@ -69,51 +69,56 @@ export default function MiniMap({ location }: { location: GeoLocation }) {
         </div>
       </button>
 
+      {/* Portaled: rendered inside the entry card (a stacking context via its
+          entrance animation) the fullscreen map would paint under the tab bar. */}
       {expanded && (
-        <div
-          className={cx(
-            'fixed inset-0 z-50 flex flex-col bg-black/85 p-4 pt-[env(safe-area-inset-top)]',
-            motion.fadeIn,
-          )}
-          role="dialog"
-          aria-modal="true"
-          aria-label="Location"
-        >
-          <div className={cx('mb-3 flex items-center justify-between gap-2', type_.ui)}>
-            <span className="truncate font-medium text-white">
-              {location.placeLabel ?? (location.address ? `near ${location.address}` : 'Location')}
-            </span>
-            <button
-              onClick={() => setExpanded(false)}
-              className="rounded-xl bg-white/15 px-4 py-2 font-medium text-white"
-            >
-              Done
-            </button>
-          </div>
-          <div className={cx('min-h-0 flex-1 overflow-hidden', shape.card, motion.scaleIn)}>
-            <MapContainer center={center} zoom={16} scrollWheelZoom className="h-full w-full">
-              <Recenter lat={location.lat} lng={location.lng} zoom={16} />
-              <TileLayer url={TILE_URL} attribution={TILE_ATTR} maxZoom={19} />
-              {location.placeLabel && (
-                <Circle
-                  center={center}
-                  radius={Math.max(location.accuracyM, 40)}
-                  pathOptions={{ color: SPRUCE, weight: 2, fillColor: SPRUCE, fillOpacity: 0.12 }}
-                />
-              )}
-              <CircleMarker
-                center={center}
-                radius={7}
-                pathOptions={{ color: CLAY, weight: 2, fillColor: CLAY, fillOpacity: 0.8 }}
+        <OverlayPortal>
+          <div
+            className={cx(
+              'fixed inset-0 flex flex-col bg-black/85 p-4 pt-[env(safe-area-inset-top)]',
+              layer.overlay,
+              motion.fadeIn,
+            )}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Location"
+          >
+            <div className={cx('mb-3 flex items-center justify-between gap-2', type_.ui)}>
+              <span className="truncate font-medium text-white">
+                {location.placeLabel ?? (location.address ? `near ${location.address}` : 'Location')}
+              </span>
+              <button
+                onClick={() => setExpanded(false)}
+                className="rounded-xl bg-white/15 px-4 py-2 font-medium text-white"
               >
-                <Popup>
-                  {location.placeLabel ??
-                    (location.address ? `near ${location.address}` : 'Captured here')}
-                </Popup>
-              </CircleMarker>
-            </MapContainer>
+                Done
+              </button>
+            </div>
+            <div className={cx('min-h-0 flex-1 overflow-hidden', shape.card, motion.scaleIn)}>
+              <MapContainer center={center} zoom={16} scrollWheelZoom className="h-full w-full">
+                <Recenter lat={location.lat} lng={location.lng} zoom={16} />
+                <TileLayer url={TILE_URL} attribution={TILE_ATTR} maxZoom={19} />
+                {location.placeLabel && (
+                  <Circle
+                    center={center}
+                    radius={Math.max(location.accuracyM, 40)}
+                    pathOptions={{ color: SPRUCE, weight: 2, fillColor: SPRUCE, fillOpacity: 0.12 }}
+                  />
+                )}
+                <CircleMarker
+                  center={center}
+                  radius={7}
+                  pathOptions={{ color: CLAY, weight: 2, fillColor: CLAY, fillOpacity: 0.8 }}
+                >
+                  <Popup>
+                    {location.placeLabel ??
+                      (location.address ? `near ${location.address}` : 'Captured here')}
+                  </Popup>
+                </CircleMarker>
+              </MapContainer>
+            </div>
           </div>
-        </div>
+        </OverlayPortal>
       )}
     </>
   )
