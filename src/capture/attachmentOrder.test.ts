@@ -21,4 +21,20 @@ describe('sortAttachmentsByLoggedAt', () => {
       note('one'),
     ])
   })
+
+  it('reverses the whole order (ties included) when newestFirst is set', () => {
+    const attachments = [note('second'), note('first'), note('same')]
+    expect(
+      sortAttachmentsByLoggedAt(
+        attachments,
+        {
+          first: '2026-08-02T09:00:00-04:00',
+          second: '2026-08-02T09:02:00-04:00',
+          same: '2026-08-02T09:00:00-04:00',
+        },
+        '',
+        true,
+      ).map((attachment) => attachment.file),
+    ).toEqual(['second', 'same', 'first'])
+  })
 })

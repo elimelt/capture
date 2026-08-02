@@ -24,6 +24,12 @@ interface EntryListProps {
    */
   firstOnRail?: boolean
   lastOnRail?: boolean
+  /**
+   * Newest attachment first within each card — set by the Capture screen,
+   * whose list runs newest-first, so a card's sub-timeline reads in the same
+   * direction as the list around it. The Day view keeps oldest-first.
+   */
+  newestFirst?: boolean
 }
 
 export function EntryList({
@@ -32,6 +38,7 @@ export function EntryList({
   onCopy,
   firstOnRail = true,
   lastOnRail = true,
+  newestFirst = false,
 }: EntryListProps) {
   const amend = useAppStore((s) => s.amend)
   const streamSettings = useAppStore((s) => s.streamSettings)
@@ -47,6 +54,7 @@ export function EntryList({
           sync={syncStatuses.get(entry.id)}
           first={firstOnRail && i === 0}
           last={lastOnRail && i === entries.length - 1}
+          newestFirst={newestFirst}
           onDelete={() => onDelete(entry.id)}
           onCopy={onCopy}
           onSetTime={(time) =>

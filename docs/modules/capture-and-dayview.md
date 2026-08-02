@@ -67,7 +67,9 @@ type="file" accept="image/*" capture="environment">` (the plain camera button, a
 new capture), a second dedicated hidden photo input for the gesture accelerator's photo
 add-on (always an amend — see below), either an `EmptyState` or an `EntryList` holding
 **only today's most recent entry** (SPEC §4.1's latest-entry card — the full day lives
-on the Day screen, which is what keeps the two views distinct), an optional `TextSheet`
+on the Day screen, which is what keeps the two views distinct; the list gets
+`newestFirst` so the card's attachment sub-timeline also reads newest-first, matching
+the screen's direction), an optional `TextSheet`
 (plain text capture, and a second instance for the accelerator's note add-on), and one
 of three toasts (captured-with-Undo, deleted-with-Undo, discarded).
 
@@ -421,15 +423,17 @@ the card action is icon-only but has the accessible label "Copy entry".
 **Purpose:** Maps `Entry[]` to `EntryCard`s and translates every card edit into a store
 `amend` call — the single place where card callbacks become contract events.
 
-**Export:** `EntryList({ entries, onDelete, firstOnRail, lastOnRail }: EntryListProps)`
-where `onDelete: (entryId: string) => void` bubbles delete requests up to the owning
-screen (B9), which hides the entry immediately and appends the revoke only after the
-undo window. `firstOnRail`/`lastOnRail` (both default `true`) let a parent that
-interleaves other rail nodes — `DayTimeline` weaving in `PseudoEntryCard`s — trim the
-connecting line only at the true ends of the merged rail, so a run of entries between
-calendar events keeps an unbroken line above and below it. `EntryList` renders as a
-fragment (no wrapper element) so consecutive `TimelineRow` gutters abut and the rail
-reads continuously.
+**Export:** `EntryList({ entries, onDelete, firstOnRail, lastOnRail, newestFirst }:
+EntryListProps)` where `onDelete: (entryId: string) => void` bubbles delete requests
+up to the owning screen (B9), which hides the entry immediately and appends the revoke
+only after the undo window. `firstOnRail`/`lastOnRail` (both default `true`) let a
+parent that interleaves other rail nodes — `DayTimeline` weaving in
+`PseudoEntryCard`s — trim the connecting line only at the true ends of the merged
+rail, so a run of entries between calendar events keeps an unbroken line above and
+below it. `newestFirst` (default `false`) flips each card's attachment sub-timeline to
+newest-first; the Capture screen sets it because its list runs newest-first, while the
+Day view stays oldest-first. `EntryList` renders as a fragment (no wrapper element) so
+consecutive `TimelineRow` gutters abut and the rail reads continuously.
 
 **Amend wiring per card:**
 
@@ -556,7 +560,8 @@ and the always-visible action row, plus the sheets/inputs those actions open.
 
 **Exports:** `EntryCard(props: EntryCardProps)` and `timeLabel(iso: string): string`
 (locale time like "9:04 AM"). Props: `entry`, `maxClipSec`, `sync?: SyncStatusRow`,
-rail position `first?`/`last?`, optional `onCopy?(entry)`, and callbacks `onDelete`,
+rail position `first?`/`last?`, `newestFirst?` (flips the attachment sub-timeline —
+see `AttachmentTimeline`), optional `onCopy?(entry)`, and callbacks `onDelete`,
 `onSetTime(time)`, `onAddNote(text)`, `onAddPhoto(file)`, `onAddAudio(result)`,
 `onEditText(oldFile, text, derivedFrom?)`, `onRemoveAttachment(file)`,
 `onSetLocation(location | null)`, `onApplyEdit(patch)` —
@@ -588,7 +593,9 @@ The card computes its own `EntryLifecycle` from `sync` + `hasPendingEnrichment(e
   its native wheel picker. `onChange` fires `onSetTime` only for non-empty values.
 - **Attachment sub-timeline:** `AttachmentTimeline.tsx` stably sorts visible attachments
   by `entry.attachmentLoggedAt[file]`, falling back to `entry.loggedAt` for older or
-  synthetic entries. Each row shows its append time. Audio puts its clickable waveform
+  synthetic entries — oldest-first by default, reversed when the card's `newestFirst`
+  prop is set (the Capture screen's newest-first direction). Each row shows its append
+  time. Audio puts its clickable waveform
   on the left and all transcripts derived from that audio on the right; photos put their
   thumbnail on the left and their caption on the right. Notes and orphaned descriptions
   remain standalone rows, so no audio clip has special precedence.
@@ -683,12 +690,16 @@ clip ordering.
 
 **Purpose:** Owns the entry's attachment sub-timeline. It stably orders visible
 attachments by their originating event timestamp (`Entry.attachmentLoggedAt`, with
-the entry timestamp as a fallback), shows that timestamp on each row, and pairs
-audio waveforms with their transcripts and photos with their captions. Notes and
-orphaned descriptions remain standalone rows. Each media row keeps its existing
-playback, caption editing, photo viewer, and removal behavior. The sub-timeline
-uses spacing and timestamps only; it does not add a second vertical rail inside
-the entry.
+the entry timestamp as a fallback; `sortAttachmentsByLoggedAt` in
+`attachmentOrder.ts`), shows that timestamp on each row, and pairs audio waveforms
+with their transcripts and photos with their captions. Notes and orphaned
+descriptions remain standalone rows. Each media row keeps its existing playback,
+caption editing, photo viewer, and removal behavior. The sub-timeline uses spacing
+and timestamps only; it does not add a second vertical rail inside the entry. An
+optional `newestFirst` prop (threaded from `EntryList` → `EntryCard`; the Capture
+screen sets it) reverses the row order — including ties — so the sub-timeline reads
+in the same direction as the newest-first list around it; the Day view keeps the
+default oldest-first.
 
 ### src/capture/AttachmentBody.tsx
 

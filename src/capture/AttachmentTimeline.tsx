@@ -16,6 +16,9 @@ interface AttachmentTimelineProps {
   attachments: Attachment[]
   attachmentLoggedAt?: Record<string, string>
   entryLoggedAt: string
+  /** Newest attachment first — the Capture screen's direction (its list is
+   *  newest-first); the Day view keeps the default oldest-first. */
+  newestFirst?: boolean
   onEditText: (oldFile: string, text: string, derivedFrom?: string) => void
   onRemoveAttachment: (file: string) => void
 }
@@ -42,13 +45,19 @@ export function AttachmentTimeline({
   attachments,
   attachmentLoggedAt,
   entryLoggedAt,
+  newestFirst = false,
   onEditText,
   onRemoveAttachment,
 }: AttachmentTimelineProps) {
   const liveT = useLiveText(liveTranscripts)
   const liveC = useLiveText(liveCaptions)
   const [edit, setEdit] = useState<EditState | null>(null)
-  const ordered = sortAttachmentsByLoggedAt(attachments, attachmentLoggedAt, entryLoggedAt)
+  const ordered = sortAttachmentsByLoggedAt(
+    attachments,
+    attachmentLoggedAt,
+    entryLoggedAt,
+    newestFirst,
+  )
   const bySource = new Map<string, Attachment[]>()
   for (const attachment of attachments) {
     if (attachment.kind === 'text' && attachment.derivedFrom !== undefined) {

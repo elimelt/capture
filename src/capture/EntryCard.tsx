@@ -50,6 +50,8 @@ interface EntryCardProps {
   /** Timeline-rail position — trims the connecting line at the rail's ends. */
   first?: boolean
   last?: boolean
+  /** Newest attachment first in the sub-timeline (Capture screen direction). */
+  newestFirst?: boolean
   onDelete: () => void
   /** New time-of-day "HH:mm" on the entry's own date (B8). */
   onSetTime: (time: string) => void
@@ -72,6 +74,7 @@ export function EntryCard({
   sync,
   first = false,
   last = false,
+  newestFirst = false,
   onDelete,
   onSetTime,
   onAddNote,
@@ -124,6 +127,7 @@ export function EntryCard({
         attachments={entry.attachments}
         attachmentLoggedAt={entry.attachmentLoggedAt}
         entryLoggedAt={entry.loggedAt}
+        newestFirst={newestFirst}
         onEditText={onEditText}
         onRemoveAttachment={onRemoveAttachment}
       />

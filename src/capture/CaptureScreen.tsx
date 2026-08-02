@@ -345,11 +345,14 @@ export default function CaptureScreen() {
       ) : (
         // Only the most recent entry (SPEC §4.1's latest-entry card): the
         // full day lives on the Day screen, keeping the two views distinct.
+        // newestFirst flips the card's attachment sub-timeline to match this
+        // list's newest-first direction.
         <div className="flex flex-col">
           <EntryList
             entries={todayEntries.slice(0, 1)}
             onDelete={handleDelete}
             onCopy={(entry) => void copyEntry(entry)}
+            newestFirst
           />
         </div>
       )}
