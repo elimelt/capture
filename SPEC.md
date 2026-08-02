@@ -544,6 +544,10 @@ timebox/                            (root; created by the app, drive.file scope)
         000042_2026-08-02T12-31-05-0400_d4e5f6.m4a
         000042_2026-08-02T12-31-05-0400_d4e5f6_note.txt
         000043_2026-08-02T12-31-40-0400_e7a9b0.json   e.g. a revoke of 000042
+        000044-000046_2026-08-02T18-02-33-0400_f1a2b3.ndjson   log segment:
+                                                      3 batched events (§5.7)
+        000044_2026-08-02T18-02-33-0400_f1a2b3.m4a    their attachments stay
+        000045_2026-08-02T18-04-01-0400_a9c8d7.m4a    individual files (§5.7)
     checkpoint.json                 MUTABLE consumer cursor (app-created stub, §5.4)
     results/                        MUTABLE skill-written reports (app-created stubs)
       2026-08-02.json               processing report for that date (§6.4)
@@ -552,10 +556,11 @@ timebox/                            (root; created by the app, drive.file scope)
     log/ ...
 ```
 
-- Filenames lead with the **zero-padded per-stream sequence number**, then the local
-  `loggedAt` timestamp, then a short event id — so a plain name-sorted listing *is* the
-  log order, and "everything after seq N" is answerable from a file listing alone,
-  without opening a single file.
+- Filenames lead with the **zero-padded per-stream sequence number** (a segment's
+  name leads with its seq *range* — §5.7), then the local `loggedAt` timestamp, then
+  a short event id — so a plain name-sorted listing *is* the log order, and
+  "everything after seq N" is answerable from a file listing alone, without opening
+  a single file.
 - Date partitions keep folder listings small and let a consumer fetch a bounded window;
   the partition key is `loggedAt` (append time), so a consumer never needs to look in
   partitions older than its checkpoint.
@@ -696,6 +701,147 @@ golden-file tests. Upload/pull wiring is deferred: unlike the system streams of 
 — which reuse the `capture.event.v1` envelope and stores, so registering them in the
 sync loop sufficed — this log has its own schema and object store, and the engine
 (§8.4/§8.5) needs overlay-aware wiring before it can carry it.
+
+### 5.7 Batched log segments (protocol v2)
+
+Uploading each pending event as its own record file costs one request per event, so
+a backlog of N events drains in ~2N requests (attachments + records). A **log
+segment** batches two or more pending events of one stream into a single sealed
+NDJSON file — N events commit in one request instead of N — while preserving every
+§5 invariant: append-only, discoverable and orderable by filename, byte-stable per
+event. Segments are an **additive, protocol-v2 extension** of the §5.1/§5.2
+grammar: nothing about per-event record files changes, and a log may freely mix
+records and segments (readers must not assume either form). See §5.8 for the read
+model and what pre-v2 readers observe.
+
+**Naming grammar.** A segment file's name leads with the seq *range* of the events
+it holds, then the `loggedAt` timestamp and id of the segment's **first** event
+(first in log order — `seq`, ties broken by `loggedAt` then `id`, as everywhere):
+
+```
+<minSeq>-<maxSeq>_<loggedAt of first event, filename-safe>_<id of first event>.ndjson
+
+000044-000046_2026-08-02T18-02-33-0400_f1a2b3.ndjson
+```
+
+- `minSeq`/`maxSeq` are the smallest and largest seq among the batch's events,
+  fixed when the batch is planned and zero-padded to six digits exactly like a
+  record name's seq. The contained seqs need **not** be contiguous: a device may
+  batch around an event that takes a different upload path (or was erased
+  out-of-band, §11), and consumers already tolerate seq gaps. After a
+  mid-assignment crash (see the commit protocol below) the declared range may
+  even **strictly contain** the content's range — readers must never treat the
+  declared range as a completeness claim; id-based dedupe (§5.8) is
+  authoritative.
+- The first event's id gives the name the same device/event entropy as a record
+  name (ids are crypto-random — §3.3), so two devices offline-minting the same seq
+  range can never collide on a name.
+- **Listing order survives.** ASCII `-` (0x2D) sorts before both the digits and
+  `_` (0x5F), so a segment sorts *before* any record of its own min seq and after
+  every name of a smaller seq: a plain name-sorted listing still yields the log in
+  non-decreasing seq order, with each segment sitting at its min-seq position.
+- Like `seq` itself (§3.2 #3), the name is an ordering and discovery *hint*; the
+  payload is authoritative. The leading integer of a segment name reads as its min
+  seq under the same "seq of a filename" parse rule as record names.
+
+**Serialization.** A segment is UTF-8 NDJSON: one event per line, each line being
+the §5.2 record JSON for that event with all inter-token whitespace removed — the
+compact single-line rendering of the *exact same* JSON document (same fixed key
+order, same optional-fields-omitted rule, same `capture.event.v1` schema per line)
+— terminated by `\n`. The final line is newline-terminated too, so a segment's
+bytes are exactly the concatenation of its lines and the per-event line bytes are
+deterministic. Lines appear in log order (`seq` → `loggedAt` → `id`). There is no
+header, footer, or per-file version marker. The app writes a segment only for
+**two or more** events (a single pending event keeps the §5.2 per-event record);
+readers must accept any line count ≥ 1. Segments upload with MIME type
+`application/x-ndjson`. A segment is **sealed**: like every file under `log/`
+(§5.5) it is immutable once uploaded — batching never rewrites, replaces, or
+supersedes an existing file.
+
+**Attachments are never batched.** Segments batch event *records* only. Every
+attachment remains its own file under its §5.2 name — derived from its *own*
+event's `seq`/`loggedAt`/`id`, never from the segment name — in the same date
+partition. All events in one segment share one partition (the local date of
+`loggedAt`); a burst spanning midnight splits at the partition boundary.
+
+**Commit protocol.** The §5.2 atomic-append protocol generalizes, with the segment
+as the commit for *all* of its events at once:
+
+1. The device pre-generates **one Drive file id** for the segment
+   (`files.generateIds`, §8.4) and persists it — keyed by the segment filename —
+   on the local sync row of **every** member event *before* the first upload
+   attempt, alongside each member's own pre-generated attachment ids. This
+   persisted assignment fixes the segment's membership, name, and id across
+   retries.
+2. All members' attachment files upload first (idempotently, by their own ids).
+3. The segment uploads last with the pre-generated id — **the segment is the
+   commit**: its member events exist in Drive iff the segment file exists.
+4. The members' local sync rows are marked uploaded, one by one.
+
+Crash-retry is idempotent at every interruption point, exactly as in §8.4
+(re-uploading a pre-generated id yields 409, which counts as success):
+
+- Crash during step 1: rows that received the assignment re-drain as that segment;
+  rows that didn't batch separately. The interrupted segment uploads with exactly
+  the members that carry its assignment — nothing is lost or duplicated.
+- Crash during steps 2–3: no member is committed (the segment file doesn't
+  exist); the retry re-uploads everything under the same ids.
+- Crash during step 4: the segment already exists, so the retry's re-upload gets
+  409-as-success and finishes marking the remaining rows. No duplicate file, no
+  duplicate event.
+
+A conforming device therefore never writes the same event into two log files.
+Readers must nonetheless dedupe by event id (§5.8) — id is the identity (§3.2 #3),
+and dedup also covers logs touched by non-conforming tools.
+
+### 5.8 Reading a mixed log, and the v1-reader story
+
+**Read model (protocol v2).** A consumer reads a v2 log exactly as before, with one
+added file grammar:
+
+1. Discover as usual (§5.4 listing, or the app's changes feed — §8.5). A file is
+   an event carrier iff its name parses as a record (§5.1) **or** a segment
+   (§5.7); everything else (attachments, foreign files) is ignored as before.
+2. The log's event set is the union of all record files' contents and all segment
+   files' lines, **deduplicated by event id**. Duplicate ids across files are
+   legal and meaningless — keep one, they are byte-identical events.
+3. Fold as usual (§3.3). Ordering guarantees are unchanged: a name-sorted listing
+   yields files in non-decreasing seq order, each segment's lines are internally
+   in log order, and the fold's total order is computed from the events
+   themselves, never from filenames.
+4. "Everything after seq N" (§5.4) stays answerable from a listing alone: select
+   records with seq > N plus segments with **maxSeq** > N. A segment straddling
+   the checkpoint may resend already-consumed events; the id dedupe plus output
+   idempotency (§6.2) make that harmless.
+5. **Discovery id.** The first-member id in a segment name plays the role a
+   record name's id plays for replicas (§8.5): a conforming writer commits a
+   whole segment as one file and a conforming replica imports a whole segment
+   atomically, so a replica that holds a segment's first event holds all of them
+   — change/listing dedupe may key on the name's id without opening the file.
+6. **Malformed segments fail as a unit.** If any line of a segment fails to parse,
+   consume none of its lines, surface the error, and do not advance any checkpoint
+   or cursor past it. Never half-import a segment silently.
+
+**What a v1 reader sees.** The extension is additive: no record file is renamed,
+rewritten, or removed, and segment names match no v1 grammar (they parse as
+neither record nor attachment), so a v1 reader — already required to ignore files
+it doesn't recognize (§5.2) — skips `.ndjson` files entirely. It sees a well-formed
+log with gaps in the seq numbering, a shape §11 already requires tolerating, and
+every event it *can* read is intact and unmodified. But the events inside segments
+are invisible to it: a v1 consumer can advance its checkpoint past batched events
+without processing them, and a v1 replica can advance its changes cursor past
+segment changes without importing them. Therefore **a stream containing any
+segment is a protocol-v2 stream: all of its consumers must implement this section
+before treating their checkpoint or replica as complete.** In practice the only
+writer is this app, which ships the v2 reader in the same version that starts
+writing segments, and the shipped skill documents describe both grammars.
+
+For the app's own replicas the upgrade seam is closed mechanically: the v2 pull
+engine **versions its persisted changes cursor** and treats any cursor persisted
+by a v1 engine as unusable. The first pull after upgrading therefore performs one
+full listing walk (§8.5 cold start) — picking up every segment the v1 engine's
+cursor already skipped past — then mints a fresh v2 cursor. Nothing is lost, at
+worst replayed, and replays are idempotent.
 
 ---
 
@@ -862,13 +1008,19 @@ user's assistant, authorized separately by the user in that product.
    into the event's stream/date partition, following the atomic append protocol
    (§5.2): attachments first (resumable upload for anything > 5 MB — rare for audio;
    possible for photos), the event record `.json` last — the record is the commit.
+   **Runs of two or more pending events in the same date partition batch into one
+   sealed log segment (§5.7)** — all their attachments first, then the segment,
+   which commits the whole run in one request; a lone pending event keeps the
+   per-event record path.
 3. Uploads are idempotent by **pre-generated file id**: ids are minted client-side
    in batches (`files.generateIds`) and persisted on the local sync row before the
    first attempt, so a retry re-uploads with the same id and Drive's 409 answer
-   counts as success — no find-before-upload requests. (Date-partition folders keep
-   find-before-create: pre-generated ids don't apply to folders.) Everything the
-   app creates is tagged with app-private `appProperties` at creation time; tags
-   are advisory (older files carry none) and invisible to other readers.
+   counts as success — no find-before-upload requests. A segment's single id is
+   persisted on every member row before the first attempt (§5.7 commit protocol).
+   (Date-partition folders keep find-before-create: pre-generated ids don't apply
+   to folders.) Everything the app creates is tagged with app-private
+   `appProperties` at creation time; tags are advisory (older files carry none)
+   and invisible to other readers.
 4. Success → status `uploaded`; local audio blob retained or pruned per Settings.
 5. Failures: 429/5xx → keep queued, stop the drain; the next manual "Sync now"
    retries immediately (no persisted backoff — sync has no automatic trigger, so a
@@ -884,22 +1036,26 @@ device — or a reinstalled/wiped one — converges on the full log:
 
 1. **Discover by filename, triggered by the Changes API.** One `changes.list`
    request from a per-stream cursor persisted in local meta says which partitions
-   gained record files since the last pull — a no-op pull is one request no matter
-   how many date partitions the log has accumulated. Dirty partitions are then
-   listed as before: record filenames carry `seq_ts_id` (§5.1), so the missing set
-   (ids not in the local replica) is computed from listings alone — no file reads
-   for events already held. Foreign files, non-`YYYY-MM-DD` folders, trashed or
-   removed changes, and records already local (our own pushes) are ignored.
-   Without a cursor (first pull, wiped meta), or when Drive rejects one (410
-   expired), discovery falls back to the full walk — list `log/`'s date-partition
-   folders, then each partition's children — and a fresh cursor is minted before
-   the walk and persisted only after a fully successful pull, so no change window
-   is ever skipped, at worst replayed. Cursors — like the cached folder/file ids
-   and pre-generated upload ids — are account-bound: local sync caches are bound
-   to the granting account's stable id (`about.get` `user.permissionId`) and are
-   silently discarded when a token from a different Google account appears, so a
-   switch just costs one re-bootstrap + full walk.
-2. **Download eagerly.** For each missing record: fetch the `.json`, then fetch every
+   gained event carriers since the last pull — a no-op pull is one request no
+   matter how many date partitions the log has accumulated. Dirty partitions are
+   then listed as before: record filenames carry `seq_ts_id` and segment filenames
+   carry `range_ts_firstId` (§5.1, §5.7), so the missing set (ids not in the local
+   replica; a segment's name id stands for all its members — §5.8) is computed
+   from listings alone — no file reads for events already held. Foreign files,
+   non-`YYYY-MM-DD` folders, trashed or removed changes, and carriers already
+   local (our own pushes) are ignored. Without a cursor (first pull, wiped meta,
+   or a cursor persisted by a pre-v2 engine — §5.8), or when Drive rejects one
+   (410 expired), discovery falls back to the full walk — list `log/`'s
+   date-partition folders, then each partition's children — and a fresh cursor is
+   minted before the walk and persisted only after a fully successful pull, so no
+   change window is ever skipped, at worst replayed. Cursors — like the cached
+   folder/file ids and pre-generated upload ids — are account-bound: local sync
+   caches are bound to the granting account's stable id (`about.get`
+   `user.permissionId`) and are silently discarded when a token from a different
+   Google account appears, so a switch just costs one re-bootstrap + full walk.
+2. **Download eagerly.** For each missing carrier: fetch the record `.json` (or the
+   segment `.ndjson`, splitting it into events — a segment imports as a unit, all
+   lines or none, deduped against events already held), then fetch every
    referenced attachment blob not already local (full offline availability). An
    attachment absent on Drive (pruned, or a §5.2 push race) is skipped and picked up on
    a later pull — the record commits last on push, so this is rare.

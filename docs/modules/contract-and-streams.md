@@ -9,10 +9,11 @@ log (SPEC §3.3, §5). This is the shared language between the capture app and t
 external chat-assistant skills that consume the log from Google Drive. It defines:
 
 - the event/entry **types** (`types.ts`),
-- the **canonical wire format** for event records (`serialize.ts`) and for the
-  non-event contract files `streams.json` / `config.json` / `checkpoint.json`
-  (`files.ts`),
-- the **log filename scheme** and date partitioning (`filenames.ts`),
+- the **canonical wire format** for event records (`serialize.ts`), for batched
+  NDJSON log segments (`segments.ts` — SPEC §5.7), and for the non-event contract
+  files `streams.json` / `config.json` / `checkpoint.json` (`files.ts`),
+- the **log filename scheme** — per-event records, attachments, and segment
+  ranges — and date partitioning (`filenames.ts`),
 - the **fold** that turns the append-only event log into user-visible entries
   (`fold.ts`),
 - small helpers for event **ids** (`ids.ts`) and local-offset ISO **timestamps**
@@ -122,11 +123,14 @@ Relations: `filenames.ts` uses `localDateOf` for partitions; event producers use
 
 ### src/contract/filenames.ts
 
-The log filename scheme (SPEC §5.1). Names are
+The log filename scheme (SPEC §5.1, §5.7). Per-event names are
 `<seq6>_<filenameSafeTimestamp>_<id>[suffix][.ext]`, e.g.
-`000041_2026-08-02T09-04-11-0400_a1b2c3.json`. The scheme guarantees that a
-name-sorted listing equals log order, and that `seq` is recoverable from the listing
-alone.
+`000041_2026-08-02T09-04-11-0400_a1b2c3.json`; batched segments (SPEC §5.7) lead
+with their seq *range* instead:
+`000044-000046_2026-08-02T18-02-33-0400_f1a2b3.ndjson`. The scheme guarantees
+that a name-sorted listing equals log order — ASCII `-` sorts before digits and
+`_`, so a segment sits at its min-seq position — and that `seq` is recoverable
+from the listing alone.
 
 Key exports:
 
@@ -153,8 +157,17 @@ Key exports:
   digits without a padding change.
 - `idOfRecordName(name: string): string | null` — parses the event id out of a
   record filename (`000041_…_a1b2c3.json` → `"a1b2c3"`), or `null` when the name is
-  not an event record (attachment, foreign file, folder). This is what lets the pull
-  engine (`src/drive/pull.ts`) compute the missing set from a Drive listing alone.
+  not an event record (attachment, segment, foreign file, folder). This is what
+  lets the pull engine (`src/drive/pull.ts`) compute the missing set from a Drive
+  listing alone.
+- `segmentFileName(events): string` — names a batched segment (SPEC §5.7) from its
+  member events: min/max seq (scanned, so gaps are fine) plus the *first* event's
+  timestamp and crypto-random id for cross-device entropy. Callers pass the batch
+  in log order.
+- `parseSegmentName(name: string): SegmentName | null` — parses a segment name
+  back into `{ minSeq, maxSeq, firstId }`, or `null` for any non-segment name.
+  `firstId` is the segment's *discovery id* (SPEC §5.8): holding the first member
+  locally implies holding them all, because segments commit and import as a unit.
 
 Relations: consumes `types.ts` and `time.ts`; `Attachment.file` values, Drive
 uploads, and pull-side discovery use these names.
@@ -174,6 +187,10 @@ Key exports:
   `capturedAt?, location?/clearLocation?, removeAttachments?`. If a patch has both
   `location` and `clearLocation`, only `location` is written — `clearLocation` is
   dropped from the wire.
+- `serializeEventLine(event: LogEvent): string` — the same JSON document as
+  `serializeEvent`, compacted to a single newline-terminated line: one NDJSON
+  segment line (SPEC §5.7). Key order and optional-field omission are shared with
+  `serializeEvent` by construction (one `orderedEvent` builder feeds both).
 - `parseEvent(json: string): LogEvent` — parses and **structurally** validates;
   throws `Error('invalid event record: …')` on: invalid JSON, non-object, wrong
   `schema`, unknown `type`, non-string `id`/`stream`/`loggedAt`/`deviceTz`,
@@ -182,7 +199,28 @@ Key exports:
   internals are not checked) and the result is cast to `LogEvent`.
 
 Relations: inverse pair with itself (`parseEvent(serializeEvent(e))` round-trips);
-`files.ts` follows the same wire conventions for non-event files.
+`segments.ts` builds on `serializeEventLine`/`parseEvent`; `files.ts` follows the
+same wire conventions for non-event files.
+
+### src/contract/segments.ts
+
+The NDJSON body of a batched log segment (SPEC §5.7): one compact §5.2 record per
+line, every line (including the last) newline-terminated, lines in log order.
+Segments batch event *records* only — attachments stay individual files.
+
+Key exports:
+
+- `serializeSegment(events: readonly LogEvent[]): string` — the canonical segment
+  bytes; sorts into log order (`compareEvents`) and concatenates
+  `serializeEventLine` outputs. Throws on an empty batch.
+- `parseSegment(ndjson: string): LogEvent[]` — splits and `parseEvent`-validates
+  every line, tolerating a missing final newline. **All-or-nothing** (SPEC §5.8
+  #6): one malformed line throws (with its 1-based line number) so a caller can
+  never silently import half a segment.
+
+Relations: consumes `fold.ts` (`compareEvents`) and `serialize.ts`; the Drive
+queue (`src/drive/queue.ts`) writes segments, the pull engine
+(`src/drive/pull.ts`) reads them.
 
 ### src/contract/files.ts
 
@@ -257,8 +295,11 @@ Semantics (all verified by `fold.test.ts`):
 Covers the filename scheme: timestamp sanitization, seq padding and parse-back
 (including seqs past 6 digits and secondary attachment names), attachment naming
 per kind/mime/index, date partitioning, the invariant that lexicographic name
-order equals seq order, and `idOfRecordName` round-tripping generated record names
-while rejecting attachments and foreign files.
+order equals seq order (including a segment sorting at its min-seq position among
+records), `idOfRecordName` round-tripping generated record names while rejecting
+attachments, segments, and foreign files, and the segment grammar:
+`segmentFileName` goldens (range extremes with gaps allowed) and
+`parseSegmentName` round-trip/rejection.
 
 ### src/contract/filenames.edge-cases.test.ts
 
@@ -304,6 +345,14 @@ transcript (`derivedFrom`) and note-edit (`removeAttachments` + replacement) ame
 round-trip tests through `parseEvent` including optional-field omission and the
 `clearLocation`-vs-`location` wire rule; and validation-error tests for each failure
 mode of `parseEvent`.
+
+### src/contract/segments.test.ts
+
+Covers the segment body format: a golden byte test for `serializeEventLine`, the
+guarantee that a line carries the same JSON document as `serializeEvent`, log-order
+concatenation with trailing newline, `parseSegment` round-trip (with and without
+the final newline), the all-or-nothing failure on malformed or structurally
+invalid lines (with line numbers), and empty-body rejection.
 
 ### src/contract/serialize.edge-cases.test.ts
 

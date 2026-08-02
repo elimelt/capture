@@ -42,10 +42,12 @@ Every stream (a named capture profile from `src/streams/registry.ts`; v1 ships o
   collisions are resolved deterministically by the `loggedAt` → `id` tiebreak.
 - **Filenames are the ordering.** Log files are named
   `<seq6>_<timestamp>_<id>[suffix].ext` (`filenames.ts`), partitioned by local date
-  of `loggedAt`. A name-sorted Drive listing *is* log order, `seqOfFilename`
-  recovers `seq`, and `idOfRecordName` recovers the id from record names alone — a
-  skill needs no index, and the pull engine computes its missing set from a
-  listing without reading any file it already holds.
+  of `loggedAt`; batched segments (SPEC §5.7) lead with their seq *range* instead
+  (`<minSeq6>-<maxSeq6>_<timestamp>_<firstId>.ndjson`) and sort at their min-seq
+  position. A name-sorted Drive listing *is* log order, `seqOfFilename` recovers
+  `seq`, and `idOfRecordName`/`parseSegmentName` recover the discovery id from
+  names alone — a skill needs no index, and the pull engine computes its missing
+  set from a listing without reading any file it already holds.
 - **Byte-stable wire format.** `serializeEvent` produces deterministic JSON (fixed
   key order, 2-space indent, trailing newline, optional fields omitted), so the
   bytes in Drive are reproducible and diff-friendly; `parseEvent` validates the
@@ -105,11 +107,11 @@ sequenceDiagram
     AS->>Q: then push
     Q->>EV: listPendingSync(stream) — seq order
     Q->>D: ensureTree / ensurePartition
-    loop each pending row
-        Q->>D: mint file ids (generateIds, batched) → persist on row
+    loop each batch (run of same-partition rows; 1 → record, ≥2 → segment)
+        Q->>D: mint file ids (generateIds, batched) → persist on rows
         Q->>D: upload attachments (pre-generated id; 409 = ok)
         Q->>EV: phase = record-pending
-        Q->>D: upload event .json — the commit
+        Q->>D: upload event .json / segment .ndjson — the commit
         Q->>EV: status = uploaded, phase = done
     end
 ```
@@ -137,13 +139,17 @@ Stage by stage:
    `ensureTree` (`bootstrap.ts`): `timebox/` root, `streams.json`, and per stream a
    folder with `config.json`/`checkpoint.json` stubs, `log/`, and `results/` —
    every step finds-before-creates, with ids cached in `tree.ts` and everything
-   tagged with app-private `appProperties` at creation. Then, per event: Drive
-   file ids are minted client-side (`files.generateIds`, batched in `ids.ts`) and
-   persisted on the sync row before any upload; attachments upload first, the
-   event record `.json` last, each carrying its pre-generated id (a 409 means a
-   prior attempt already landed — success). **The record is the commit** (SPEC
-   §5.2): an event exists in Drive iff its record does. Orphan attachments from
-   an interrupted upload reference nothing and are invisible to any fold.
+   tagged with app-private `appProperties` at creation. Then, per commit unit:
+   Drive file ids are minted client-side (`files.generateIds`, batched in
+   `ids.ts`) and persisted on the sync row before any upload; attachments upload
+   first, the committing log file last, each carrying its pre-generated id (a
+   409 means a prior attempt already landed — success). A run of ≥ 2 pending
+   events in the same date partition commits as **one sealed NDJSON segment**
+   (SPEC §5.7) whose single pre-generated id is persisted on every member row,
+   pinning the batch across crashed drains; a lone event keeps the per-event
+   record. **The record/segment is the commit** (SPEC §5.2, §5.7): an event
+   exists in Drive iff a log file carrying it does. Orphan attachments from an
+   interrupted upload reference nothing and are invisible to any fold.
 
 After a successful upload, local audio blobs are pruned unless the stream's
 `keepAudioLocally` setting says otherwise.
@@ -201,22 +207,27 @@ cycle starts with `pullStream(token, stream)` (`src/drive/pull.ts`), which
 converges the replica with Drive before anything is pushed:
 
 1. **Discover.** One `changes.list` request from the per-stream cursor persisted
-   in `meta` (`src/drive/changes.ts`) marks the partitions that gained record
-   files since the last pull — a no-op pull is a single request no matter how old
-   the log. Only the dirty partitions are then listed; each child's filename is
-   parsed with `idOfRecordName`, and names that parse to an id already held
-   locally (including everything this device just pushed) are skipped without a
-   read; attachments, foreign files, and removed/trashed changes are ignored.
-   Without a cursor — first pull, wiped meta, or the account-switch discard
-   (§5) — or when Drive rejects one (410 expiry), discovery falls back once to
-   the full walk (every `log/` partition folder and its children), minting a
-   fresh cursor before the walk and persisting it after the pull succeeds, so no
-   change window is ever skipped, at worst replayed.
-2. **Fetch.** Download each missing event record, `parseEvent`-validate it
-   (malformed records are skipped, never fatal), and **eagerly** download every
-   attachment the event references that isn't already stored (tolerating pruned or
-   still-uploading attachments — the record is the commit, so a referenced-but-
-   absent attachment is a transient race, not corruption).
+   in `meta` (`src/drive/changes.ts`) marks the partitions that gained event
+   carriers — records or segments — since the last pull; a no-op pull is a single
+   request no matter how old the log. Only the dirty partitions are then listed;
+   each child's filename is parsed with `idOfRecordName`/`parseSegmentName`, and
+   names whose discovery id is already held locally (including everything this
+   device just pushed; a segment's first-member id stands for all its members —
+   SPEC §5.8) are skipped without a read; attachments, foreign files, and
+   removed/trashed changes are ignored. Without a usable cursor — first pull,
+   wiped meta, the account-switch discard (§5), or a cursor persisted by a
+   pre-segment engine (the value is format-versioned) — or when Drive rejects
+   one (410 expiry), discovery falls back once to the full walk (every `log/`
+   partition folder and its children), minting a fresh cursor before the walk
+   and persisting it after the pull succeeds, so no change window is ever
+   skipped, at worst replayed.
+2. **Fetch.** Download each missing carrier — a record `parseEvent`-validated, a
+   segment split and validated line by line (`parseSegment`; one malformed line
+   fails the whole partition's import, so a segment never half-imports) — dedupe
+   by event id, and **eagerly** download every attachment the events reference
+   that isn't already stored (tolerating pruned or still-uploading attachments —
+   the carrier is the commit, so a referenced-but-absent attachment is a
+   transient race, not corruption).
 3. **Import.** `importEvents()` (`src/store/events.ts`) writes events + blobs in
    one transaction per partition, marks their sync rows `uploaded`/`done` (they
    came *from* Drive — the drainer must never re-push them), and bumps
@@ -342,11 +353,13 @@ The subsystem is safe to interrupt at any point, by construction:
 - **Pulls are idempotent and atomic.** Discovery is by event id from filenames, so
   a re-pull skips everything already held; imports commit per partition in one
   transaction (events + blobs + counter bump), so an interrupted pull leaves only
-  complete events, all of which the next pull skips. The changes cursor advances
-  only after a fully successful pull and self-heals like the tree cache (missing
-  or expired cursors trigger one full walk + re-mint; account-foreign ones are
-  cleared up front by the §5 account-switch discard), so the Changes fast path
-  can only replay work, never drop it.
+  complete events, all of which the next pull skips. Segments import all-or-none
+  and dedupe line-by-line, so overlap with already-held events is harmless. The
+  changes cursor advances only after a fully successful pull and self-heals like
+  the tree cache (missing, expired, or pre-segment-format cursors trigger one
+  full walk + re-mint; account-foreign ones are cleared up front by the §5
+  account-switch discard), so the Changes fast path can only replay work, never
+  drop it.
 - **The fold tolerates disorder.** It sorts by `compareEvents` and silently ignores
   unknown or already-revoked targets, so partial replication (e.g. a skill reading
   Drive mid-drain, or a pull racing an in-flight upload) still folds to a

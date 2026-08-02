@@ -66,21 +66,39 @@ timebox/                              # Root folder (created by app)
         000042_2026-08-02T12-31-05-0400_d4e5f6.json
         000042_2026-08-02T12-31-05-0400_d4e5f6.m4a
         000042_2026-08-02T12-31-05-0400_d4e5f6_note.txt
+        000044-000046_2026-08-02T18-02-33-0400_f1a2b3.ndjson  # Log segment
+        000044_2026-08-02T18-02-33-0400_f1a2b3.m4a    # (its attachments stay
+        000045_2026-08-02T18-04-01-0400_a9c8d7.m4a    #  individual files)
     checkpoint.json                   # Consumer cursor (your last processed seq)
     results/                          # Processing reports (skill writes here)
       2026-08-02.json
 ```
 
-**Filename format**: `{seq6}_{timestamp}_{id}.json`
+Events arrive in **two file forms**, freely mixed within a partition:
+
+**Per-event record**: `{seq6}_{timestamp}_{id}.json` — one JSON event document
 - `seq6`: 6-digit zero-padded sequence number
 - `timestamp`: ISO timestamp with colons replaced by dashes
 - `id`: Short unique event identifier
 
-Sorting filenames lexicographically gives you log order.
+**Log segment** (protocol v2): `{minSeq6}-{maxSeq6}_{timestamp}_{firstId}.ndjson`
+— NDJSON, one event per line, batching 2+ events uploaded together
+- `minSeq6`/`maxSeq6`: zero-padded lowest/highest `seq` inside the file
+- `timestamp`/`firstId`: `loggedAt` and `id` of the segment's first event
+- Each line is the same JSON document a record file holds, compacted to one
+  line; every line ends with `\n`
+- The contained seqs may have gaps; the file content is authoritative, the
+  name is a hint
+
+Sorting filenames lexicographically gives you log order (a segment sorts at
+its min-seq position). **You must read both forms**: a reader that ignores
+`.ndjson` segments will silently miss batched events. Deduplicate events by
+`id` — the same event may in rare cases appear in more than one file, and
+duplicates are byte-identical.
 
 ## Event Schema (capture.event.v1)
 
-All events follow the NDJSON format with schema `capture.event.v1`. There are three event types:
+Every event — one per `.json` record, one per `.ndjson` segment line — has schema `capture.event.v1`. There are three event types:
 
 ### capture — Creates an Entry
 
@@ -237,12 +255,13 @@ if [ "$PARTITION_ID" = "null" ]; then
   exit 0
 fi
 
-# 5. List and download event records (*.json files)
+# 5. List and download event carriers (*.json records AND *.ndjson segments)
 curl -s -H "Authorization: Bearer $TOKEN" \
-  "https://www.googleapis.com/drive/v3/files?q='$PARTITION_ID'+in+parents+and+name+contains+'.json'&orderBy=name&fields=files(id,name)" \
+  "https://www.googleapis.com/drive/v3/files?q='$PARTITION_ID'+in+parents+and+(name+contains+'.json'+or+name+contains+'.ndjson')&orderBy=name&fields=files(id,name)" \
   | jq -r '.files[] | "\(.id) \(.name)"' \
   | while read -r FILE_ID FILE_NAME; do
       echo "=== $FILE_NAME ==="
+      # A .json file is one event; a .ndjson segment is one event per line.
       curl -s -H "Authorization: Bearer $TOKEN" \
         "https://www.googleapis.com/drive/v3/files/$FILE_ID?alt=media"
       echo
@@ -277,7 +296,9 @@ curl -s -H "Authorization: Bearer $TOKEN" \
   | jq '.consumedThroughSeq'
 ```
 
-Then select events with `seq > consumedThroughSeq`.
+Then select record files with `seq > consumedThroughSeq`, plus segment files
+whose `maxSeq > consumedThroughSeq` (a straddling segment may resend events you
+already processed — dedupe by `id`; re-processing is safe by design).
 
 ### Download audio attachments
 
@@ -334,9 +355,13 @@ it, the next run will safely reprocess the same events.
 ## Key Invariants
 
 1. **Append-only**: The `log/` tree is immutable. Never edit or delete files.
-2. **Atomic writes**: The `.json` record is the commit — attachments upload first.
+2. **Atomic writes**: The `.json` record (or the `.ndjson` segment carrying a
+   batch of events) is the commit — attachments upload first.
 3. **Idempotent processing**: Use event IDs for deduplication; re-running is safe.
 4. **Deterministic fold**: Same events always produce same visible entries.
+5. **Read both grammars**: events live in `.json` records and `.ndjson` segments;
+   ignoring segments silently loses batched events. A malformed segment must be
+   rejected whole — never process only some of its lines.
 
 ## Need Help?
 

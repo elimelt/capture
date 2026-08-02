@@ -1,9 +1,12 @@
 /**
- * Log filename scheme (SPEC §5.1):
- *   000041_2026-08-02T09-04-11-0400_a1b2c3.json      event record
- *   000041_2026-08-02T09-04-11-0400_a1b2c3.m4a       primary attachment
- *   000041_2026-08-02T09-04-11-0400_a1b2c3_note.txt  secondary attachments
+ * Log filename scheme (SPEC §5.1, §5.7):
+ *   000041_2026-08-02T09-04-11-0400_a1b2c3.json          event record
+ *   000041_2026-08-02T09-04-11-0400_a1b2c3.m4a           primary attachment
+ *   000041_2026-08-02T09-04-11-0400_a1b2c3_note.txt      secondary attachments
+ *   000044-000046_2026-08-02T18-02-33-0400_f1a2b3.ndjson batched log segment
  * Name-sorted listing == log order; seq is answerable from the listing alone.
+ * A segment leads with its seq range and sorts at its min-seq position:
+ * ASCII '-' (0x2D) precedes both digits and '_' (0x5F).
  */
 import type { AttachmentKind, LogEvent } from './types'
 import { localDateOf } from './time'
@@ -75,4 +78,41 @@ export function seqOfFilename(name: string): number {
 export function idOfRecordName(name: string): string | null {
   const m = /^\d+_[^_]+_([0-9a-z]+)\.json$/.exec(name)
   return m ? m[1] : null
+}
+
+/**
+ * Name a batched log segment (SPEC §5.7): the seq range of the contained
+ * events, then the loggedAt timestamp and id of the segment's *first* event
+ * (log order), whose crypto-random id gives the name cross-device entropy.
+ * `events` must be non-empty and already in log order (seq → loggedAt → id).
+ */
+export function segmentFileName(
+  events: readonly Pick<LogEvent, 'seq' | 'loggedAt' | 'id'>[],
+): string {
+  const first = events[0]
+  let minSeq = first.seq
+  let maxSeq = first.seq
+  for (const e of events) {
+    if (e.seq < minSeq) minSeq = e.seq
+    if (e.seq > maxSeq) maxSeq = e.seq
+  }
+  return `${padSeq(minSeq)}-${padSeq(maxSeq)}_${tsForFilename(first.loggedAt)}_${first.id}.ndjson`
+}
+
+/** The parts a segment filename carries (all hints; the payload is authoritative). */
+export interface SegmentName {
+  minSeq: number
+  maxSeq: number
+  /** Id of the segment's first event — its discovery id (SPEC §5.8). */
+  firstId: string
+}
+
+/**
+ * Parse a segment filename back into its parts, or null when the name isn't
+ * a segment of ours (record, attachment, foreign file, folder).
+ */
+export function parseSegmentName(name: string): SegmentName | null {
+  const m = /^(\d+)-(\d+)_[^_]+_([0-9a-z]+)\.ndjson$/.exec(name)
+  if (!m) return null
+  return { minSeq: parseInt(m[1], 10), maxSeq: parseInt(m[2], 10), firstId: m[3] }
 }

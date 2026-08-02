@@ -38,8 +38,11 @@ export interface SyncStatusRow {
    * Pre-generated Drive file ids (files.generateIds), keyed by contract
    * filename, persisted *before* each upload attempt so a retry re-uploads
    * with the same id — Drive answers 409 for an id that already landed, which
-   * the client treats as success. Absent on rows written by older versions;
-   * the drainer falls back to find-before-upload for those (SPEC §8.4).
+   * the client treats as success. A `.ndjson` key is a segment assignment
+   * (SPEC §5.7): the same segment filename+id pair is persisted on every
+   * member row, pinning the batch across crashed drains. Absent on rows
+   * written by older versions; the drainer falls back to find-before-upload
+   * for those (SPEC §8.4).
    */
   fileIds?: Record<string, string>
 }

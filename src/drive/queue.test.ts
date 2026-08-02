@@ -6,6 +6,8 @@ import { DriveError } from './client'
 interface FakeUploadArgs {
   name: string
   parentId: string
+  mimeType?: string
+  body?: Blob | string
   fileId?: string
   appProperties?: Record<string, string>
 }
@@ -16,6 +18,8 @@ function fakeDrive() {
     id: string
     name: string
     parentId: string
+    mimeType?: string
+    body?: Blob | string
     appProperties?: Record<string, string>
   }[] = []
   const uploadOrder: string[] = []
@@ -61,7 +65,14 @@ function fakeDrive() {
       // and reports as success without creating anything.
       if (a.fileId && nodes.some((f) => f.id === a.fileId)) return a.fileId
       const id = a.fileId ?? `file-${n++}`
-      nodes.push({ id, name: a.name, parentId: a.parentId, ...(a.appProperties ? { appProperties: a.appProperties } : {}) })
+      nodes.push({
+        id,
+        name: a.name,
+        parentId: a.parentId,
+        ...(a.mimeType ? { mimeType: a.mimeType } : {}),
+        ...(a.body !== undefined ? { body: a.body } : {}),
+        ...(a.appProperties ? { appProperties: a.appProperties } : {}),
+      })
       uploadOrder.push(a.name)
       return id
     }),
@@ -318,6 +329,182 @@ describe('drainStream', () => {
     expect(await drainStream('tok', 'timelog')).toEqual({ outcome: 'idle', uploaded: 0 })
   })
 
+  it('batches ≥2 pending events into one sealed segment upload (SPEC §5.7)', async () => {
+    const e1 = await captureWithAudio()
+    const e2 = await captureWithAudio()
+    await import('./bootstrap').then((m) => m.ensureTree('tok', ['timelog']))
+    drive.findFile.mockClear()
+    drive.uploadFile.mockClear()
+    drive.uploadOrder.length = 0
+
+    const { drainStream } = await import('./queue')
+    const res = await drainStream('tok', 'timelog')
+    expect(res).toEqual({ outcome: 'drained', uploaded: 2 })
+
+    // 2 audio uploads + 1 segment = 3 uploads, one partition find, one
+    // generateIds batch — never a per-event record.
+    const { segmentFileName } = await import('../contract/filenames')
+    const { serializeSegment } = await import('../contract/segments')
+    const segment = segmentFileName([e1, e2])
+    expect(drive.uploadFile).toHaveBeenCalledTimes(3)
+    expect(drive.findFile).toHaveBeenCalledTimes(1)
+    expect(drive.generateIds).toHaveBeenCalledTimes(1)
+    expect(drive.uploadOrder).toEqual([e1.attachments[0].file, e2.attachments[0].file, segment])
+
+    // Exact SPEC §5.7 bytes, NDJSON mime, segment tag.
+    const node = drive.nodes.find((f) => f.name === segment)!
+    expect(node.body).toBe(serializeSegment([e1, e2]))
+    expect(node.mimeType).toBe('application/x-ndjson')
+    expect(node.appProperties).toEqual({ captureKind: 'segment', captureStream: 'timelog' })
+
+    const { getSyncStatuses } = await import('../store/events')
+    const statuses = await getSyncStatuses('timelog')
+    expect(statuses.get(e1.id)?.status).toBe('uploaded')
+    expect(statuses.get(e2.id)?.status).toBe('uploaded')
+    // The segment's single id was persisted on BOTH member rows.
+    expect(statuses.get(e1.id)?.fileIds?.[segment]).toBeTruthy()
+    expect(statuses.get(e1.id)?.fileIds?.[segment]).toBe(statuses.get(e2.id)?.fileIds?.[segment])
+  })
+
+  it('re-drains a whole crashed segment batch via 409 without duplicating', async () => {
+    await captureWithAudio()
+    await captureWithAudio()
+    const { drainStream } = await import('./queue')
+    await drainStream('tok', 'timelog')
+    const nodesAfterFirst = drive.nodes.length
+    const orderAfterFirst = [...drive.uploadOrder]
+
+    // Crash after upload, before any row was marked: both rows rewound to
+    // queued with their fileIds (including the segment assignment) intact.
+    const { getSyncStatuses, putSyncStatus } = await import('../store/events')
+    for (const row of (await getSyncStatuses('timelog')).values()) {
+      await putSyncStatus({ ...row, status: 'queued', phase: 'record-pending' })
+    }
+    drive.uploadFile.mockClear()
+    drive.findFile.mockClear()
+    drive.generateIds.mockClear()
+
+    const res = await drainStream('tok', 'timelog')
+    expect(res).toEqual({ outcome: 'drained', uploaded: 2 })
+    // Re-uploads went out under the persisted ids (409 → success upstream):
+    // nothing new on Drive, no probes, no fresh id minting.
+    expect(drive.nodes.length).toBe(nodesAfterFirst)
+    expect(drive.uploadOrder).toEqual(orderAfterFirst)
+    expect(drive.findFile).not.toHaveBeenCalled()
+    expect(drive.generateIds).not.toHaveBeenCalled()
+    for (const row of (await getSyncStatuses('timelog')).values()) {
+      expect(row.status).toBe('uploaded')
+    }
+  })
+
+  it('finishes a segment crashed mid-marking without a per-event record', async () => {
+    const e1 = await captureWithAudio()
+    const e2 = await captureWithAudio()
+    const { drainStream } = await import('./queue')
+    await drainStream('tok', 'timelog')
+    const nodesAfterFirst = drive.nodes.length
+
+    // Crash mid-step-4 (SPEC §5.7): e1 marked, e2 still queued but carrying
+    // the segment assignment.
+    const { getSyncStatuses, putSyncStatus } = await import('../store/events')
+    const row2 = (await getSyncStatuses('timelog')).get(e2.id)!
+    await putSyncStatus({ ...row2, status: 'queued', phase: 'record-pending' })
+
+    const res = await drainStream('tok', 'timelog')
+    expect(res).toEqual({ outcome: 'drained', uploaded: 1 })
+    expect(drive.nodes.length).toBe(nodesAfterFirst) // 409 path: nothing new
+    expect((await getSyncStatuses('timelog')).get(e2.id)?.status).toBe('uploaded')
+    // The lone remaining member still commits through the segment path —
+    // never as a duplicate per-event record.
+    const { eventRecordName } = await import('../contract/filenames')
+    expect(drive.nodes.some((f) => f.name === eventRecordName(e1))).toBe(false)
+    expect(drive.nodes.some((f) => f.name === eventRecordName(e2))).toBe(false)
+  })
+
+  it('never batches across date partitions', async () => {
+    vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-08-01T23:59:00') })
+    const e1 = await captureWithAudio()
+    vi.setSystemTime(new Date('2026-08-02T00:01:00'))
+    const e2 = await captureWithAudio()
+    vi.useRealTimers()
+
+    const { drainStream } = await import('./queue')
+    const res = await drainStream('tok', 'timelog')
+    expect(res).toEqual({ outcome: 'drained', uploaded: 2 })
+
+    // One-event runs per partition: two per-event records, no segment.
+    const { eventRecordName } = await import('../contract/filenames')
+    expect(drive.uploadOrder).toContain(eventRecordName(e1))
+    expect(drive.uploadOrder).toContain(eventRecordName(e2))
+    expect(drive.nodes.some((f) => f.name.endsWith('.ndjson'))).toBe(false)
+  })
+
+  it('keeps a legacy row on the per-event path, never batched into a segment', async () => {
+    const e1 = await captureWithAudio()
+    const { drainStream } = await import('./queue')
+    await drainStream('tok', 'timelog')
+
+    // Rewind e1 to the legacy shape (attempted once, no fileIds), then queue
+    // a fresh second event.
+    const { getSyncStatuses, putSyncStatus } = await import('../store/events')
+    const row1 = (await getSyncStatuses('timelog')).get(e1.id)!
+    await putSyncStatus({
+      ...row1,
+      status: 'queued',
+      phase: 'attachments-pending',
+      attempts: 1,
+      fileIds: undefined,
+    })
+    const e2 = await captureWithAudio()
+
+    const res = await drainStream('tok', 'timelog')
+    expect(res).toEqual({ outcome: 'drained', uploaded: 2 })
+    // The legacy row probed its existing files; the fresh row went out as a
+    // per-event record; no segment was written.
+    const { eventRecordName } = await import('../contract/filenames')
+    expect(drive.nodes.some((f) => f.name === eventRecordName(e2))).toBe(true)
+    expect(drive.nodes.some((f) => f.name.endsWith('.ndjson'))).toBe(false)
+    expect(drive.nodes.filter((f) => f.name === eventRecordName(e1))).toHaveLength(1)
+  })
+
+  it('keeps every segment member queued on a 429; the next drain re-batches and lands it', async () => {
+    // A batch fails as a unit, and — sync being manual-only, with no backoff
+    // gate — every member must stay eligible: the very next "Sync now"
+    // re-plans the same segment from the persisted assignment and re-uploads
+    // idempotently under the same pre-generated id.
+    await captureWithAudio()
+    await captureWithAudio()
+    await import('./bootstrap').then((m) => m.ensureTree('tok', ['timelog']))
+    drive.failNext(429)
+
+    const { drainStream } = await import('./queue')
+    const res = await drainStream('tok', 'timelog')
+    expect(res.outcome).toBe('retry-later')
+    const { getSyncStatuses } = await import('../store/events')
+    const failedRows = [...(await getSyncStatuses('timelog')).values()]
+    const segmentIds = new Set<string>()
+    for (const row of failedRows) {
+      expect(row.status).toBe('queued')
+      expect(row.attempts).toBe(1)
+      expect(row.nextRetryAt).toBeUndefined() // no persisted backoff gate
+      expect(row.error).toBeTruthy() // failure is recorded, not silent
+      const segmentKey = Object.keys(row.fileIds ?? {}).find((n) => n.endsWith('.ndjson'))!
+      segmentIds.add(row.fileIds![segmentKey])
+    }
+    expect(segmentIds.size).toBe(1) // one shared assignment survives the failure
+
+    drive.failNext(null)
+    drive.generateIds.mockClear()
+    const retry = await drainStream('tok', 'timelog')
+    expect(retry).toEqual({ outcome: 'drained', uploaded: 2 })
+    expect(drive.generateIds).not.toHaveBeenCalled() // ids reused, not re-minted
+    const segment = drive.nodes.find((f) => f.name.endsWith('.ndjson'))!
+    expect(segment.id).toBe([...segmentIds][0]) // landed under the pinned id
+    for (const row of (await getSyncStatuses('timelog')).values()) {
+      expect(row.status).toBe('uploaded')
+    }
+  })
+
   it('costs zero Drive calls for a stream with nothing queued', async () => {
     // Regression guard for the multi-stream sync loop: an idle stream — e.g.
     // a system stream ('settings', 'assistant-chats') with no events yet —
@@ -367,5 +554,102 @@ describe('drainStream', () => {
     for (const id of usedIds) expect(staleIds).not.toContain(id)
     // Both event files landed for real (no phantom 409-as-success successes).
     expect(drive.uploadOrder.length).toBe(landedBefore + 2)
+  })
+
+  it('recovers a crash mid-assignment: the pinned segment keeps its wider name, holding only assigned survivors', async () => {
+    // Plan a [e1, e2, e3] segment, but crash after the assignment persisted
+    // on e1 only (SPEC §5.7 commit protocol, step 1). The next drain must
+    // upload the pinned segment — SAME name (declared range 1–3) and SAME
+    // pre-generated id — containing exactly the assigned survivor [e1],
+    // while e2/e3 land separately. No event lost, none duplicated; the
+    // declared range strictly contains the content's range, which readers
+    // must never trust for completeness (id dedupe is authoritative).
+    const { appendCapture, getSyncStatuses, putSyncStatus } = await import('../store/events')
+    const capture = () =>
+      appendCapture({ stream: 'timelog', capturedAt: '2026-08-02T09:00:00-04:00', attachments: [] })
+    const e1 = await capture()
+    const e2 = await capture()
+    const e3 = await capture()
+
+    const { segmentFileName, parseSegmentName } = await import('../contract/filenames')
+    const { serializeSegment, parseSegment } = await import('../contract/segments')
+    const wideName = segmentFileName([e1, e2, e3])
+    const row1 = (await getSyncStatuses('timelog')).get(e1.id)!
+    await putSyncStatus({ ...row1, fileIds: { [wideName]: 'pinned-segment-id' } })
+
+    const { drainStream } = await import('./queue')
+    const res = await drainStream('tok', 'timelog')
+    expect(res).toEqual({ outcome: 'drained', uploaded: 3 })
+
+    // The interrupted segment landed under its pinned name AND id, holding
+    // only the assigned survivor — declared range ⊇ content range.
+    const wide = drive.nodes.find((f) => f.name === wideName)!
+    expect(wide.id).toBe('pinned-segment-id')
+    expect(wide.body).toBe(serializeSegment([e1]))
+    const declared = parseSegmentName(wideName)!
+    const contentSeqs = parseSegment(wide.body as string).map((e) => e.seq)
+    expect(declared.minSeq).toBe(e1.seq)
+    expect(declared.maxSeq).toBe(e3.seq)
+    expect(contentSeqs).toEqual([e1.seq]) // strictly inside the declared range
+
+    // The unassigned members landed separately, as their own fresh segment.
+    const rest = drive.nodes.find((f) => f.name === segmentFileName([e2, e3]))!
+    expect(rest.body).toBe(serializeSegment([e2, e3]))
+
+    // No event lost, none duplicated, none as a stray per-event record.
+    const carried = drive.nodes
+      .filter((f) => f.name.endsWith('.ndjson'))
+      .flatMap((f) => parseSegment(f.body as string))
+      .map((e) => e.id)
+      .sort()
+    expect(carried).toEqual([e1.id, e2.id, e3.id].sort())
+    expect(drive.nodes.some((f) => /^\d+_.*\.json$/.test(f.name))).toBe(false)
+    for (const row of (await getSyncStatuses('timelog')).values()) {
+      expect(row.status).toBe('uploaded')
+    }
+  })
+
+  it('never reuses an old-account segment assignment after an account switch (#32 × §5.7)', async () => {
+    // A segment batch whose assignment (one shared id on every member row)
+    // persisted on account A but whose upload never landed.
+    await captureWithAudio()
+    await captureWithAudio()
+    await import('./bootstrap').then((m) => m.ensureTree('tok-a', ['timelog']))
+    const { drainStream } = await import('./queue')
+    drive.failNext(500)
+    expect((await drainStream('tok-a', 'timelog')).outcome).toBe('retry-later')
+
+    const { getSyncStatuses } = await import('../store/events')
+    const rows = [...(await getSyncStatuses('timelog')).values()]
+    const staleIds = rows.flatMap((r) => Object.values(r.fileIds ?? {}))
+    // The segment assignment reached every member row before the failure,
+    // and — no backoff gate — both rows are already eligible for the retry.
+    for (const row of rows) {
+      expect(Object.keys(row.fileIds ?? {}).some((n) => n.endsWith('.ndjson'))).toBe(true)
+    }
+
+    // Switch accounts: stripPendingFileIds must drop segment assignments too
+    // — reusing account A's segment id would 409 against A's file and be
+    // miscounted as success while account B's Drive got nothing.
+    drive.failNext(null)
+    drive.setUser('user-B')
+    drive.generateIds.mockClear()
+    drive.uploadFile.mockClear()
+    const landedBefore = drive.uploadOrder.length
+    const res = await drainStream('tok-b', 'timelog')
+    expect(res).toMatchObject({ outcome: 'drained', uploaded: 2 })
+    expect(drive.generateIds).toHaveBeenCalled()
+    const usedIds = drive.uploadFile.mock.calls
+      .map((c) => (c[1] as FakeUploadArgs).fileId)
+      .filter((id): id is string => id !== undefined)
+    expect(usedIds.length).toBeGreaterThan(0)
+    for (const id of usedIds) expect(staleIds).not.toContain(id)
+    // Both events landed for real under fresh ids. Stripped rows are
+    // indistinguishable from legacy rows (attempts > 0, no fileIds), so the
+    // retry deliberately takes the cautious per-event probe path — two audio
+    // files + two records, never a stale-id segment 409-as-"success".
+    expect(drive.uploadOrder.length).toBe(landedBefore + 4)
+    expect(drive.uploadOrder.slice(landedBefore).filter((n) => n.endsWith('.json'))).toHaveLength(2)
+    expect(drive.uploadOrder.some((n) => n.endsWith('.ndjson'))).toBe(false)
   })
 })

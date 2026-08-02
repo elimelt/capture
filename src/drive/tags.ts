@@ -23,6 +23,7 @@ export type TagKind =
   | 'checkpoint'
   | 'partition'
   | 'record'
+  | 'segment'
   | 'attachment'
 
 /** Build the appProperties for one created file/folder. */
