@@ -77,15 +77,26 @@ const ICON_VARIANT: Record<IconButtonVariant, string> = {
   danger: cx(tone.danger, 'active:bg-clay-wash dark:active:bg-clay-wash-dark'),
 }
 
+export type IconButtonSize = 'md' | 'sm'
+
+const ICON_SIZE: Record<IconButtonSize, string> = {
+  /** The 44 pt HIG tap target — the default. */
+  md: 'h-11 w-11',
+  /** Compact rows where several actions must fit side by side. */
+  sm: 'h-9 w-9',
+}
+
 interface IconButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   /** Required: icon-only buttons must still be accessible. */
   'aria-label': string
   variant?: IconButtonVariant
+  size?: IconButtonSize
   children: ReactNode
 }
 
 export function IconButton({
   variant = 'outline',
+  size = 'md',
   className,
   children,
   ...rest
@@ -94,7 +105,8 @@ export function IconButton({
     <button
       {...rest}
       className={cx(
-        'inline-flex h-11 w-11 shrink-0 items-center justify-center transition-colors disabled:opacity-40',
+        'inline-flex shrink-0 items-center justify-center transition-colors disabled:opacity-40',
+        ICON_SIZE[size],
         shape.pill,
         ICON_VARIANT[variant],
         className,

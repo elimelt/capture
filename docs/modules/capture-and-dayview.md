@@ -561,21 +561,20 @@ The card computes its own `EntryLifecycle` from `sync` + `hasPendingEnrichment(e
 
 **Key behaviors:**
 
-- **Content is always visible (#102):** there is no more content-hiding "collapsed"
-  state or `expanded` toggle. `menuOpen` is view-local and never persisted or emitted
-  as an event. `AttachmentTimeline` owns visible attachment ordering and media/text
-  pairing.
+- **Content and actions are always visible (#102, extended):** there is no
+  content-hiding "collapsed" state, no `expanded` toggle, and no action-menu reveal —
+  the action row renders unconditionally at the card's foot. `AttachmentTimeline`
+  owns visible attachment ordering and media/text pairing.
 - **Rail gutter + header:** the editable time lives in the `TimelineRow` `time` slot
   (the `RailTime` subcomponent — the same tap-to-edit button, in the gutter above the
   rail dot; the gutter stays fixed-width so every row's dot sits on one straight
   rail). The header is one flex row: the location pin + place label leading
-  (truncated, only when a location is present), then the lifecycle badge, copy
-  action, and the "+" action menu trailing; attachment playback lives in the
-  sub-timeline. The time button has no underline decoration; it is still the tap
-  target for the native picker (below), and the Edit sheet provides the second,
-  labelled path to the same field. Both are metadata, not content (#85): the time
-  button and place label are quiet `type_.caption` (sans, tabular-nums on the time),
-  never serif.
+  (truncated, only when a location is present) and the lifecycle badge trailing;
+  attachment playback lives in the sub-timeline. The time button has no underline
+  decoration; it is still the tap target for the native picker (below), and the Edit
+  sheet provides the second, labelled path to the same field. Both are metadata, not
+  content (#85): the time button and place label are quiet `type_.caption` (sans,
+  tabular-nums on the time), never serif.
 - **Rail position:** `first`/`last` props (threaded down from `EntryList`, defaulting
   false) trim the connecting line at the true ends of the rail so a run of entries reads
   as one continuous line, and the flush node drops the old heavy per-card border/shadow.
@@ -591,10 +590,10 @@ The card computes its own `EntryLifecycle` from `sync` + `hasPendingEnrichment(e
 - **Place card:** the `PlaceCard` row (when `entry.location` is set) remains leaflet-free,
   with no network or map tiles in the feed (#81); tapping it sets `mapOpen`, which mounts
   the lazy `MiniMap` full-screen dialog. Leaflet's chunk loads only on that explicit tap.
-- **Per-card recorder:** "Add audio" (in the "+" menu) uses its own `useRecorder()`
-  instance so entries can hold multiple clips; while recording, the action controls
-  are replaced by a compact timer bar with Discard/Done.
-  If that recorder errors, the menu's audio icon becomes a "mic unavailable, tap to
+- **Per-card recorder:** "Add audio" (in the action row) uses its own `useRecorder()`
+  instance so entries can hold multiple clips; while recording, the action row is
+  replaced by a compact timer bar with Discard/Done (`RecordingBar`).
+  If that recorder errors, the row's audio icon becomes a "mic unavailable, tap to
   retry" button that just calls `rec.resetError`.
 - **Lazy Leaflet:** `MiniMap` and `LocationSheet` are `lazy()` imports wrapped in
   `Suspense fallback={null}`, keeping the Leaflet JS+CSS chunk out of the initial
@@ -603,19 +602,17 @@ The card computes its own `EntryLifecycle` from `sync` + `hasPendingEnrichment(e
   location editor.
 - Hidden photo input (camera capture) and a `TextSheet` for "Add note" mirror the
   capture-screen patterns.
-- **The "+" action menu (#102, replaces #78's expanded labelled-action column):** the
-  `EntryActions` subcomponent — a single "+" `IconButton` (aria-expanded, aria-label
-  "Add or edit"/"Close actions") at the right edge of the entry header. It toggles
-  `menuOpen`; its `PlusIcon` rotates 45° into an "×" rather than drawing a second glyph.
-  When open, six icon-only `IconButton`s appear to its left (`flex-wrap`, so they wrap
-  on narrow viewports): "Add note", "Add photo", "Add audio" (or the mic-unavailable
-  fallback), "Add location"/"Edit location" (`PlusIcon`/`PinIcon`), "Edit entry"
-  (`SlidersIcon` — opens `EditEntrySheet`), "Delete entry" (`TrashIcon`, `danger`
-  variant) — every action still carries the same glyph as the main CTA/edit affordances
-  via `captureIcon` (`src/ui`), and every `IconButton` requires its `aria-label` at the
-  type level, so an unlabelled action icon can't compile. Selecting any action closes
-  the menu (`setMenuOpen(false)`) before opening its sheet/input. Menu state is plain
-  `useState` — never touches the store, never logged.
+- **The action row (replaces the "+" reveal menu):** the `EntryActions` subcomponent —
+  one always-visible row at the card's foot, compact `sm` ghost `IconButton`s
+  (36×36 px) so every action fits on one line at mobile widths: "Add note",
+  "Add photo", "Add audio" (or the mic-unavailable fallback), "Add location"/"Edit
+  location" (`PlusIcon`/`PinIcon`), "Edit entry" (`SlidersIcon` — opens
+  `EditEntrySheet`), "Copy entry" (`CopyIcon`, only when `onCopy` is provided), and
+  "Delete entry" (`TrashIcon`, `danger` variant) pushed to the right edge
+  (`ml-auto`) so the destructive action stands apart. Every action still carries the
+  same glyph as the main CTA/edit affordances via `captureIcon` (`src/ui`), and
+  every `IconButton` requires its `aria-label` at the type level, so an unlabelled
+  action icon can't compile.
 
 ### src/capture/editPlan.ts
 

@@ -84,9 +84,7 @@ export function EntryCard({
   onApplyEdit,
   onCopy,
 }: EntryCardProps) {
-  // View-local only, never persisted, never an event. The action menu lives
-  // in the entry header so it is available without a footer reveal.
-  const [menuOpen, setMenuOpen] = useState(false)
+  // View-local only, never persisted, never an event.
   const [noteOpen, setNoteOpen] = useState(false)
   const [locationOpen, setLocationOpen] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
@@ -114,9 +112,9 @@ export function EntryCard({
       last={last}
       className={motion.riseIn}
     >
-      {/* Header: place label leading; lifecycle badge and always-available
-          actions trailing. Attachment media lives below. */}
-      <div className="flex items-center gap-1">
+      {/* Header: place label leading, lifecycle badge trailing. Actions live
+          in the always-visible footer row; attachment media sits between. */}
+      <div className="flex min-h-5 items-center gap-2">
         <div className="flex min-w-0 flex-1 items-center">
           {entry.location && (
             <span className={cx('flex min-w-0 items-center gap-1', type_.caption, tone.textMuted)}>
@@ -128,42 +126,6 @@ export function EntryCard({
         <span className="shrink-0">
           <LifecycleBadge lifecycle={lifecycle} />
         </span>
-        {onCopy && (
-          <IconButton aria-label="Copy entry" onClick={() => onCopy(entry)}>
-            <CopyIcon size={16} />
-          </IconButton>
-        )}
-        <EntryActions
-          open={menuOpen}
-          onToggle={() => setMenuOpen((open) => !open)}
-          hasLocation={entry.location !== undefined}
-          micError={rec.state === 'error'}
-          onRetryMic={rec.resetError}
-          onAddNote={() => {
-            setMenuOpen(false)
-            setNoteOpen(true)
-          }}
-          onAddPhoto={() => {
-            setMenuOpen(false)
-            photoInputRef.current?.click()
-          }}
-          onAddAudio={() => {
-            setMenuOpen(false)
-            void handleAudioTap()
-          }}
-          onEditLocation={() => {
-            setMenuOpen(false)
-            setLocationOpen(true)
-          }}
-          onEditEntry={() => {
-            setMenuOpen(false)
-            setEditOpen(true)
-          }}
-          onDelete={() => {
-            setMenuOpen(false)
-            onDelete()
-          }}
-        />
       </div>
 
       <AttachmentTimeline
@@ -175,11 +137,24 @@ export function EntryCard({
       />
       {entry.location && <PlaceCard location={entry.location} onExpand={() => setMapOpen(true)} />}
 
-      {rec.state === 'recording' && (
+      {rec.state === 'recording' ? (
         <RecordingBar
           elapsedSec={rec.elapsedSec}
           onDiscard={rec.cancel}
           onDone={() => void handleAudioTap()}
+        />
+      ) : (
+        <EntryActions
+          hasLocation={entry.location !== undefined}
+          micError={rec.state === 'error'}
+          onRetryMic={rec.resetError}
+          onAddNote={() => setNoteOpen(true)}
+          onAddPhoto={() => photoInputRef.current?.click()}
+          onAddAudio={() => void handleAudioTap()}
+          onEditLocation={() => setLocationOpen(true)}
+          onEditEntry={() => setEditOpen(true)}
+          onCopy={onCopy && (() => onCopy(entry))}
+          onDelete={onDelete}
         />
       )}
 
@@ -276,16 +251,13 @@ function RailTime({
 }
 
 /**
- * The header's "+" action menu (#102): a single toggle whose `PlusIcon`
- * rotates 45° into an "×", revealing six icon-only actions to its left
- * (flex-wrap, so they wrap on narrow viewports). Every action is labelled
- * via aria-label; the parent closes the menu inside each handler. The one
- * exception is a mic error, where the audio slot becomes a retry button
- * that only clears the error (menu stays open).
+ * The entry's action row: always visible (no reveal toggle), one compact
+ * `sm` ghost `IconButton` per action so all of them fit on one line at
+ * mobile widths. Every action is labelled via aria-label. The one special
+ * case is a mic error, where the audio slot becomes a retry button that
+ * only clears the error.
  */
 function EntryActions({
-  open,
-  onToggle,
   hasLocation,
   micError,
   onRetryMic,
@@ -294,10 +266,9 @@ function EntryActions({
   onAddAudio,
   onEditLocation,
   onEditEntry,
+  onCopy,
   onDelete,
 }: {
-  open: boolean
-  onToggle: () => void
   hasLocation: boolean
   micError: boolean
   onRetryMic: () => void
@@ -306,51 +277,57 @@ function EntryActions({
   onAddAudio: () => void
   onEditLocation: () => void
   onEditEntry: () => void
+  onCopy?: () => void
   onDelete: () => void
 }) {
   return (
-    <>
-      {open && (
-        <div className="flex flex-wrap items-center justify-end gap-1">
-          <IconButton aria-label="Add note" onClick={onAddNote}>
-            <NoteIcon size={16} />
-          </IconButton>
-          <IconButton aria-label="Add photo" onClick={onAddPhoto}>
-            <PhotoIcon size={16} />
-          </IconButton>
-          {micError ? (
-            <IconButton aria-label="Microphone unavailable, tap to retry" onClick={onRetryMic}>
-              <AudioIcon size={16} />
-            </IconButton>
-          ) : (
-            <IconButton aria-label="Add audio" onClick={onAddAudio}>
-              <AudioIcon size={16} />
-            </IconButton>
-          )}
-          <IconButton
-            aria-label={hasLocation ? 'Edit location' : 'Add location'}
-            onClick={onEditLocation}
-          >
-            {hasLocation ? <PinIcon size={16} /> : <PlusIcon size={16} />}
-          </IconButton>
-          <IconButton aria-label="Edit entry" onClick={onEditEntry}>
-            <SlidersIcon size={16} />
-          </IconButton>
-          <IconButton variant="danger" aria-label="Delete entry" onClick={onDelete}>
-            <TrashIcon size={16} />
-          </IconButton>
-        </div>
+    <div className="mt-1 flex items-center">
+      <IconButton size="sm" variant="ghost" aria-label="Add note" onClick={onAddNote}>
+        <NoteIcon size={16} />
+      </IconButton>
+      <IconButton size="sm" variant="ghost" aria-label="Add photo" onClick={onAddPhoto}>
+        <PhotoIcon size={16} />
+      </IconButton>
+      {micError ? (
+        <IconButton
+          size="sm"
+          variant="ghost"
+          aria-label="Microphone unavailable, tap to retry"
+          onClick={onRetryMic}
+        >
+          <AudioIcon size={16} />
+        </IconButton>
+      ) : (
+        <IconButton size="sm" variant="ghost" aria-label="Add audio" onClick={onAddAudio}>
+          <AudioIcon size={16} />
+        </IconButton>
       )}
       <IconButton
-        aria-expanded={open}
-        aria-label={open ? 'Close actions' : 'Add or edit'}
-        onClick={onToggle}
+        size="sm"
+        variant="ghost"
+        aria-label={hasLocation ? 'Edit location' : 'Add location'}
+        onClick={onEditLocation}
       >
-        <span className={cx('inline-flex transition-transform', open && 'rotate-45')}>
-          <PlusIcon size={18} />
-        </span>
+        {hasLocation ? <PinIcon size={16} /> : <PlusIcon size={16} />}
       </IconButton>
-    </>
+      <IconButton size="sm" variant="ghost" aria-label="Edit entry" onClick={onEditEntry}>
+        <SlidersIcon size={16} />
+      </IconButton>
+      {onCopy && (
+        <IconButton size="sm" variant="ghost" aria-label="Copy entry" onClick={onCopy}>
+          <CopyIcon size={16} />
+        </IconButton>
+      )}
+      <IconButton
+        size="sm"
+        variant="danger"
+        aria-label="Delete entry"
+        onClick={onDelete}
+        className="ml-auto"
+      >
+        <TrashIcon size={16} />
+      </IconButton>
+    </div>
   )
 }
 
