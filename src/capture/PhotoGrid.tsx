@@ -153,6 +153,7 @@ function PhotoTile({
         <PhotoViewer
           src={url}
           captionFile={caption?.file}
+          downloadName={photo.file}
           onClose={() => setViewerOpen(false)}
           onRemove={() => {
             setViewerOpen(false)

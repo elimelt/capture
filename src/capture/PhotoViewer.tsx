@@ -31,6 +31,9 @@ interface PhotoViewerProps {
   src: string
   /** Caption attachment file, if any — loaded for alt text / dialog label. */
   captionFile?: string
+  /** When provided, renders the "Save" action — a plain `<a download>` of
+   *  `src` under this filename (the attachment's contract filename). */
+  downloadName?: string
   onClose: () => void
   /** When provided, renders the "Remove photo" action. */
   onRemove?: () => void
@@ -66,7 +69,7 @@ interface DragState {
  * entrance animation stays on a wrapper (fill `both` would pin the img's
  * `transform` and fight the gesture transform).
  */
-export function PhotoViewer({ src, captionFile, onClose, onRemove }: PhotoViewerProps) {
+export function PhotoViewer({ src, captionFile, downloadName, onClose, onRemove }: PhotoViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const imgRef = useRef<HTMLImageElement>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
@@ -190,8 +193,8 @@ export function PhotoViewer({ src, captionFile, onClose, onRemove }: PhotoViewer
   }
 
   const onPointerDown = (e: React.PointerEvent) => {
-    // Buttons handle their own clicks; don't start a gesture under them.
-    if (e.target instanceof Element && e.target.closest('button')) return
+    // Buttons/links handle their own clicks; don't start a gesture under them.
+    if (e.target instanceof Element && e.target.closest('button, a')) return
     containerRef.current?.setPointerCapture(e.pointerId)
     const p = toAnchor(e)
     pointers.current.set(e.pointerId, p)
@@ -409,17 +412,35 @@ export function PhotoViewer({ src, captionFile, onClose, onRemove }: PhotoViewer
             />
           </svg>
         </button>
-        {onRemove && (
-          <button
-            onClick={onRemove}
-            className={cx(
-              'absolute left-1/2 -translate-x-1/2 rounded-xl bg-white/15 px-5 py-2.5 font-medium text-white backdrop-blur-sm',
-              type_.ui,
-            )}
+        {(onRemove || downloadName !== undefined) && (
+          <div
+            className="absolute left-1/2 flex -translate-x-1/2 items-center gap-3"
             style={{ bottom: 'max(env(safe-area-inset-bottom), 1rem)' }}
           >
-            Remove photo
-          </button>
+            {downloadName !== undefined && (
+              <a
+                href={src}
+                download={downloadName}
+                className={cx(
+                  'rounded-xl bg-white/15 px-5 py-2.5 font-medium text-white no-underline backdrop-blur-sm',
+                  type_.ui,
+                )}
+              >
+                Save photo
+              </a>
+            )}
+            {onRemove && (
+              <button
+                onClick={onRemove}
+                className={cx(
+                  'rounded-xl bg-white/15 px-5 py-2.5 font-medium text-white backdrop-blur-sm',
+                  type_.ui,
+                )}
+              >
+                Remove photo
+              </button>
+            )}
+          </div>
         )}
       </div>
     </OverlayPortal>

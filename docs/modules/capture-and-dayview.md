@@ -797,6 +797,13 @@ tappable (nothing to edit until the amend lands).
 - **Accessibility:** `role="dialog"`/`aria-modal`, alt text loaded from the caption
   attachment (`getBlob`), focus moves to the close button on open and returns on close,
   and Tab cycles within the dialog's controls.
+- **Bottom actions:** an optional "Save photo" link (`downloadName` prop — a plain
+  `<a download>` of the already-loaded object URL under the attachment's contract
+  filename, so saving needs no new blob read or network) sits beside the optional
+  "Remove photo" button in a safe-area-aware bottom row; both call sites
+  (`AttachmentTimeline.PhotoRow`, `PhotoGrid`) pass `photo.file`. `onPointerDown`
+  skips gesture handling for taps landing on buttons *or links* so the anchor's
+  native download click fires.
 - All geometry is delegated to `photoViewerMath.ts`; the component only wires pointer
   events (pointer positions are translated to container-center coordinates first).
 
